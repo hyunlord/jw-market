@@ -394,6 +394,66 @@ class FinalAnswer:
     conversation_slots: ConversationSlots = ConversationSlots()
 
 
+def _v4_planner_enabled() -> bool:
+    return _env_bool("V4_PLANNER", default=False)
+
+
+@lru_cache(maxsize=1)
+def _get_v4_runtime():
+    from jw_chat_agent_poc.service.v4 import build_default_runtime
+
+    return build_default_runtime()
+
+
+def _v4_recent_turns(
+    store: "SessionStore",
+    history_store: ConversationHistoryStore | None,
+    conversation_id: str | None,
+) -> tuple[ConversationTurn, ...]:
+    if not conversation_id:
+        return ()
+    persisted: tuple[ConversationTurn, ...] = ()
+    if history_store is not None:
+        try:
+            persisted = history_store.recent_turns(conversation_id, 10)
+        except Exception:  # noqa: BLE001 - in-memory context remains available
+            LOGGER.exception("v4 conversation history lookup failed")
+    cached = store.conversations.get_or_create(conversation_id).turns
+    combined: list[ConversationTurn] = []
+    for turn in (*persisted, *cached):
+        if combined and combined[-1].question == turn.question and combined[-1].answer == turn.answer:
+            continue
+        combined.append(turn)
+    return tuple(combined[-10:])
+
+
+def _run_v4_final_answer(
+    store: "SessionStore",
+    history_store: ConversationHistoryStore | None,
+    question: str,
+    conversation_id: str | None,
+) -> FinalAnswer:
+    answer = _get_v4_runtime().answer(
+        question,
+        conversation_id=conversation_id,
+        turns=_v4_recent_turns(store, history_store, conversation_id),
+    )
+    if answer.conversation_id:
+        store.conversations.record_exchange(
+            answer.conversation_id,
+            question,
+            answer.text,
+        )
+    return FinalAnswer(
+        text=answer.text,
+        charts=list(answer.charts),
+        timing=answer.timing,
+        trace=answer.trace,
+        sources=answer.sources,
+        conversation_id=answer.conversation_id,
+    )
+
+
 SESSION_STORE_MAX_ENV = "SESSION_STORE_MAX"
 DEFAULT_SESSION_STORE_MAX = 500
 CHART_AFTER_EVIDENCE_BINDING_ENV = "JW_CHAT_CHART_AFTER_EVIDENCE_BINDING"
@@ -835,18 +895,32 @@ def create_app(
             raise HTTPException(status_code=400, detail="질문 또는 파일 업로드가 필요합니다.")
         try:
             with limiter.slot(), actor_user_scope(projection_context.portal_user_id):
-                result = _answer_question(
-                    store,
-                    resolver,
-                    make_agent,
-                    request.question,
-                    request.external_mode,
-                    request.conversation_id,
-                    list(documents),
-                    request.file_context,
-                    use_direct_agent_loop=use_direct_agent_loop,
-                    conversation_history=history,
-                )
+                if _v4_planner_enabled():
+                    final_answer = _run_v4_final_answer(
+                        store,
+                        history,
+                        request.question,
+                        request.conversation_id,
+                    )
+                    result = {
+                        "question": request.question,
+                        "result": {"sources": list(final_answer.sources)},
+                        "conversation_id": final_answer.conversation_id,
+                    }
+                else:
+                    final_answer = None
+                    result = _answer_question(
+                        store,
+                        resolver,
+                        make_agent,
+                        request.question,
+                        request.external_mode,
+                        request.conversation_id,
+                        list(documents),
+                        request.file_context,
+                        use_direct_agent_loop=use_direct_agent_loop,
+                        conversation_history=history,
+                    )
         except ChatBusyError as exc:
             raise HTTPException(status_code=503, detail=BUSY_MESSAGE) from exc
         stored_item = _AnswerItem(
@@ -856,6 +930,8 @@ def create_app(
             getattr(result, "operation_contract_query_spec", None)
         )
         stored_item.shadow_request_id = getattr(result, "shadow_request_id", "")
+        if final_answer is not None:
+            stored_item["v4_final_answer"] = final_answer
         session_id = store.put(stored_item)
         return ChatAccepted(
             session_id=session_id,
@@ -878,25 +954,34 @@ def create_app(
             raise HTTPException(status_code=400, detail="질문 또는 파일 업로드가 필요합니다.")
         try:
             with limiter.slot(), actor_user_scope(projection_context.portal_user_id):
-                item = _answer_question(
-                    store,
-                    resolver,
-                    make_agent,
-                    request.question,
-                    request.external_mode,
-                    request.conversation_id,
-                    list(documents),
-                    request.file_context,
-                    use_direct_agent_loop=use_direct_agent_loop,
-                    conversation_history=history,
-                )
-                with shadow_request_id_scope(item.shadow_request_id):
-                    final_answer = _compute_final_answer_with_query_spec(
-                        item["question"],
-                        item["result"],
-                        item.get("conversation_id"),
-                        item.operation_contract_query_spec,
+                if _v4_planner_enabled():
+                    final_answer = _run_v4_final_answer(
+                        store,
+                        history,
+                        request.question,
+                        request.conversation_id,
                     )
+                    item = {"question": request.question}
+                else:
+                    item = _answer_question(
+                        store,
+                        resolver,
+                        make_agent,
+                        request.question,
+                        request.external_mode,
+                        request.conversation_id,
+                        list(documents),
+                        request.file_context,
+                        use_direct_agent_loop=use_direct_agent_loop,
+                        conversation_history=history,
+                    )
+                    with shadow_request_id_scope(item.shadow_request_id):
+                        final_answer = _compute_final_answer_with_query_spec(
+                            item["question"],
+                            item["result"],
+                            item.get("conversation_id"),
+                            item.operation_contract_query_spec,
+                        )
         except ChatBusyError as exc:
             raise HTTPException(status_code=503, detail=BUSY_MESSAGE) from exc
         _record_conversation_history(
@@ -939,6 +1024,19 @@ def create_app(
                     conversation_id,
                     use_direct_agent_loop=use_direct_agent_loop,
                 )
+            v4_final_answer = item.get("v4_final_answer")
+            if isinstance(v4_final_answer, FinalAnswer):
+                _record_conversation_history(
+                    history,
+                    session_id=session_id,
+                    question=item["question"],
+                    final_answer=v4_final_answer,
+                    projection_context=projection_context,
+                )
+                return StreamingResponse(
+                    _sse_events_from_final_answer(v4_final_answer),
+                    media_type="text/event-stream",
+                )
             return StreamingResponse(
                 _sse_events(
                     item["question"],
@@ -959,6 +1057,18 @@ def create_app(
             )
         if not question:
             raise HTTPException(status_code=400, detail="session_id or question is required")
+        if _v4_planner_enabled():
+            return StreamingResponse(
+                _v4_sse_events(
+                    store,
+                    history,
+                    limiter,
+                    question,
+                    conversation_id,
+                    projection_context,
+                ),
+                media_type="text/event-stream",
+            )
         return StreamingResponse(
             _stream_resolving_session_events(
                 store,
@@ -3180,6 +3290,52 @@ def _sse_events(
         )
     else:
         yield from _sse_events_from_final_answer(final_answer)
+
+
+def _v4_sse_events(
+    store: SessionStore,
+    history_store: ConversationHistoryStore | None,
+    limiter: ChatConcurrencyLimiter,
+    question: str,
+    conversation_id: str | None,
+    projection_context: ProjectionRequestContext,
+):
+    if not limiter.try_acquire():
+        yield from _sse_busy_events()
+        return
+    yield _sse_json_event(
+        "step",
+        {
+            "name": "V4 플래닝",
+            "detail": "질문 확장과 7개 조회 경로를 준비합니다.",
+            "status": "in_progress",
+        },
+    )
+    try:
+        with actor_user_scope(projection_context.portal_user_id):
+            final_answer = _run_v4_final_answer(
+                store,
+                history_store,
+                question,
+                conversation_id,
+            )
+        _record_conversation_history(
+            history_store,
+            session_id=None,
+            question=question,
+            final_answer=final_answer,
+            projection_context=projection_context,
+        )
+    except Exception as exc:  # noqa: BLE001 - preserve the existing SSE error contract
+        yield _sse_json_event(
+            "error",
+            {"type": type(exc).__name__, "message": str(exc)},
+        )
+        yield "event: done\ndata: error\n\n"
+        return
+    finally:
+        limiter.release()
+    yield from _sse_events_from_final_answer(final_answer)
 
 
 def _sse_busy_events():
