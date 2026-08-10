@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import json
 import logging
 import os
@@ -533,6 +533,9 @@ class GeneralViewService:
                 contract.update(selection_trace)
                 return _multi_result(question, ordered_markets, contract, started_at=started_at)
             selected = max(markets, key=lambda item: item.brand_value if item.brand_value is not None else float("-inf"))
+            selected_brand = resolved_brand or brand
+            if selected_brand:
+                selected = replace(selected, brand=selected_brand)
             descriptions = {market.atc4_code: market.atc4_description for market in markets}
             others = [
                 f"{candidate.code} ({descriptions.get(candidate.code, candidate.description)})"

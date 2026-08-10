@@ -912,6 +912,11 @@ def test_general_view_competitor_growth_survives_final_binding(monkeypatch) -> N
 
 def test_general_view_brand_sales_survives_final_binding(monkeypatch) -> None:
     service = _iqvia_intent_service()
+    market = service._backend.market_map["S01P0"]  # type: ignore[attr-defined]
+    service._backend.market_map["S01P0"] = replace(  # type: ignore[attr-defined]
+        market,
+        brand="",
+    )
     question = "아일리아 매출 알려줘"
     result = service.answer(question, compact=False, dual=False)
     original_gate = service_app._apply_evidence_binding_gate
