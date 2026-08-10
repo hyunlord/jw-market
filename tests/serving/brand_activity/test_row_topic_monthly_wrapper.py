@@ -10,12 +10,17 @@ from pipeline.scripts.deploy.brand_activity_307 import row_topic_monthly_wrapper
 
 def test_runner_passes_canonical_affected_scope(monkeypatch) -> None:
     captured: list[str] = []
+    captured_env: dict[str, str] = {}
 
-    def run(cmd: list[str], **_kwargs: object) -> SimpleNamespace:
+    def run(cmd: list[str], **kwargs: object) -> SimpleNamespace:
         captured.extend(cmd)
+        captured_env.update(kwargs["env"])
         return SimpleNamespace(returncode=0, stdout='{"pending_rows":0}\n', stderr="")
 
     monkeypatch.setattr(wrapper.subprocess, "run", run)
+    monkeypatch.setenv("MARIADB_USER", "hook-writer")
+    monkeypatch.setenv("ROW_TOPIC_DB_USER", "llmops")
+    monkeypatch.setenv("ROW_TOPIC_DB_PASSWORD", "row-topic-password")
     scope = {"dimension": "period_ym", "count": 2, "values": ["2025-09", "2025-10"]}
 
     wrapper._run_row_topic("dry-run", "topic-v1", affected_scope=scope, run_id="run-1")  # noqa: SLF001
@@ -23,12 +28,17 @@ def test_runner_passes_canonical_affected_scope(monkeypatch) -> None:
     index = captured.index("--affected-scope-json")
     assert json.loads(captured[index + 1]) == scope
     assert "/tmp/row_topic_assignment_checkpoint_run-1.jsonl" in captured
+    assert captured_env["MARIADB_USER"] == "llmops"
+    assert captured_env["MARIADB_ROOT_PASSWORD"] == "row-topic-password"
 
 
 def test_ingest_runner_requires_token_only_when_scope_has_pending_rows(monkeypatch) -> None:
     monkeypatch.setattr(wrapper, "_prepare_environment", lambda: None)
-    monkeypatch.setattr(wrapper, "_latest_topic_set_version", lambda: "topic-v1")
-    monkeypatch.setattr(wrapper, "_run_row_topic", lambda *_args, **_kwargs: {"pending_rows": 1})
+    monkeypatch.setattr(
+        wrapper,
+        "_run_row_topic",
+        lambda *_args, **_kwargs: {"pending_rows": 1, "topic_set_version": "topic-v1"},
+    )
     monkeypatch.delenv("GENOS_BEARER_TOKEN", raising=False)
 
     with pytest.raises(RuntimeError, match="GENOS_BEARER_TOKEN is required"):
@@ -43,8 +53,11 @@ def test_ingest_runner_requires_token_only_when_scope_has_pending_rows(monkeypat
 
 def test_ingest_runner_reports_no_target_without_token(monkeypatch) -> None:
     monkeypatch.setattr(wrapper, "_prepare_environment", lambda: None)
-    monkeypatch.setattr(wrapper, "_latest_topic_set_version", lambda: "topic-v1")
-    monkeypatch.setattr(wrapper, "_run_row_topic", lambda *_args, **_kwargs: {"pending_rows": 0})
+    monkeypatch.setattr(
+        wrapper,
+        "_run_row_topic",
+        lambda *_args, **_kwargs: {"pending_rows": 0, "topic_set_version": "topic-v1"},
+    )
     monkeypatch.delenv("GENOS_BEARER_TOKEN", raising=False)
 
     result = wrapper.run_for_ingest(

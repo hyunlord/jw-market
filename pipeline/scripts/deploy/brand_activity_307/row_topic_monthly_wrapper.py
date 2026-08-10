@@ -83,6 +83,26 @@ def _mode_from_job_name() -> str:
     return "auto"
 
 
+def _row_topic_environment() -> dict[str, str]:
+    """Build subprocess DB env without replacing the hook process credentials."""
+    environment = dict(os.environ)
+    mappings = {
+        "MARIADB_HOST": "ROW_TOPIC_DB_HOST",
+        "MARIADB_PORT": "ROW_TOPIC_DB_PORT",
+        "MARIADB_USER": "ROW_TOPIC_DB_USER",
+        "MARIADB_ROOT_PASSWORD": "ROW_TOPIC_DB_PASSWORD",
+    }
+    for target, source in mappings.items():
+        value = environment.get(source, "").strip()
+        if value:
+            environment[target] = value
+    if not environment.get("MARIADB_ROOT_PASSWORD"):
+        password = environment.get("DB_PASSWORD") or environment.get("MARIADB_PASSWORD")
+        if password:
+            environment["MARIADB_ROOT_PASSWORD"] = password
+    return environment
+
+
 def _run_row_topic(
     mode: str,
     version: str,
@@ -111,7 +131,13 @@ def _run_row_topic(
         cmd.extend(["--max-calls", str(max_calls)])
     if affected_scope is not None:
         cmd.extend(["--affected-scope-json", json.dumps(affected_scope, sort_keys=True, separators=(",", ":"))])
-    completed = subprocess.run(cmd, check=False, text=True, capture_output=True)
+    completed = subprocess.run(
+        cmd,
+        check=False,
+        text=True,
+        capture_output=True,
+        env=_row_topic_environment(),
+    )
     if completed.stdout:
         print(completed.stdout, end="", flush=True)
     if completed.stderr:
@@ -131,7 +157,7 @@ def run_for_ingest(
 ) -> RowTopicRunResult:
     """Run the existing row-topic path for only the newly published periods."""
     _prepare_environment()
-    version = os.environ.get("ROW_TOPIC_SET_VERSION") or _latest_topic_set_version()
+    version = os.environ.get("ROW_TOPIC_SET_VERSION", "")
     print(json.dumps({
         "event": "row_topic_ingest_start",
         "category": category,
@@ -142,6 +168,7 @@ def run_for_ingest(
         "topic_set_version": version,
     }, sort_keys=True), flush=True)
     dry = _run_row_topic("dry-run", version, affected_scope=affected_scope, run_id=run_id)
+    version = str(dry.get("topic_set_version") or version)
     pending_rows = int(dry.get("pending_rows") or 0)
     if pending_rows == 0:
         return RowTopicRunResult(pending_rows=0, calls=0, inserts=0)
