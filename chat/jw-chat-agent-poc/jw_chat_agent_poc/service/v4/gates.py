@@ -8,6 +8,24 @@ from jw_chat_agent_poc.service.v4.contracts import GatedAnswer, SourceResult
 
 
 _NUMBER_RE = re.compile(r"(?<![\w.])-?\d[\d,]*(?:\.\d+)?")
+_VALUE = r"-?\d[\d,]*(?:\.\d+)?"
+_MART_VALUE_PATTERNS: dict[str, re.Pattern[str]] = {
+    "매출": re.compile(
+        rf"(?:매출(?:액)?\s*(?:은|는|이|가|:)?\s*(?:약\s*)?(?:KRW\s*)?"
+        rf"(?P<after>{_VALUE})|(?:KRW\s*)?(?P<before>{_VALUE})\s*(?:억원?|원|KRW))",
+        re.IGNORECASE,
+    ),
+    "점유율": re.compile(
+        rf"(?:점유율\s*(?:은|는|이|가|:)?\s*(?:약\s*)?(?P<after>{_VALUE})|"
+        rf"(?P<before>{_VALUE})\s*(?:%|퍼센트))"
+    ),
+    "성장률": re.compile(
+        rf"(?:성장률\s*(?:은|는|이|가|:)?\s*(?:약\s*)?(?P<after>{_VALUE})|"
+        rf"(?P<before>{_VALUE})\s*(?:%|퍼센트))"
+    ),
+    "순위": re.compile(r"(?P<value>\d[\d,]*)\s*위"),
+    "hhi": re.compile(r"(?:HHI\D{0,12}(?P<after>\d[\d,]*(?:\.\d+)?)|(?P<before>\d[\d,]*(?:\.\d+)?)\D{0,4}HHI)", re.IGNORECASE),
+}
 _MART_TERMS = ("매출", "점유율", "순위", "hhi", "성장률")
 _METRIC_FIELDS: dict[str, tuple[str, ...]] = {
     "매출": ("sales", "amount", "value"),
@@ -50,7 +68,7 @@ def apply_v4_gates(
         mart_results if mart_numeric_question else results,
         allowed_fields=metric_fields if mart_numeric_question else (),
     )
-    answer_numbers = set(_NUMBER_RE.findall(text))
+    answer_numbers = _answer_mart_metric_numbers(text, question)
     invented = sorted(token for token in answer_numbers if _normalize_number(token) not in allowed)
     if invented and mart_results and mart_numeric_question:
         text = _render_mart_facts(mart_results, allowed_fields=metric_fields)
@@ -120,6 +138,20 @@ def _requested_metric_fields(question: str) -> tuple[str, ...]:
         for field in field_names
     }
     return tuple(sorted(fields | set(_CONTEXT_FIELDS)))
+
+
+def _answer_mart_metric_numbers(text: str, question: str) -> set[str]:
+    lowered = question.casefold()
+    numbers: set[str] = set()
+    for metric, pattern in _MART_VALUE_PATTERNS.items():
+        if metric not in lowered:
+            continue
+        for match in pattern.finditer(text):
+            value = match.groupdict().get("value")
+            value = value or match.groupdict().get("after") or match.groupdict().get("before")
+            if value:
+                numbers.add(value)
+    return numbers
 
 
 def _payload_numbers(
@@ -242,14 +274,16 @@ def _append_sources(text: str, results: tuple[SourceResult, ...]) -> str:
                     continue
                 seen.add(key)
                 url = f" · {citation.url}" if citation.url else ""
+                reuse = " · 이전 조회 재사용" if result.cache_hit else ""
                 lines.append(
-                    f"- {citation.source} · 조회 {citation.retrieved_at.isoformat()} · {citation.query}{url}"
+                    f"- {citation.source} · 조회 {citation.retrieved_at.isoformat()} · {citation.query}{url}{reuse}"
                 )
         else:
             key = (result.source, None, result.query)
             if key not in seen:
                 seen.add(key)
-                lines.append(f"- {result.source} · {result.query}")
+                reuse = " · 이전 조회 재사용" if result.cache_hit else ""
+                lines.append(f"- {result.source} · {result.query}{reuse}")
     if not lines:
         lines.append("- 사용 가능한 출처를 확보하지 못했습니다.")
     return f"{text}\n\n## 출처\n" + "\n".join(lines)

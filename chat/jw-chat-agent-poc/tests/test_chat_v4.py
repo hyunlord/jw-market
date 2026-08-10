@@ -330,6 +330,70 @@ def test_v4_synthesizer_replaces_repeated_internal_block_and_adds_hira_footnote(
     assert "주상병 기준 청구 실인원" in answer
 
 
+@pytest.mark.parametrize(
+    "leak",
+    (
+        "ClinicalTrials MCP에서 받은 결과입니다.",
+        "MCP backend returned 결과입니다.",
+        "SICK_CD=D693",
+        "ITEM_SEQ: 200101234",
+        "12453782153.7원",
+    ),
+)
+def test_v4_surface_detects_broad_log_field_and_raw_won_patterns(leak: str) -> None:
+    assert _INTERNAL_SURFACE_RE.search(leak)
+
+
+def test_v4_synthesis_prompt_requires_structured_markdown_and_omits_record_fields() -> None:
+    result = SourceResult(
+        source="nedrug",
+        query="아일리아 급여기준",
+        status="ok",
+        payload={
+            "calls": [
+                {
+                    "render_data": {
+                        "ITEM_SEQ": "200101234",
+                        "ENTP_SEQ": "vendor-record",
+                        "PRDLST_STDR_CODE": "raw-code",
+                        "sickCd": "D693",
+                        "ptntCnt": "9231",
+                        "efficacy": "당뇨병성 황반부종 환자의 시력 개선",
+                        "notice": "다운로드 후 담당부서로 연락주시기 바랍니다.",
+                    }
+                }
+            ]
+        },
+    )
+
+    messages = v4_synthesizer._synthesis_messages(_plan(), (result,), ())
+    serialized = messages[-1]["content"]
+    system = messages[0]["content"]
+
+    assert "ITEM_SEQ" not in serialized
+    assert "ENTP_SEQ" not in serialized
+    assert "PRDLST_STDR_CODE" not in serialized
+    assert "sickCd" not in serialized
+    assert "ptntCnt" not in serialized
+    assert "담당부서로 연락" not in serialized
+    assert "## 핵심 답" in system
+    assert "한 문단은 최대 4문장" in system
+
+
+def test_v4_synthesis_payload_has_a_bounded_character_budget() -> None:
+    huge = "허가사항 본문 " * 20_000
+    result = SourceResult(
+        source="nedrug",
+        query="아일리아 효능효과",
+        status="ok",
+        payload={"calls": [{"render_data": {"efficacy": huge}} for _ in range(30)]},
+    )
+
+    messages = v4_synthesizer._synthesis_messages(_plan(), (result,), ())
+
+    assert len(messages[-1]["content"]) <= 30_000
+
+
 def test_v4_synthesizer_labels_scope_and_excludes_web_without_body() -> None:
     class Client:
         def __init__(self) -> None:
@@ -633,6 +697,85 @@ def test_planner_does_not_outer_retry_transport_failures() -> None:
     assert output.linking_plan == "planner fallback; no second hop: planner transport timed out"
 
 
+def test_planner_detailed_trace_keeps_usage_and_corrects_obvious_answer_source() -> None:
+    class Client:
+        serving_id = "190"
+
+        def complete_detailed(self, _messages, *, budget_s, max_tokens):
+            assert budget_s > 0
+            assert max_tokens > 0
+            return v4_llm.CompletionResult(
+                text=_plan().model_copy(
+                    update={"answer_sources": ("hira", "mart", "web")}
+                ).model_dump_json(),
+                finish_reason="stop",
+                usage={
+                    "prompt_tokens": 120,
+                    "completion_tokens": 30,
+                    "completion_tokens_details": {"reasoning_tokens": 11},
+                },
+                elapsed_ms=1250.0,
+            )
+
+    outcome = V4Planner(Client()).plan_with_trace(
+        "D693 상병 환자수 최근 5년",
+        (),
+    )
+
+    assert outcome.plan.answer_sources == ("hira",)
+    assert outcome.trace["usage"] == {
+        "input_tokens": 120,
+        "output_tokens": 30,
+        "thinking_tokens": 11,
+    }
+    assert outcome.trace["elapsed_ms"] == 1250.0
+
+
+def test_planner_limits_first_wave_to_one_query_per_source() -> None:
+    class Client:
+        serving_id = "190"
+
+        def complete_detailed(self, _messages, *, budget_s, max_tokens):
+            plan = _plan().model_copy(
+                update={
+                    "tool_queries": ToolQueries(
+                        **{
+                            source: (f"{source} primary", f"{source} duplicate")
+                            for source in SOURCE_NAMES
+                        }
+                    )
+                }
+            )
+            return v4_llm.CompletionResult(
+                text=plan.model_dump_json(),
+                finish_reason="stop",
+                usage={},
+                elapsed_ms=10.0,
+            )
+
+    outcome = V4Planner(Client()).plan_with_trace("리바로 요즘 어때", ())
+
+    assert all(len(queries) == 1 for _, queries in outcome.plan.tool_queries.items())
+
+
+def test_planner_fallback_trace_is_non_null_when_transport_fails() -> None:
+    class Client:
+        serving_id = "190"
+
+        def complete_detailed(self, _messages, *, budget_s, max_tokens):
+            raise requests.Timeout("planner transport timed out")
+
+    outcome = V4Planner(Client()).plan_with_trace("리바로 요즘 어때", ())
+
+    assert outcome.plan.linking_plan.startswith("planner fallback;")
+    assert outcome.trace["usage"] == {
+        "input_tokens": None,
+        "output_tokens": None,
+        "thinking_tokens": None,
+    }
+    assert outcome.trace["status"] == "fallback"
+
+
 def test_runtime_marks_successful_citations_used() -> None:
     plan = _plan()
 
@@ -746,6 +889,203 @@ def test_runtime_exposes_synthesizer_usage_metadata() -> None:
     assert answer.trace["synthesizer"]["usage"]["completion_tokens"] == 20
 
 
+def test_runtime_exposes_normalized_usage_and_stage_breakdown() -> None:
+    plan = _plan()
+
+    class Planner:
+        serving_id = "190"
+
+        def plan_with_trace(self, _question, _turns, *, budget_s):
+            return SimpleNamespace(
+                plan=plan,
+                trace={
+                    "status": "ok",
+                    "elapsed_ms": 12.0,
+                    "usage": {
+                        "input_tokens": 10,
+                        "output_tokens": 2,
+                        "thinking_tokens": 1,
+                    },
+                },
+            )
+
+        def link(self, *_args, **_kwargs):
+            return None
+
+    class Executor:
+        def execute_with_trace(self, _plan, **_kwargs):
+            return SimpleNamespace(
+                results=(),
+                trace={
+                    "elapsed_ms": 25.0,
+                    "quorum_fired": True,
+                    "quorum_fire_ms": 6.0,
+                    "tools": [],
+                },
+            )
+
+    class Synthesizer:
+        def synthesize_with_trace(self, _plan, _results, _turns, *, budget_s):
+            return v4_synthesizer.SynthesisOutcome(
+                text="근거 기반 답변",
+                trace={
+                    "finish_reason": "stop",
+                    "usage": {
+                        "prompt_tokens": 100,
+                        "completion_tokens": 20,
+                        "completion_tokens_details": {"reasoning_tokens": 7},
+                    },
+                    "elapsed_ms": 30.0,
+                },
+            )
+
+    answer = V4Runtime(
+        planner=Planner(),
+        executor=Executor(),
+        synthesizer=Synthesizer(),
+    ).answer("질문", conversation_id="usage-stage-trace", turns=())
+
+    assert answer.trace["planner_usage"]["input_tokens"] == 10
+    assert answer.trace["synth_usage"] == {
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "thinking_tokens": 7,
+        "finish_reason": "stop",
+    }
+    assert answer.timing["planner_elapsed_ms"] == 12.0
+    assert answer.timing["wave_elapsed_ms"] == 25.0
+    assert answer.timing["synth_elapsed_ms"] == 30.0
+    assert answer.trace["execution"]["quorum_fired"] is True
+
+
+def test_runtime_reuses_prior_table_results_for_reference_followup() -> None:
+    plan = _plan().model_copy(
+        update={
+            "resolved_question": "리바로 순위 알려줘",
+            "answer_sources": ("mart",),
+        }
+    )
+
+    class Planner:
+        serving_id = "190"
+
+        def plan_with_trace(self, _question, _turns, *, budget_s):
+            return SimpleNamespace(
+                plan=plan,
+                trace={"elapsed_ms": 1.0, "usage": {}},
+            )
+
+        def link(self, *_args, **_kwargs):
+            return None
+
+    class Executor:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def execute_with_trace(self, _plan, **_kwargs):
+            self.calls += 1
+            return SimpleNamespace(
+                results=(
+                    SourceResult(
+                        source="mart",
+                        query="리바로 순위",
+                        status="ok",
+                        payload={"rank": 6},
+                    ),
+                ),
+                trace={"elapsed_ms": 2.0, "tools": []},
+            )
+
+    class Synthesizer:
+        def synthesize_with_trace(self, _plan, results, _turns, *, budget_s):
+            assert results[0].payload["rank"] == 6
+            return v4_synthesizer.SynthesisOutcome(
+                text="리바로는 전략시장 내 6위입니다.",
+                trace={"elapsed_ms": 3.0, "usage": {}},
+            )
+
+    executor = Executor()
+    runtime = V4Runtime(
+        planner=Planner(),
+        executor=executor,
+        synthesizer=Synthesizer(),
+    )
+
+    runtime.answer("리바로 순위 알려줘", conversation_id="multi-1", turns=())
+    followup = runtime.answer(
+        "아까 그 순위 몇 위랬지?",
+        conversation_id="multi-1",
+        turns=(),
+    )
+
+    assert executor.calls == 1
+    assert followup.trace["execution"]["session_result_reused"] is True
+    assert followup.trace["tool_results"][0]["cache_hit"] is True
+    assert "이전 조회 재사용" in followup.text
+
+
+def test_runtime_does_not_reuse_prior_results_for_a_different_answer_source() -> None:
+    mart_plan = _plan().model_copy(
+        update={"resolved_question": "리바로 순위", "answer_sources": ("mart",)}
+    )
+    safety_plan = _plan(openfda=("리바로 이상사례",)).model_copy(
+        update={
+            "resolved_question": "리바로 이상사례",
+            "answer_sources": ("openfda",),
+        }
+    )
+
+    class Planner:
+        serving_id = "190"
+
+        def plan_with_trace(self, question, _turns, *, budget_s):
+            plan = safety_plan if "이상사례" in question else mart_plan
+            return SimpleNamespace(plan=plan, trace={"elapsed_ms": 1.0, "usage": {}})
+
+        def link(self, *_args, **_kwargs):
+            return None
+
+    class Executor:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def execute_with_trace(self, plan, **_kwargs):
+            source = plan.answer_sources[0]
+            self.calls.append(source)
+            return SimpleNamespace(
+                results=(
+                    SourceResult(
+                        source=source,
+                        query=f"{source} query",
+                        status="ok",
+                        payload={"source": source},
+                    ),
+                ),
+                trace={"elapsed_ms": 2.0, "tools": []},
+            )
+
+    class Synthesizer:
+        def synthesize_with_trace(self, planned, results, _turns, *, budget_s):
+            if planned.answer_sources == ("openfda",):
+                assert any(result.source == "openfda" for result in results)
+            return v4_synthesizer.SynthesisOutcome(
+                text="FDA 이상사례 근거를 확인했습니다.",
+                trace={"elapsed_ms": 3.0, "usage": {}},
+            )
+
+    executor = Executor()
+    runtime = V4Runtime(
+        planner=Planner(), executor=executor, synthesizer=Synthesizer()
+    )
+    runtime.answer("리바로 순위", conversation_id="multi-source", turns=())
+    followup = runtime.answer(
+        "아까 그 약 이상사례는?", conversation_id="multi-source", turns=()
+    )
+
+    assert executor.calls == ["mart", "openfda"]
+    assert followup.trace["execution"]["session_result_reused"] is False
+
+
 def test_runtime_runs_at_most_one_linking_hop() -> None:
     first_plan = _plan().model_copy(update={"needs_second_hop": True})
     linked_plan = _plan(web=("linked entity query",))
@@ -818,6 +1158,74 @@ def test_v4_gates_keep_mart_numbers_copy_only_and_require_sources() -> None:
     assert "85.87" in gated.text
     assert "## 출처" in gated.text
     assert gated.trace["mart_numeric_copy_only"]["blocked"] is True
+
+
+@pytest.mark.parametrize(
+    ("question", "answer"),
+    (
+        ("리바로 매출 알려줘", "리바로 매출은 99.99억입니다."),
+        ("리바로 매출 알려줘", "리바로 매출은 KRW 9,999입니다."),
+        ("리바로 점유율 알려줘", "리바로 점유율은 99.99입니다."),
+        ("리바로 성장률 알려줘", "리바로 성장률은 99.99입니다."),
+    ),
+)
+def test_v4_gates_reject_invented_mart_numbers_with_implicit_units(
+    question: str,
+    answer: str,
+) -> None:
+    results = (
+        SourceResult(
+            source="mart",
+            query=question,
+            status="ok",
+            payload={
+                "sales_eok": 85.87,
+                "share_pct": 3.72,
+                "growth_pct": 4.1,
+                "source": "UBIST",
+            },
+        ),
+    )
+
+    gated = apply_v4_gates(question, answer, results)
+
+    assert "99.99" not in gated.text
+    assert "9,999" not in gated.text
+    assert gated.trace["mart_numeric_copy_only"]["blocked"] is True
+
+
+def test_v4_gates_keep_synthesized_mart_prose_with_non_metric_numbers() -> None:
+    results = (
+        SourceResult(
+            source="mart",
+            query="리바로 매출",
+            status="ok",
+            payload={
+                "calls": [
+                    {
+                        "summary_text": "리바로 2026-06 매출은 85.87억원입니다.",
+                        "render_data": {
+                            "period": "2026-06",
+                            "sales_억원": 85.87,
+                        },
+                    }
+                ]
+            },
+        ),
+    )
+    answer = (
+        "## 핵심 답\n"
+        "리바로의 2026년 6월 매출은 85.87억원입니다. [출처: 내부 데이터마트]\n\n"
+        "## 종합 인사이트\n"
+        "2025년 이후 흐름은 추가 기간 자료와 함께 해석해야 합니다.\n\n"
+        "## 출처\n- 내부 데이터마트"
+    )
+
+    gated = apply_v4_gates("리바로 매출 알려줘", answer, results)
+
+    assert gated.trace["mart_numeric_copy_only"]["blocked"] is False
+    assert "## 핵심 답" in gated.text
+    assert "종합 인사이트" in gated.text
 
 
 def test_v4_gates_render_verified_mart_summary_instead_of_raw_fields() -> None:

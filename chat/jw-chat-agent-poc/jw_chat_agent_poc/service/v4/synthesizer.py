@@ -12,9 +12,11 @@ from jw_chat_agent_poc.service.v4.llm import CompletionResult, GenOSV4Client
 
 
 _INTERNAL_SURFACE_RE = re.compile(
-    r"MCP\s+returned|\btotalCount\b|\bslot[_ -]?id\b|"
+    r"MCP(?:[^가-힣\n]{0,80})?(?:에서|returned|결과)|\btotalCount\b|\bslot[_ -]?id\b|"
     r"\b(?:sickCd|ptntCnt|value)\b|"
     r"\b\d{7,}(?:\.\d+)?\s*KRW(?![A-Za-z])|"
+    r"\b\d{7,}(?:\.\d+)?\s*원\b|"
+    r"\b[A-Z][A-Z0-9_]{2,}\s*[:=]\s*[^\s,;]+|"
     r"\b(?:hira|clinicaltrials|mfds|openfda|tavily)_[a-z0-9_]+\b|"
     r"(?:\bNCT\d{8}\b\s*[,/]\s*)+\bNCT\d{8}\b",
     re.IGNORECASE,
@@ -43,7 +45,22 @@ _FOOTNOTES = {
     "clinicaltrials": "ClinicalTrials.gov 모집상태는 갱신이 지연될 수 있습니다.",
     "patent": "특허 존속기간 만료가 곧 제네릭 진입 시점을 뜻하지 않습니다.",
 }
-_DROP_KEYS = frozenset({"tool", "summary_text", "mcp", "totalCount", "elapsed_ms"})
+_DROP_KEYS = frozenset(
+    {
+        "tool",
+        "summary_text",
+        "mcp",
+        "totalcount",
+        "elapsed_ms",
+        "sickcd",
+        "ptntcnt",
+        "value",
+        "item_seq",
+        "entp_seq",
+        "prdlst_stdr_code",
+    }
+)
+_BOILERPLATE_RE = re.compile(r"다운로드|담당부서.{0,20}연락|로그인|구독", re.IGNORECASE)
 @dataclass(frozen=True)
 class SynthesisOutcome:
     text: str
@@ -77,13 +94,13 @@ class V4Synthesizer:
         *,
         budget_s: float = 24.0,
     ) -> SynthesisOutcome:
-        usable = tuple(
+        usable = _select_usable_results(plan, tuple(
             result
             for result in results
             if result.status == "ok"
             and _entity_match(result) != "MISMATCH"
             and (result.source != "web" or _web_has_citable_body(result.payload))
-        )
+        ))
         if not usable:
             return SynthesisOutcome(
                 text="이번 조회에서 확인된 근거가 없어 구체적인 답을 구성하지 못했습니다.",
@@ -220,10 +237,12 @@ def _synthesis_messages(
                 "한국어 줄글로 작성한다. 사실은 '~로 확인되었습니다' 또는 '~입니다'로 쓰고 문장 끝에 [출처: X]를 "
                 "붙인다. 해석은 '~로 해석될 수 있습니다' 또는 '~할 것으로 추정됩니다'로 구분하며 근거에 없는 숫자를 "
                 "만들지 않는다. 못 찾은 부분만 마지막 한 줄에 적는다. 내부 도구명, MCP 상태 문구, totalCount, slot id, "
-                "식별자 목록을 노출하지 않는다. <INTERNAL_DATAMART> 안의 숫자와 표기는 한 글자도 바꾸지 않는다. "
+                "식별자 목록과 대문자 레코드 필드명을 노출하지 않는다. <INTERNAL_DATAMART> 안의 숫자와 표기는 한 글자도 바꾸지 않는다. "
                 "단위 환산, 반올림, 계산, 합산을 금지하며 UBIST와 IQVIA를 합산하지 않는다. MISMATCH 근거는 이미 "
-                "제외됐고 PARTIAL, US, 기간 불일치는 한계를 본문에 명시한다. 출력은 핵심 답, 근거와 맥락, 종합 "
-                "인사이트, 미확인 요소 순서로 구성하되 불필요한 고정 제목은 쓰지 않는다."
+                "제외됐고 PARTIAL, US, 기간 불일치는 한계를 본문에 명시한다. 반드시 `## 핵심 답`, `## 근거와 맥락`, "
+                "`## 종합 인사이트`, `## 미확인 요소`, `## 출처`의 마크다운 소제목으로 구성한다. 한 문단은 최대 4문장으로 "
+                "쓰고, 고시·허가사항은 투여대상·제외기준·투여방법·투여횟수처럼 의미 단위 불릿으로 요약한다. "
+                "웹페이지 안내문이나 원문 레코드를 통째로 복사하지 않는다."
             ),
         },
         {
@@ -269,14 +288,14 @@ def _public_payload(payload: Any) -> Any:
                     {
                         key: _public_payload(value)
                         for key, value in call.items()
-                        if key not in _DROP_KEYS and value not in (None, "", [], {})
+                        if _public_key(str(key)) and value not in (None, "", [], {})
                     }
                 )
             return {"calls": calls}
         return {
             str(key): _public_payload(value)
             for key, value in payload.items()
-            if key not in _DROP_KEYS
+            if _public_key(str(key))
         }
     if isinstance(payload, (list, tuple)):
         return [_public_payload(value) for value in payload]
@@ -289,15 +308,50 @@ def _bounded_value(value: Any, *, query: str, depth: int = 0) -> Any:
     if isinstance(value, Mapping):
         return {
             str(key): _bounded_value(item, query=query, depth=depth + 1)
-            for key, item in value.items()
+            for key, item in tuple(value.items())[:16]
         }
     if isinstance(value, list):
         matching = [item for item in value if _matches_requested_anchor(item, query)]
         selected = matching + [item for item in value if item not in matching]
-        return [_bounded_value(item, query=query, depth=depth + 1) for item in selected[:20]]
-    if isinstance(value, str) and len(value) > 4000:
-        return value[:4000] + " [excerpt]"
+        return [_bounded_value(item, query=query, depth=depth + 1) for item in selected[:4]]
+    if isinstance(value, str) and _BOILERPLATE_RE.search(value):
+        return "[안내문 제외]"
+    if isinstance(value, str) and len(value) > 1200:
+        return value[:1200] + " [excerpt]"
     return value
+
+
+def _public_key(key: str) -> bool:
+    return key.casefold() not in _DROP_KEYS and re.fullmatch(r"[A-Z][A-Z0-9_]{2,}", key) is None
+
+
+def _select_usable_results(
+    plan: PlannerOutput,
+    results: tuple[SourceResult, ...],
+) -> tuple[SourceResult, ...]:
+    selected: list[SourceResult] = []
+    counts: dict[str, int] = {}
+    for result in sorted(
+        results,
+        key=lambda item: (item.source not in plan.answer_sources, SOURCE_ORDER[item.source]),
+    ):
+        limit = 2 if result.source in plan.answer_sources else 1
+        if counts.get(result.source, 0) >= limit:
+            continue
+        counts[result.source] = counts.get(result.source, 0) + 1
+        selected.append(result)
+    return tuple(selected)
+
+
+SOURCE_ORDER = {
+    "mart": 0,
+    "nedrug": 1,
+    "hira": 2,
+    "openfda": 3,
+    "clinicaltrials": 4,
+    "web": 5,
+    "patent": 6,
+}
 
 
 def _matches_requested_anchor(value: Any, query: str) -> bool:

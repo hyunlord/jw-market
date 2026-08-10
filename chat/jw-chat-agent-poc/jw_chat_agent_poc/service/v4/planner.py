@@ -4,15 +4,23 @@ import json
 import re
 import time
 from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import Any
 
 import requests
 
 from jw_chat_agent_poc.service.conversation import ConversationTurn
 from jw_chat_agent_poc.service.v4.contracts import PlannerOutput, SourceName, SourceResult, ToolQueries
-from jw_chat_agent_poc.service.v4.llm import GenOSV4Client
+from jw_chat_agent_poc.service.v4.llm import CompletionResult, GenOSV4Client
 
 
 _JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class PlannerOutcome:
+    plan: PlannerOutput
+    trace: dict[str, Any]
 
 
 class V4Planner:
@@ -30,26 +38,69 @@ class V4Planner:
         *,
         budget_s: float = 10.0,
     ) -> PlannerOutput:
+        return self.plan_with_trace(question, turns, budget_s=budget_s).plan
+
+    def plan_with_trace(
+        self,
+        question: str,
+        turns: Sequence[ConversationTurn],
+        *,
+        budget_s: float = 10.0,
+    ) -> PlannerOutcome:
         messages = _planner_messages(question, turns)
         error: Exception | None = None
         deadline = time.monotonic() + max(1.0, budget_s)
+        started = time.monotonic()
+        completion: CompletionResult | None = None
         for attempt in range(2):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
             try:
-                raw = self._client.complete(
-                    messages
-                    + ([{"role": "system", "content": "The prior output was invalid. Return only valid JSON matching the schema."}] if attempt else []),
-                    budget_s=remaining,
+                attempt_messages = messages + (
+                    [{"role": "system", "content": "The prior output was invalid. Return only valid JSON matching the schema."}]
+                    if attempt
+                    else []
                 )
-                return _parse_plan(raw)
+                detailed = getattr(self._client, "complete_detailed", None)
+                if callable(detailed):
+                    completion = detailed(
+                        attempt_messages,
+                        budget_s=remaining,
+                        max_tokens=4096,
+                    )
+                    raw = completion.text
+                else:
+                    raw = self._client.complete(attempt_messages, budget_s=remaining)
+                plan = _parse_plan(raw)
+                plan = _limit_first_wave_queries(plan)
+                direct_sources = _direct_answer_sources(question)
+                if direct_sources:
+                    plan = plan.model_copy(update={"answer_sources": direct_sources})
+                return PlannerOutcome(
+                    plan=plan,
+                    trace={
+                        "status": "ok",
+                        "elapsed_ms": completion.elapsed_ms if completion else (time.monotonic() - started) * 1000,
+                        "finish_reason": completion.finish_reason if completion else None,
+                        "usage": _normalized_usage(completion.usage if completion else {}),
+                    },
+                )
             except requests.RequestException as exc:
                 error = exc
                 break
             except (ValueError, json.JSONDecodeError) as exc:
                 error = exc
-        return _fallback_plan(question, turns, reason=str(error or "planner returned no JSON"))
+        return PlannerOutcome(
+            plan=_fallback_plan(question, turns, reason=str(error or "planner returned no JSON")),
+            trace={
+                "status": "fallback",
+                "elapsed_ms": (time.monotonic() - started) * 1000,
+                "finish_reason": completion.finish_reason if completion else None,
+                "usage": _normalized_usage(completion.usage if completion else {}),
+                "error_type": type(error).__name__ if error else "InvalidPlannerOutput",
+            },
+        )
 
     def link(
         self,
@@ -129,6 +180,19 @@ def _parse_plan(raw: str) -> PlannerOutput:
     return PlannerOutput.model_validate_json(cleaned[start : end + 1])
 
 
+def _limit_first_wave_queries(plan: PlannerOutput) -> PlannerOutput:
+    return plan.model_copy(
+        update={
+            "tool_queries": ToolQueries(
+                **{
+                    source: (queries[0],)
+                    for source, queries in plan.tool_queries.items()
+                }
+            )
+        }
+    )
+
+
 def _fallback_plan(
     question: str,
     turns: Sequence[ConversationTurn],
@@ -166,3 +230,34 @@ def _fallback_answer_sources(question: str) -> tuple[SourceName, ...]:
     if any(token in lowered for token in ("매출", "점유율", "순위", "성장", "경쟁")):
         return ("mart",)
     return ("web",)
+
+
+def _direct_answer_sources(question: str) -> tuple[SourceName, ...]:
+    lowered = question.casefold()
+    if any(token in lowered for token in ("환자", "상병", "급여")):
+        return ("hira",)
+    if any(token in lowered for token in ("효능", "효과", "허가", "성분", "제네릭", "바이오시밀러")):
+        return ("nedrug",)
+    if any(token in lowered for token in ("nct", "임상", "신약 개발", "시험 디자인", "선정", "제외기준")):
+        return ("clinicaltrials",)
+    if "특허" in lowered:
+        return ("patent",)
+    if any(token in lowered for token in ("매출", "점유율", "순위", "성장", "경쟁", "시장", "요즘")):
+        return ("mart",)
+    if any(token in lowered for token in ("안전성", "부작용", "이상사례")):
+        return ("openfda",)
+    return ()
+
+
+def _normalized_usage(usage: dict[str, object]) -> dict[str, int | None]:
+    details = usage.get("completion_tokens_details")
+    details = details if isinstance(details, dict) else {}
+    return {
+        "input_tokens": _optional_int(usage.get("prompt_tokens")),
+        "output_tokens": _optional_int(usage.get("completion_tokens")),
+        "thinking_tokens": _optional_int(details.get("reasoning_tokens")),
+    }
+
+
+def _optional_int(value: object) -> int | None:
+    return int(value) if isinstance(value, int | float) else None
