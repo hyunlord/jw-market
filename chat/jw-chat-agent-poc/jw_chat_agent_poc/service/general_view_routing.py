@@ -836,7 +836,13 @@ def _contract(
     if general_view_intent:
         contract["general_view_intent"] = general_view_intent
         contract["chart_payloads"] = chart_payloads
-        for key in ("requested_metrics", "rendered_metrics", "dropped_metrics", "reason_codes"):
+        for key in (
+            "competitor_rows",
+            "requested_metrics",
+            "rendered_metrics",
+            "dropped_metrics",
+            "reason_codes",
+        ):
             if key in projection_data:
                 contract[key] = projection_data[key]
         if general_view_intent == "CAUSE_ANALYSIS":
@@ -1206,13 +1212,21 @@ def _competitor_metric_projection(
         "section_markdown": "\n\n".join(parts),
         "competitor_rows": [
             {
-                "rank": row.rank,
+                "rank": source_row.rank or index,
                 "brand": row.brand,
-                "share": row.share,
-                "sales": row.sales,
-                "growth": row.metric_values.get(CanonicalMetric.GROWTH) or None,
+                "share_pct": source_row.share_pct,
+                "sales_krw": source_row.value,
+                "growth_pct": source_row.growth_pct,
+                "growth_start_period": source_row.growth_start_period,
+                "growth_end_period": source_row.growth_end_period,
+                "period": market.period,
+                "view_type": "general_view",
+                "market_id": market.atc4_code,
             }
-            for row in rows
+            for index, (row, source_row) in enumerate(
+                zip(rows, market.top_brands[:5], strict=True),
+                1,
+            )
         ],
         "requested_metrics": [metric.value for metric in requested_metrics],
         "rendered_metrics": [
@@ -1806,7 +1820,10 @@ def _asks_market_metric(normalized: str) -> bool:
 
 
 def _asks_general_brand_metric(normalized: str) -> bool:
-    return any(token in normalized for token in ("매출", "실적", "점유율", "추이", "순위", "시장"))
+    return any(
+        token in normalized
+        for token in ("매출", "실적", "점유율", "추이", "순위", "시장", "성장률", "증감률", "성장", "yoy")
+    )
 
 
 def _asks_general_market_competition(normalized: str) -> bool:

@@ -333,10 +333,20 @@ def _trusted_internal_payload(result: Mapping[str, Any]) -> str:
         for call in calls:
             if not isinstance(call, Mapping) or _call_failed(call):
                 continue
+            render_data = call.get("render_data")
             source_text = " ".join(
                 str(call.get(key) or "")
                 for key in ("source", "source_name", "tool", "data_source")
             ).upper()
+            if isinstance(render_data, Mapping):
+                source_text = " ".join(
+                    (
+                        source_text,
+                        str(render_data.get("source") or ""),
+                        str(render_data.get("source_name") or ""),
+                        str(render_data.get("data_source") or ""),
+                    )
+                ).upper()
             if any(source in source_text for source in _TRUSTED_INTERNAL_SOURCES):
                 trusted_calls.append(_numeric_call_payload(call))
     control = result.get("_answer_control_layer")

@@ -68,6 +68,17 @@ def enforce_market_answer_contract(
     relevant_calls = _calls_matching_question(question, calls)
     successful_relevant_calls = tuple(call for call in relevant_calls if not _call_failed(call))
     contract_calls = successful_relevant_calls or relevant_calls
+    if any(
+        str(call.get("tool") or "") == "general_view_dynamic_market"
+        and isinstance(_render_data(call).get("competitor_rows"), list)
+        and bool(_render_data(call).get("competitor_rows"))
+        for call in contract_calls
+    ):
+        return _replace_provenance(
+            question,
+            _public_language(question, answer),
+            contract_calls,
+        )
     postcheck_answer = _strategy_market_size_postcheck(question, relevant_calls)
     if postcheck_answer:
         return _public_language(question, postcheck_answer)

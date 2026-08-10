@@ -54,7 +54,9 @@ def _uses_iqvia(contract: dict[str, Any]) -> bool:
 def _section_present(answer: str, section: str) -> bool:
     if section in answer:
         return True
-    _, separator, body = section.partition("\n")
+    heading, separator, body = section.partition("\n")
+    if heading.strip() and any(line.strip() == heading.strip() for line in answer.splitlines()):
+        return True
     return bool(separator and body.strip() and body.strip() in answer)
 
 

@@ -877,6 +877,25 @@ def test_general_view_competitor_growth_uses_ranked_mart_rows() -> None:
     assert "전략뷰와 시장 정의·분모가 다릅니다" in answer
 
 
+def test_general_view_competitor_growth_survives_final_binding() -> None:
+    service = _iqvia_intent_service()
+    question = "아일리아 경쟁사 성장률 표"
+    result = service.answer(question, compact=False, dual=False)
+
+    final = service_app.compute_final_answer(question, result, "general-competitor-binding")
+
+    assert final.text.count("## 일반뷰 (ATC4)") == 1
+    assert final.text.count("| 순위 | 브랜드 | 점유율 | 매출 | 성장률(YoY, 2026-Q1 대비 2025-Q1) |") == 1
+    assert final.text.count("| 1위 | 아일리아 | 24.00% | 218.70억원 | 21.50% |") == 1
+    assert final.text.count("| 5위 | 아바스틴 | 7.00% | 63.75억원 | 2.50% |") == 1
+    assert final.trace["numeric_copy_contract"] == {
+        "requested_metrics": ["growth"],
+        "rendered_metrics": ["growth"],
+        "dropped_metrics": [],
+        "reason_codes": [],
+    }
+
+
 def test_general_view_competitor_growth_reports_missing_source_exactly() -> None:
     service = _iqvia_intent_service()
     market = service._backend.market_map["S01P0"]  # type: ignore[attr-defined]
@@ -1025,6 +1044,7 @@ class GeneralOnlyResolvingMembership(StrategicMembership):
     (
         "아일리아 매출 알려줘",
         "아일리아 최근 추이",
+        "아일리아 경쟁사 성장률 표",
         "아일리아 경쟁 순위 기타 포함 제품 목록",
         "아일리아 시장 브랜드",
         "아일리아 시장 기타 브랜드",

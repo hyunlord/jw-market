@@ -313,6 +313,14 @@ def _structured_facts(call: dict[str, Any], offset: int) -> list[EvidenceFact]:
             tool=tool,
         )
     )
+    facts.extend(
+        _competitor_row_facts(
+            data,
+            offset=offset + len(facts),
+            source=source,
+            tool=tool,
+        )
+    )
     facts = _bind_derived_operands(facts)
     facts.extend(
         _hira_facts(
@@ -322,6 +330,76 @@ def _structured_facts(call: dict[str, Any], offset: int) -> list[EvidenceFact]:
             tool=tool,
         )
     )
+    return facts
+
+
+def _competitor_row_facts(
+    data: dict[str, Any],
+    *,
+    offset: int,
+    source: str,
+    tool: str,
+) -> list[EvidenceFact]:
+    rows = data.get("competitor_rows")
+    if not isinstance(rows, list):
+        return []
+    default_period = str(data.get("period") or "")
+    default_view = str(data.get("view_type") or data.get("view") or "general_view")
+    default_market_id = str(data.get("market_id") or data.get("atc4_code") or "")
+    source_grade = grade_evidence_source(tool=tool, source=source).value
+    facts: list[EvidenceFact] = []
+    for row_index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        entity = str(row.get("brand") or "").strip()
+        if not entity:
+            continue
+        period = str(row.get("period") or default_period)
+        view = str(row.get("view_type") or default_view)
+        market_id = str(row.get("market_id") or default_market_id)
+        growth_period = "~".join(
+            item
+            for item in (
+                str(row.get("growth_start_period") or ""),
+                str(row.get("growth_end_period") or ""),
+            )
+            if item
+        )
+        values = (
+            ("순위", rank_value(row.get("rank"), None), "rank", "순위", "위", period),
+            ("시장점유율", pct_value(row.get("share_pct")), "share_pct", "시장점유율", "%", period),
+            ("매출", eok_value(None, row.get("sales_krw")), "sales_krw", "매출", "억원", period),
+            (
+                "성장률",
+                pct_value(row.get("growth_pct")),
+                "growth_pct",
+                "매출 변화율",
+                "%",
+                growth_period or period,
+            ),
+        )
+        for label, value, field, metric, unit, fact_period in values:
+            if not value:
+                continue
+            facts.append(
+                _fact(
+                    offset + len(facts),
+                    label=label,
+                    value=value,
+                    source=source,
+                    tool=tool,
+                    path=f"render_data.competitor_rows[{row_index}].{field}",
+                    period=fact_period,
+                    visible=True,
+                    entity=entity,
+                    metric=metric,
+                    unit=unit,
+                    source_grade=source_grade,
+                    view=view,
+                    market_id=market_id,
+                    market_scope_capable=True,
+                )
+            )
     return facts
 
 
