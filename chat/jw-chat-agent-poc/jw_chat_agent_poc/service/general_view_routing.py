@@ -16,8 +16,13 @@ from jw_chat_agent_poc.agent_loop.structured_planner import structured_metric_ow
 from jw_chat_agent_poc.common.periods import requested_period
 from jw_chat_agent_poc.common.qa_trace import attach_tool_qa_trace, qa_trace_started_at
 from jw_chat_agent_poc.orchestrator.answer_projection import apply_answer_control_layer
-from jw_chat_agent_poc.orchestrator.markdown_renderers import market_members_md
+from jw_chat_agent_poc.orchestrator.markdown_renderers import (
+    CompetitorTableRow,
+    competitor_table_md,
+    market_members_md,
+)
 from jw_chat_agent_poc.orchestrator.markdown_formatting import number_value
+from jw_chat_agent_poc.orchestrator.query_spec import CanonicalMetric, canonical_metrics_for_question
 from jw_chat_agent_poc.resolver.catalog_membership import MariaDbCatalogMembershipReader
 from jw_chat_agent_poc.tools.general_view_backend import (
     AtcCandidate,
@@ -776,7 +781,14 @@ def _contract(
             )
         else:
             general_view_intent, projection_question, projection_data, chart_payloads = projection
-            if general_view_intent == "CAUSE_ANALYSIS":
+            custom_section = projection_data.get("section_markdown")
+            if isinstance(custom_section, str) and custom_section:
+                section = (
+                    "## 일반뷰 (ATC4)\n\n"
+                    f"{_general_view_metadata(market, window)}\n\n"
+                    f"{custom_section}"
+                )
+            elif general_view_intent == "CAUSE_ANALYSIS":
                 section = _cause_markdown(projection_data)
             else:
                 controlled = apply_answer_control_layer(
@@ -824,6 +836,9 @@ def _contract(
     if general_view_intent:
         contract["general_view_intent"] = general_view_intent
         contract["chart_payloads"] = chart_payloads
+        for key in ("requested_metrics", "rendered_metrics", "dropped_metrics", "reason_codes"):
+            if key in projection_data:
+                contract[key] = projection_data[key]
         if general_view_intent == "CAUSE_ANALYSIS":
             contract["contract_id"] = "CAUSE_ANALYSIS"
             contract["dashboard_tables"] = projection_data["dashboard_tables"]
@@ -880,6 +895,8 @@ def _general_view_projection(
     if intent == "MARKET_SIZE_TREND":
         return _market_size_projection(market, question)
     if intent == "BRAND_TREND":
+        if "경쟁" in question:
+            return _competitor_metric_projection(market, question)
         return _brand_trend_projection(market, question)
     if intent == "MARKET_CONCENTRATION":
         return _concentration_projection(market)
@@ -1128,6 +1145,83 @@ def _brand_trend_projection(
         "contract_id": "C1",
         "source_results": [row] if points else [],
         "evidence_refs": [evidence_ref],
+        "chart_payloads": [],
+    }
+    return "BRAND_TREND", question, data, []
+
+
+def _competitor_metric_projection(
+    market: GeneralMarket,
+    question: str,
+) -> tuple[str, str, dict[str, Any], list[dict[str, Any]]]:
+    requested_metrics = canonical_metrics_for_question(question)
+    growth_periods = {
+        (row.growth_start_period, row.growth_end_period)
+        for row in market.top_brands[:5]
+        if row.growth_pct is not None and row.growth_start_period and row.growth_end_period
+    }
+    growth_label = "성장률(YoY)"
+    if len(growth_periods) == 1:
+        start, end = next(iter(growth_periods))
+        growth_label = f"성장률(YoY, {end} 대비 {start})"
+    rows = tuple(
+        CompetitorTableRow(
+            rank=f"{row.rank or index}위",
+            brand=row.brand,
+            share=f"{row.share_pct:.2f}%" if row.share_pct is not None else "확인 불가",
+            sales=f"{row.value / 100_000_000:,.2f}억원" if row.value is not None else "확인 불가",
+            metric_values={
+                CanonicalMetric.GROWTH: (
+                    f"{row.growth_pct:.2f}%" if row.growth_pct is not None else ""
+                )
+            },
+        )
+        for index, row in enumerate(market.top_brands[:5], 1)
+    )
+    table, dynamic_metrics = competitor_table_md(
+        rows,
+        requested_metrics,
+        {CanonicalMetric.GROWTH: growth_label},
+    )
+    rendered_metrics = {
+        CanonicalMetric.RANK,
+        CanonicalMetric.SHARE,
+        CanonicalMetric.SALES,
+        *dynamic_metrics,
+    }
+    missing = tuple(metric for metric in requested_metrics if metric not in rendered_metrics)
+    parts = [
+        table,
+        (
+            f"일반뷰 분모는 ATC4 {market.atc4_code} 시장 전체 {market.measure}이며 "
+            "전략뷰와 시장 정의·분모가 다릅니다."
+        ),
+    ]
+    reason_codes: list[str] = []
+    if CanonicalMetric.GROWTH in missing:
+        parts.append("일반뷰에는 성장률 원천이 없습니다")
+        reason_codes.append("general_view_growth_source_missing")
+    data = {
+        "contract_id": "C1",
+        "section_markdown": "\n\n".join(parts),
+        "competitor_rows": [
+            {
+                "rank": row.rank,
+                "brand": row.brand,
+                "share": row.share,
+                "sales": row.sales,
+                "growth": row.metric_values.get(CanonicalMetric.GROWTH) or None,
+            }
+            for row in rows
+        ],
+        "requested_metrics": [metric.value for metric in requested_metrics],
+        "rendered_metrics": [
+            metric.value
+            for metric in (CanonicalMetric.RANK, CanonicalMetric.SHARE, CanonicalMetric.SALES, *dynamic_metrics)
+        ],
+        "dropped_metrics": [metric.value for metric in missing],
+        "reason_codes": reason_codes,
+        "evidence_refs": ["general_view_dynamic_market.render_data.competitor_rows"],
         "chart_payloads": [],
     }
     return "BRAND_TREND", question, data, []

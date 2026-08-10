@@ -32,6 +32,9 @@ class TopBrand:
     rank: int | None
     value: float | None
     share_pct: float | None
+    growth_pct: float | None = None
+    growth_start_period: str | None = None
+    growth_end_period: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

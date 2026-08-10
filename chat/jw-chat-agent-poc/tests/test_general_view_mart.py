@@ -26,6 +26,10 @@ class FakeGeneralMartReader:
             },
             brand_name=brand,
             brand_metric_history={"2025-Q4": {"raw_value": 190.0, "ms": 95.0, "rank": 1}, "2026-Q1": {"raw_value": 270.0, "ms": 90.0, "rank": 1}},
+            brand_metric_histories={
+                "마운자로": {"2026-Q1": {"raw_value": 270.0, "ms": 90.0, "rank": 1, "yoy": 42.1}},
+                "오젠픽": {"2026-Q1": {"raw_value": 30.0, "ms": 10.0, "rank": 2, "yoy": 7.5}},
+            },
             hhi_series={"2025-Q4": 9050.0, "2026-Q1": 8200.0},
             member_population=("마운자로", "오젠픽", "제로브랜드"),
         )
@@ -57,6 +61,9 @@ def test_mart_backend_uses_latest_period_for_market_brand_and_top_five() -> None
     assert market.brand_rank == 1
     assert market.hhi_recent == 8200.0
     assert [row.brand for row in market.top_brands] == ["마운자로", "오젠픽"]
+    assert [row.growth_pct for row in market.top_brands] == [42.1, 7.5]
+    assert market.top_brands[0].growth_start_period == "2025-Q1"
+    assert market.top_brands[0].growth_end_period == "2026-Q1"
 
 
 def test_mart_backend_keeps_candidate_fallback_contract() -> None:

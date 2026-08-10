@@ -813,11 +813,11 @@ def _iqvia_intent_service() -> GeneralViewService:
             BrandMetricPoint("2026-Q1", 21_870_000_000.0, 24.0, 1),
         ),
         top_brands=(
-            TopBrand("아일리아", 1, 21_870_000_000.0, 24.0),
-            TopBrand("루센티스", 2, 16_400_000_000.0, 18.0),
-            TopBrand("비오뷰", 3, 10_025_000_000.0, 11.0),
-            TopBrand("바비스모", 4, 8_200_000_000.0, 9.0),
-            TopBrand("아바스틴", 5, 6_375_000_000.0, 7.0),
+            TopBrand("아일리아", 1, 21_870_000_000.0, 24.0, 21.5, "2025-Q1", "2026-Q1"),
+            TopBrand("루센티스", 2, 16_400_000_000.0, 18.0, 8.0, "2025-Q1", "2026-Q1"),
+            TopBrand("비오뷰", 3, 10_025_000_000.0, 11.0, -3.5, "2025-Q1", "2026-Q1"),
+            TopBrand("바비스모", 4, 8_200_000_000.0, 9.0, 42.0, "2025-Q1", "2026-Q1"),
+            TopBrand("아바스틴", 5, 6_375_000_000.0, 7.0, 2.5, "2025-Q1", "2026-Q1"),
         ),
         selected_data_path="direct_mart",
     )
@@ -861,6 +861,33 @@ def test_general_view_intents_render_distinct_strategic_control_surfaces() -> No
     assert "HHI 3,188.04" in concentration["answer"]
     assert "CR5 69.00%" in concentration["answer"]
     assert concentration["general_view_contract"]["chart_payloads"] == []
+
+
+def test_general_view_competitor_growth_uses_ranked_mart_rows() -> None:
+    service = _iqvia_intent_service()
+
+    result = service.answer("아일리아 경쟁사 성장률 표", compact=False, dual=False)
+
+    answer = result["answer"]
+    assert "| 순위 | 브랜드 | 점유율 | 매출 | 성장률(YoY, 2026-Q1 대비 2025-Q1) |" in answer
+    assert answer.count("| 1위 | 아일리아 |") == 1
+    assert answer.count("| 5위 | 아바스틴 |") == 1
+    assert "21.50%" in answer
+    assert "ATC4 S01P0 시장 전체 sales" in answer
+    assert "전략뷰와 시장 정의·분모가 다릅니다" in answer
+
+
+def test_general_view_competitor_growth_reports_missing_source_exactly() -> None:
+    service = _iqvia_intent_service()
+    market = service._backend.market_map["S01P0"]  # type: ignore[attr-defined]
+    service._backend.market_map["S01P0"] = replace(  # type: ignore[attr-defined]
+        market,
+        top_brands=tuple(replace(row, growth_pct=None) for row in market.top_brands),
+    )
+
+    result = service.answer("아일리아 경쟁사 성장률 표", compact=False, dual=False)
+
+    assert "일반뷰에는 성장률 원천이 없습니다" in result["answer"]
 
 
 def test_iqvia_general_view_warning_is_in_answer_body() -> None:

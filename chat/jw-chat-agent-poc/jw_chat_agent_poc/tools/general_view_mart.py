@@ -34,6 +34,7 @@ class GeneralMartRows:
     brand_ranking: dict[str, list[dict[str, Any]]]
     brand_name: str | None
     brand_metric_history: dict[str, dict[str, Any]]
+    brand_metric_histories: dict[str, dict[str, dict[str, Any]]] = field(default_factory=dict)
     hhi_series: dict[str, float] = field(default_factory=dict)
     member_population: tuple[str, ...] | None = None
 
@@ -114,7 +115,7 @@ class MariaDbGeneralMartReader:
                         brand_row = cursor.fetchone()
                     cursor.execute(
                         """
-                        SELECT brand_name
+                        SELECT brand_name, metric_history
                         FROM mart_general_brand_metric
                         WHERE atc4_code=%s AND source=%s AND measure=%s
                         ORDER BY brand_key
@@ -142,6 +143,10 @@ class MariaDbGeneralMartReader:
             brand_ranking=_ranking_map(market_row["brand_ranking"]),
             brand_name=str(brand_row["brand_name"]) if brand_row else None,
             brand_metric_history=_metric_map(brand_row["metric_history"]) if brand_row else {},
+            brand_metric_histories={
+                str(row["brand_name"]): _metric_map(row["metric_history"])
+                for row in population_rows
+            },
             hhi_series=_number_map(market_row["hhi_series"]),
             member_population=(
                 tuple(str(row["brand_name"]) for row in population_rows)
@@ -203,12 +208,18 @@ def _market_from_rows(rows: GeneralMartRows) -> GeneralMarket:
         sorted(
             (
                 TopBrand(
-                    brand=str(item.get("brand") or item.get("brand_key") or ""),
+                    brand=brand_name,
                     rank=_as_int(item.get("rank")),
                     value=_as_float(item.get("raw_value")),
                     share_pct=_as_float(item.get("ms")),
+                    growth_pct=_as_float(
+                        rows.brand_metric_histories.get(brand_name, {}).get(period, {}).get("yoy")
+                    ),
+                    growth_start_period=_prior_year_period(period),
+                    growth_end_period=period,
                 )
                 for item in ranking_rows
+                if (brand_name := str(item.get("brand") or item.get("brand_key") or ""))
             ),
             key=lambda row: (
                 row.rank is None,
@@ -257,6 +268,12 @@ def _market_from_rows(rows: GeneralMartRows) -> GeneralMarket:
             for point_period, point in sorted(rows.brand_metric_history.items())
         ),
     )
+
+
+def _prior_year_period(period: str) -> str | None:
+    if len(period) < 4 or not period[:4].isdigit():
+        return None
+    return f"{int(period[:4]) - 1}{period[4:]}"
 
 
 def _mart_query_failure_reason(exc: BaseException) -> str:

@@ -15,6 +15,7 @@ from jw_chat_agent_poc.orchestrator.comparison_compatibility import (
 )
 from jw_chat_agent_poc.orchestrator.dosage_notes import dosage_combination_note, is_dosage_combination_note
 from jw_chat_agent_poc.orchestrator.markdown_formatting import allowed_numbers, eok_value, normalize_number, pct_value
+from jw_chat_agent_poc.orchestrator.markdown_renderers import CompetitorTableRow, competitor_table_md
 from jw_chat_agent_poc.orchestrator.provenance_labels import provenance_source_block_from_facts
 from jw_chat_agent_poc.orchestrator.query_spec import CanonicalMetric, canonical_metrics_for_question
 from jw_chat_agent_poc.service.deep_report_cleanup import repair_plain_table_urls, slim_source_tables
@@ -805,30 +806,25 @@ def _top_brand_fallback_answer(
     )
     detail_sentence = f"구체적으로는 {verified_values}입니다."
     metric_facts = _metric_fact_values(fact_md)
-    dynamic_metrics = tuple(
-        metric
-        for metric in requested_metrics
-        if metric not in {CanonicalMetric.RANK, CanonicalMetric.SHARE, CanonicalMetric.SALES}
-        and any(_requested_metric_value(metric_facts.get(row["brand"], {}), metric) for row in rows)
-    )
-    dynamic_labels = [_requested_metric_label(metric, metric_facts) for metric in dynamic_metrics]
-    table = [
-        "| " + " | ".join(("순위", "브랜드", "점유율", "매출", *dynamic_labels)) + " |",
-        "| " + " | ".join(("---", "---", "---:", "---:", *("---:" for _ in dynamic_labels))) + " |",
-    ]
-    for row in rows:
-        dynamic_values = [
-            _requested_metric_value(metric_facts.get(row["brand"], {}), metric) or "확인 불가"
-            for metric in dynamic_metrics
-        ]
-        table.append(
-            "| "
-            + " | ".join(
-                (f"{row['rank']}위", row["brand"], f"{row['share']}%", f"{row['sales']}억원", *dynamic_values)
-            )
-            + " |"
+    table_rows = tuple(
+        CompetitorTableRow(
+            rank=f"{row['rank']}위",
+            brand=row["brand"],
+            share=f"{row['share']}%",
+            sales=f"{row['sales']}억원",
+            metric_values={
+                metric: _requested_metric_value(metric_facts.get(row["brand"], {}), metric)
+                for metric in requested_metrics
+            },
         )
-    parts = [intro, detail_sentence, "\n".join(table)]
+        for row in rows
+    )
+    table, dynamic_metrics = competitor_table_md(
+        table_rows,
+        requested_metrics,
+        {metric: _requested_metric_label(metric, metric_facts) for metric in requested_metrics},
+    )
+    parts = [intro, detail_sentence, table]
     rendered = {CanonicalMetric.RANK, CanonicalMetric.SHARE, CanonicalMetric.SALES, *dynamic_metrics}
     missing = tuple(metric for metric in requested_metrics if metric not in rendered)
     if missing:

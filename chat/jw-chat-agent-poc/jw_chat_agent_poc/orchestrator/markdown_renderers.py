@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Mapping
 
 from jw_chat_agent_poc.orchestrator.markdown_formatting import (
     TABLE_LIMIT,
@@ -19,6 +20,39 @@ from jw_chat_agent_poc.orchestrator.external_item_projection import public_exter
 from jw_chat_agent_poc.orchestrator.markdown_metric_helpers import metric_filter_rows, metric_level_segments_md
 from jw_chat_agent_poc.orchestrator.markdown_news import news_md
 from jw_chat_agent_poc.orchestrator.surface_policy import can_surface_derived_value, cagr_operands_from_data, surface_year
+from jw_chat_agent_poc.orchestrator.query_spec import CanonicalMetric
+
+
+@dataclass(frozen=True, slots=True)
+class CompetitorTableRow:
+    rank: str
+    brand: str
+    share: str
+    sales: str
+    metric_values: Mapping[CanonicalMetric, str]
+
+
+def competitor_table_md(
+    rows: tuple[CompetitorTableRow, ...],
+    requested_metrics: tuple[CanonicalMetric, ...],
+    metric_labels: Mapping[CanonicalMetric, str],
+) -> tuple[str, tuple[CanonicalMetric, ...]]:
+    """Build the shared strategic/general-view competitor column surface."""
+    dynamic_metrics = tuple(
+        metric
+        for metric in requested_metrics
+        if metric not in {CanonicalMetric.RANK, CanonicalMetric.SHARE, CanonicalMetric.SALES}
+        and any(row.metric_values.get(metric) for row in rows)
+    )
+    headers = ("순위", "브랜드", "점유율", "매출", *(metric_labels[metric] for metric in dynamic_metrics))
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join(("---", "---", "---:", "---:", *("---:" for _ in dynamic_metrics))) + " |",
+    ]
+    for row in rows:
+        values = tuple(row.metric_values.get(metric) or "확인 불가" for metric in dynamic_metrics)
+        lines.append("| " + " | ".join((row.rank, row.brand, row.share, row.sales, *values)) + " |")
+    return "\n".join(lines), dynamic_metrics
 
 
 def call_data_md(call: dict[str, Any]) -> str:
