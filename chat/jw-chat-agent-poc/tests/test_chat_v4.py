@@ -1295,6 +1295,41 @@ def test_v4_surface_detects_raw_won_values() -> None:
     assert _INTERNAL_SURFACE_RE.search("매출은 8587458961.25 KRW입니다.")
 
 
+def test_v4_surface_detects_raw_won_value_followed_by_korean_particle() -> None:
+    assert _INTERNAL_SURFACE_RE.search("매출은 9085877820.15원을 기록했습니다.")
+
+
+def test_v4_gate_replaces_raw_won_paragraph_with_display_summary() -> None:
+    results = (
+        SourceResult(
+            source="mart",
+            query="리바로 매출",
+            status="ok",
+            payload={
+                "calls": [
+                    {
+                        "summary_text": "리바로 2026-06 UBIST 전략 mart 지표: 매출 85.87억원, MS 3.72%, 순위 6위.",
+                        "render_data": {
+                            "value": 8587458961.25,
+                            "sales_억원": 85.87,
+                        },
+                    }
+                ]
+            },
+        ),
+    )
+
+    gated = apply_v4_gates(
+        "리바로 매출 알려줘",
+        "리바로는 8587458961.25원을 기록했습니다.\n\n시장 내 입지는 안정적입니다.",
+        results,
+    )
+
+    assert gated.text.startswith("리바로 2026-06 UBIST 전략 mart 지표: 매출 85.87억원")
+    assert "8587458961.25" not in gated.text
+    assert gated.trace["surface_raw_won"]["blocked"] is True
+
+
 def test_v4_gates_do_not_treat_unrelated_payload_numbers_as_rank_evidence() -> None:
     results = (
         SourceResult(

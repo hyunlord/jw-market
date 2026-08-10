@@ -15,7 +15,7 @@ _INTERNAL_SURFACE_RE = re.compile(
     r"MCP(?:[^가-힣\n]{0,80})?(?:에서|returned|결과)|\btotalCount\b|\bslot[_ -]?id\b|"
     r"\b(?:sickCd|ptntCnt|value)\b|"
     r"\b\d{7,}(?:\.\d+)?\s*KRW(?![A-Za-z])|"
-    r"\b\d{7,}(?:\.\d+)?\s*원\b|"
+    r"\b\d{7,}(?:\.\d+)?\s*원(?:은|는|이|가|을|를|으로|에서|의)?|"
     r"\b[A-Z][A-Z0-9_]{2,}\s*[:=]\s*[^\s,;]+|"
     r"\b(?:hira|clinicaltrials|mfds|openfda|tavily)_[a-z0-9_]+\b|"
     r"(?:\bNCT\d{8}\b\s*[,/]\s*)+\bNCT\d{8}\b",

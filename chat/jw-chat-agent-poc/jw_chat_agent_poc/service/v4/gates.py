@@ -8,6 +8,7 @@ from jw_chat_agent_poc.service.v4.contracts import GatedAnswer, SourceResult
 
 
 _NUMBER_RE = re.compile(r"(?<![\w.])-?\d[\d,]*(?:\.\d+)?")
+_RAW_WON_RE = re.compile(r"\b\d{7,}(?:\.\d+)?\s*원(?:은|는|이|가|을|를|으로|에서|의)?")
 _VALUE = r"-?\d[\d,]*(?:\.\d+)?"
 _MART_VALUE_PATTERNS: dict[str, re.Pattern[str]] = {
     "매출": re.compile(
@@ -96,6 +97,17 @@ def apply_v4_gates(
     if timed_out:
         delayed = ", ".join(dict.fromkeys(item.source for item in timed_out))
         text = _append_sentence(text, f"응답 지연으로 미포함: {delayed}")
+
+    raw_won_blocked = bool(_RAW_WON_RE.search(text))
+    if raw_won_blocked:
+        retained = [
+            block.strip()
+            for block in re.split(r"\n\s*\n", text)
+            if block.strip() and not _RAW_WON_RE.search(block)
+        ]
+        verified_summary = _render_mart_facts(mart_results, allowed_fields=metric_fields)
+        text = "\n\n".join(dict.fromkeys((verified_summary, *retained)))
+    trace["surface_raw_won"] = {"blocked": raw_won_blocked}
 
     text = _append_sources(text, results)
     trace["sources_block"] = {"present": "## 출처" in text}
