@@ -1910,6 +1910,36 @@ def test_multi_atc_contract_appends_each_scope_label_idempotently() -> None:
     assert once.count("기준: 일반뷰 (ATC4 C10C)") == 1
 
 
+def test_general_only_competitor_contract_replaces_partially_filtered_table() -> None:
+    section = (
+        "## 일반뷰 (ATC4)\n\n"
+        "| 순위 | 브랜드 | 점유율 | 매출 | 성장률(YoY, 2026-Q1 대비 2025-Q1) |\n"
+        "| --- | --- | --- | --- | --- |\n"
+        "| 1위 | 아일리아 | 51.38% | 218.67억원 | 16.26% |"
+    )
+    contract = {
+        "mode": "general_only",
+        "view_type": "general_view",
+        "atc4_code": "S01P0",
+        "source": "IQVIA NSA",
+        "measure": "sales",
+        "period": "2026-Q1",
+        "section_markdown": section,
+        "competitor_rows": [{"brand": "아일리아"}],
+    }
+    partially_filtered = (
+        "## 일반뷰 (ATC4)\n\n"
+        "| --- | --- | --- | --- | --- |\n"
+        "| 1위 | 아일리아 | 51.38% | 218.67억원 | 16.26% |"
+    )
+
+    answer = enforce_general_view_contract(partially_filtered, contract)
+
+    assert answer.count("## 일반뷰 (ATC4)") == 1
+    assert answer.count("| 순위 | 브랜드 | 점유율 | 매출 | 성장률") == 1
+    assert "| 1위 | 아일리아 | 51.38% | 218.67억원 | 16.26% |" in answer
+
+
 def test_tool_schema_exposes_general_view_only_when_enabled(monkeypatch) -> None:
     monkeypatch.delenv("GENERAL_VIEW_ENABLED", raising=False)
     disabled = tool_schemas(("리바로",), ("2026-04",))[0]["function"]["parameters"]["properties"]["view"]["enum"]

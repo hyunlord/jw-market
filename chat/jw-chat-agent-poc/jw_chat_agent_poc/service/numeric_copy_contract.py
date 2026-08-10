@@ -186,7 +186,7 @@ def _metric_reason_codes(
     blocked: set[CanonicalMetric],
 ) -> tuple[str, ...]:
     codes: list[str] = []
-    if blocked:
+    if blocked.intersection(dropped):
         codes.append("numeric_copy_blocked")
     for metric in dropped:
         if metric in blocked:

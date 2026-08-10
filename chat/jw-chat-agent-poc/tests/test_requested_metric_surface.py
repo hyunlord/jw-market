@@ -44,6 +44,25 @@ def test_removed_numeric_line_marks_its_metric_dropped_and_forces_notice() -> No
     assert "numeric_copy_blocked" in report["reason_codes"]
 
 
+def test_blocked_duplicate_metric_line_does_not_report_block_when_metric_is_rendered() -> None:
+    answer, report = enforce_numeric_copy_contract(
+        "리바로 성장률 알려줘",
+        (
+            "| 브랜드 | 성장률 |\n"
+            "| --- | ---: |\n"
+            "| 리바로 | 12.3% |\n\n"
+            "추정 성장률은 99.9%입니다."
+        ),
+        _result(),
+    )
+
+    assert "99.9%" not in answer
+    assert "12.3%" in answer
+    assert report["rendered_metrics"] == ["growth"]
+    assert report["dropped_metrics"] == []
+    assert "numeric_copy_blocked" not in report["reason_codes"]
+
+
 def test_public_numeric_copy_summary_omits_private_tokens() -> None:
     public = _public_numeric_copy_summary(
         {

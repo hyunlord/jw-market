@@ -19,6 +19,12 @@ def enforce_general_view_contract(answer: str, contract: dict[str, Any] | None) 
     if not section:
         return answer
     labels = _scope_labels(contract)
+    if contract.get("mode") == "general_only" and contract.get("competitor_rows"):
+        combined = section
+        for label in labels:
+            if label not in combined:
+                combined = "\n\n".join((combined, label))
+        return append_general_view_warning(combined, contract)
     strategic_answer = answer.rstrip()
     if contract.get("mode") == "dual" and not strategic_answer.startswith("## 전략뷰 (market_landscape)"):
         strategic_answer = f"## 전략뷰 (market_landscape)\n\n{strategic_answer}"
