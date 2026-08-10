@@ -72,6 +72,27 @@ class V4Synthesizer:
 def _evidence_fallback(results: Sequence[SourceResult]) -> str:
     lines = ["확인된 근거를 출처별로 정리합니다."]
     for result in results:
-        payload = json.dumps(result.payload, ensure_ascii=False, default=str)
-        lines.append(f"- {result.source}: {payload[:1200]}")
+        summaries = _verified_summaries(result.payload)
+        if summaries:
+            lines.append(f"- {result.source}: {' '.join(summaries)}")
+        else:
+            lines.append(f"- {result.source}: 조회는 완료됐지만 요약 가능한 근거가 없습니다.")
     return "\n\n".join(lines)
+
+
+def _verified_summaries(payload: object) -> list[str]:
+    if not isinstance(payload, dict):
+        return []
+    values: list[str] = []
+    direct = str(payload.get("summary_text") or "").strip()
+    if direct:
+        values.append(direct)
+    calls = payload.get("calls")
+    if isinstance(calls, list):
+        for call in calls:
+            if not isinstance(call, dict):
+                continue
+            summary = str(call.get("summary_text") or "").strip()
+            if summary and summary not in values:
+                values.append(summary)
+    return values

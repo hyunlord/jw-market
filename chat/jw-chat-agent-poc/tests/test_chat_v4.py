@@ -22,6 +22,7 @@ from jw_chat_agent_poc.service.v4.gates import apply_v4_gates
 from jw_chat_agent_poc.service.v4.planner import V4Planner
 from jw_chat_agent_poc.service.v4.runtime import V4Runtime
 from jw_chat_agent_poc.service.v4 import adapters as v4_adapters
+from jw_chat_agent_poc.service.v4.synthesizer import _evidence_fallback
 
 
 def _plan(**queries: tuple[str, ...]) -> PlannerOutput:
@@ -55,6 +56,46 @@ def test_mart_adapter_does_not_reenter_legacy_agent_loop() -> None:
     assert "_answer_direct_agent_loop" not in source
     assert "general_view.answer" in source
     assert "layer.brand_metric" in source
+
+
+def test_v4_adapter_extracts_identifiers_and_source_specific_queries() -> None:
+    assert v4_adapters._nct_id("NCT05151731 선정제외기준 clinical trials") == "NCT05151731"
+    assert v4_adapters._hira_code("D69.3 상병 환자수 최근 5년") == "D693"
+    assert v4_adapters._ingredient_query("스타틴 계열 최근 안전성 이슈") == "Pitavastatin"
+    assert v4_adapters._clinical_query("당뇨망막병증 치료제 최근 임상 동향") == (
+        "diabetic retinopathy",
+        "condition",
+    )
+
+
+def test_v4_mart_relevance_rejects_external_only_questions() -> None:
+    assert v4_adapters._mart_relevant("리바로 요즘 어때") is True
+    assert v4_adapters._mart_relevant("리바로 매출 알려줘") is True
+    assert v4_adapters._mart_relevant("리바로 효능효과") is False
+    assert v4_adapters._mart_relevant("리바로 특허 언제 만료돼") is False
+
+
+def test_v4_fallback_uses_verified_summaries_instead_of_raw_json() -> None:
+    results = (
+        SourceResult(
+            source="clinicaltrials",
+            query="NCT05151731",
+            status="ok",
+            payload={
+                "calls": [
+                    {
+                        "summary_text": "NCT05151731은 2상 무작위배정 이중눈가림 시험입니다.",
+                        "render_data": {"secret_internal": "must-not-be-dumped"},
+                    }
+                ]
+            },
+        ),
+    )
+
+    answer = _evidence_fallback(results)
+
+    assert "2상 무작위배정 이중눈가림" in answer
+    assert "secret_internal" not in answer
 
 
 def test_parallel_executor_calls_every_source_concurrently_and_reuses_session_cache() -> None:
