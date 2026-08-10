@@ -877,10 +877,24 @@ def test_general_view_competitor_growth_uses_ranked_mart_rows() -> None:
     assert "전략뷰와 시장 정의·분모가 다릅니다" in answer
 
 
-def test_general_view_competitor_growth_survives_final_binding() -> None:
+def test_general_view_competitor_growth_survives_final_binding(monkeypatch) -> None:
     service = _iqvia_intent_service()
     question = "아일리아 경쟁사 성장률 표"
     result = service.answer(question, compact=False, dual=False)
+    original_gate = service_app._apply_evidence_binding_gate
+
+    def drop_structural_header(
+        bound_question: str,
+        answer: str,
+        bound_result: dict,
+    ) -> str:
+        bound = original_gate(bound_question, answer, bound_result)
+        return bound.replace(
+            "| 순위 | 브랜드 | 점유율 | 매출 | 성장률(YoY, 2026-Q1 대비 2025-Q1) |\n",
+            "",
+        )
+
+    monkeypatch.setattr(service_app, "_apply_evidence_binding_gate", drop_structural_header)
 
     final = service_app.compute_final_answer(question, result, "general-competitor-binding")
 

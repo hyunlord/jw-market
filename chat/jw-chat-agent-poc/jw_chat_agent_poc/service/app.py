@@ -3788,7 +3788,15 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
             result,
         )
         answer = _apply_evidence_binding_gate(active_question, answer, result)
-        answer = append_general_view_warning(answer, result.get("general_view_contract"))
+        general_contract = result.get("general_view_contract")
+        if (
+            isinstance(general_contract, dict)
+            and general_contract.get("mode") == "general_only"
+            and general_contract.get("competitor_rows")
+        ):
+            answer = enforce_general_view_contract(answer, general_contract)
+        else:
+            answer = append_general_view_warning(answer, general_contract)
         answer, source_notice_attached = append_source_basis_notice(answer, markdown_response)
         record_source_notice_attachment(
             result,

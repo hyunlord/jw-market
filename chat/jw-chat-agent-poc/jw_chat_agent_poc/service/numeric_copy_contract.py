@@ -88,7 +88,8 @@ def enforce_numeric_copy_contract(
     trusted_metric_blocked_count = 0
     blocked_metrics: set[CanonicalMetric] = set()
     section = ""
-    for line in answer.splitlines():
+    lines = answer.splitlines()
+    for index, line in enumerate(lines):
         stripped = line.strip()
         if _INTERNAL_SECTION_RE.fullmatch(stripped):
             section = "internal"
@@ -96,6 +97,9 @@ def enforce_numeric_copy_contract(
             continue
         if _WEB_SECTION_RE.fullmatch(stripped):
             section = "web"
+            kept.append(line)
+            continue
+        if _is_markdown_table_header(lines, index):
             kept.append(line)
             continue
 
@@ -142,6 +146,18 @@ def enforce_numeric_copy_contract(
         "reason_codes": list(reason_codes),
     }
     return cleaned, report
+
+
+def _is_markdown_table_header(lines: list[str], index: int) -> bool:
+    if index + 1 >= len(lines):
+        return False
+    header = lines[index].strip()
+    separator = lines[index + 1].strip()
+    return (
+        header.startswith("|")
+        and header.endswith("|")
+        and bool(re.fullmatch(r"\|(?:\s*:?-{3,}:?\s*\|)+", separator))
+    )
 
 
 def _rendered_metrics(
