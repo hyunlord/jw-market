@@ -267,6 +267,7 @@ def test_v4_clients_use_their_scoped_genos_endpoints_and_tokens(monkeypatch) -> 
 
     assert planner.base_url.endswith("/serving/190")
     assert planner.token == "planner-token"
+    assert planner.timeout_s == 18
     assert synthesizer.base_url.endswith("/serving/202")
     assert synthesizer.token == "final-token"
 
@@ -329,6 +330,37 @@ def test_runtime_marks_successful_citations_used() -> None:
     ).answer("질문", conversation_id="conversation-a", turns=())
 
     assert answer.trace["tool_results"][0]["citations"][0]["used"] is True
+
+
+def test_runtime_reserves_planner_budget_and_reports_serving_without_fallback() -> None:
+    plan = _plan()
+
+    class Planner:
+        serving_id = "190"
+
+        def plan(self, _question, _turns, *, budget_s):
+            assert budget_s >= 18.0
+            return plan
+
+        def link(self, *_args, **_kwargs):
+            return None
+
+    class Executor:
+        def execute(self, _plan, *, session_id, total_timeout_s):
+            return ()
+
+    class Synthesizer:
+        def synthesize(self, _plan, _results, _turns, *, budget_s):
+            return "근거 기반 답변"
+
+    answer = V4Runtime(
+        planner=Planner(),
+        executor=Executor(),
+        synthesizer=Synthesizer(),
+    ).answer("질문", conversation_id="conversation-planner", turns=())
+
+    assert answer.trace["planner_serving"] == "190"
+    assert answer.trace["fallback"] is False
 
 
 def test_runtime_runs_at_most_one_linking_hop() -> None:

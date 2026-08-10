@@ -42,7 +42,7 @@ class V4Runtime:
         plan = self._planner.plan(
             question,
             selected_turns,
-            budget_s=min(10.0, _remaining(deadline)),
+            budget_s=min(18.0, _remaining(deadline)),
         )
         first_results = self._executor.execute(
             plan,
@@ -79,6 +79,8 @@ class V4Runtime:
         elapsed_ms = (time.monotonic() - started) * 1000
         trace = {
             "v4": True,
+            "planner_serving": getattr(self._planner, "serving_id", "unknown"),
+            "fallback": plan.linking_plan.startswith("planner fallback;"),
             "planner": plan.model_dump(mode="json"),
             "second_hop": linked_plan.model_dump(mode="json") if linked_plan else None,
             "tool_results": [

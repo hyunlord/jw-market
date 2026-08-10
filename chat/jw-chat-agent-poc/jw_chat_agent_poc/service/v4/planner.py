@@ -19,6 +19,10 @@ class V4Planner:
     def __init__(self, client: GenOSV4Client) -> None:
         self._client = client
 
+    @property
+    def serving_id(self) -> str:
+        return self._client.serving_id
+
     def plan(
         self,
         question: str,
