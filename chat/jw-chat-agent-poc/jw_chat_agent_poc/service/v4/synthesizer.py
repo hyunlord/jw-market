@@ -332,6 +332,11 @@ def _append_automatic_footnotes(answer: str, results: Sequence[SourceResult]) ->
 def _evidence_fallback(results: Sequence[SourceResult]) -> str:
     paragraphs: list[str] = []
     for result in results:
+        if result.source == "hira":
+            patient_facts = _hira_patient_facts(result.payload)
+            if patient_facts:
+                paragraphs.append(" ".join(patient_facts) + " [출처: HIRA]")
+                continue
         summaries = _safe_summaries(result.payload)
         if summaries:
             paragraphs.append(
@@ -355,6 +360,26 @@ def _evidence_fallback(results: Sequence[SourceResult]) -> str:
     if not paragraphs:
         return "조회는 완료됐지만 답변 본문에 제시할 수 있는 상세 근거를 확인하지 못했습니다."
     return "\n\n".join(paragraphs)
+
+
+def _hira_patient_facts(payload: Any) -> tuple[str, ...]:
+    facts: list[str] = []
+    for rows in _dict_lists(payload):
+        for row in rows:
+            year = row.get("year")
+            patient_count = row.get("ptntCnt")
+            care_type = row.get("inpatOpat")
+            if year in (None, "") or patient_count in (None, ""):
+                continue
+            try:
+                count = f"{int(str(patient_count).replace(',', '')):,}"
+            except ValueError:
+                count = str(patient_count)
+            qualifier = f" {care_type}" if care_type not in (None, "") else ""
+            facts.append(
+                f"{year}년{qualifier} 환자수는 {count}명으로 확인되었습니다."
+            )
+    return tuple(dict.fromkeys(facts))
 
 
 def _safe_summaries(payload: Any) -> tuple[str, ...]:

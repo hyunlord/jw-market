@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 import json
 import os
+import re
 import time
 
 import requests
@@ -78,9 +79,18 @@ def planner_client() -> GenOSV4Client:
 
 
 def synthesizer_client() -> GenOSV4Client:
+    serving_id = os.environ.get("V4_SYNTHESIZER_SERVING_ID", "190")
+    base_url = re.sub(
+        r"/serving/\d+(?=/|$)",
+        f"/serving/{serving_id}",
+        resolve_final_genos_base_url(),
+    )
     return GenOSV4Client(
-        base_url=resolve_final_genos_base_url(),
-        token=resolve_final_genos_token(),
+        base_url=base_url,
+        token=(
+            os.environ.get("V4_SYNTHESIZER_BEARER_TOKEN")
+            or resolve_final_genos_token()
+        ),
         model=os.environ.get("V4_SYNTHESIZER_MODEL", SYNTHESIZER_MODEL),
         timeout_s=int(os.environ.get("V4_SYNTHESIZER_TIMEOUT_S", "15")),
         total_budget_s=int(os.environ.get("V4_SYNTHESIZER_BUDGET_S", "20")),

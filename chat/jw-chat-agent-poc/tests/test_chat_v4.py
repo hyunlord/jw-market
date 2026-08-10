@@ -141,6 +141,36 @@ def test_v4_fallback_uses_verified_summaries_instead_of_raw_json() -> None:
     assert "secret_internal" not in answer
 
 
+def test_v4_fallback_writes_hira_patient_counts_as_user_facing_prose() -> None:
+    results = (
+        SourceResult(
+            source="hira",
+            query="D693 상병 환자수 최근 5년",
+            status="ok",
+            payload={
+                "calls": [
+                    {
+                        "render_data": {
+                            "items": [
+                                {
+                                    "year": "2024",
+                                    "inpatOpat": "입원",
+                                    "ptntCnt": 1606,
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        ),
+    )
+
+    answer = _evidence_fallback(results)
+
+    assert "2024년 입원 환자수는 1,606명" in answer
+    assert "ptntCnt" not in answer
+
+
 def test_v4_synthesizer_sends_detail_rows_in_question_first_layout() -> None:
     class Client:
         def __init__(self) -> None:
@@ -373,9 +403,11 @@ def test_v4_clients_use_their_scoped_genos_endpoints_and_tokens(monkeypatch) -> 
     monkeypatch.setenv("GENOS_SERVING_ID", "202")
     monkeypatch.setenv("GENOS_FINAL_SERVING_ID", "202")
     monkeypatch.setenv("GENOS_PLANNER_SERVING_ID", "190")
+    monkeypatch.setenv("V4_SYNTHESIZER_SERVING_ID", "191")
     monkeypatch.setenv("GENOS_BEARER_TOKEN", "common-token")
     monkeypatch.setenv("GENOS_FINAL_BEARER_TOKEN", "final-token")
     monkeypatch.setenv("GENOS_PLANNER_BEARER_TOKEN", "planner-token")
+    monkeypatch.setenv("V4_SYNTHESIZER_BEARER_TOKEN", "synthesizer-token")
 
     planner = planner_client()._client
     synthesizer = synthesizer_client()._client
@@ -383,8 +415,8 @@ def test_v4_clients_use_their_scoped_genos_endpoints_and_tokens(monkeypatch) -> 
     assert planner.base_url.endswith("/serving/190")
     assert planner.token == "planner-token"
     assert planner.timeout_s == 18
-    assert synthesizer.base_url.endswith("/serving/202")
-    assert synthesizer.token == "final-token"
+    assert synthesizer.base_url.endswith("/serving/191")
+    assert synthesizer.token == "synthesizer-token"
 
 
 def test_v4_synthesizer_transport_sets_explicit_token_cap(monkeypatch) -> None:
@@ -472,6 +504,7 @@ def test_runtime_marks_successful_citations_used() -> None:
     class Synthesizer:
         def synthesize(self, _plan, results, _turns, *, budget_s):
             assert results[0].citations[0].used is True
+            assert results[0].citations[0].source == "웹 자료"
             return "근거 기반 답변"
 
     answer = V4Runtime(
@@ -481,6 +514,7 @@ def test_runtime_marks_successful_citations_used() -> None:
     ).answer("질문", conversation_id="conversation-a", turns=())
 
     assert answer.trace["tool_results"][0]["citations"][0]["used"] is True
+    assert answer.trace["tool_results"][0]["citations"][0]["source"] == "웹 자료"
 
 
 def test_runtime_reserves_planner_budget_and_reports_serving_without_fallback() -> None:

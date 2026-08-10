@@ -14,6 +14,17 @@ from jw_chat_agent_poc.service.v4.planner import V4Planner
 from jw_chat_agent_poc.service.v4.synthesizer import V4Synthesizer
 
 
+_PUBLIC_SOURCE = {
+    "mart": "내부 데이터마트",
+    "nedrug": "식품의약품안전처",
+    "hira": "HIRA",
+    "openfda": "FDA",
+    "clinicaltrials": "ClinicalTrials.gov",
+    "web": "웹 자료",
+    "patent": "특허 자료",
+}
+
+
 class V4Runtime:
     def __init__(
         self,
@@ -139,7 +150,9 @@ def _mark_citations_used(result: SourceResult) -> SourceResult:
     return result.model_copy(
         update={
             "citations": tuple(
-                citation.model_copy(update={"used": True})
+                citation.model_copy(
+                    update={"source": _PUBLIC_SOURCE[result.source], "used": True}
+                )
                 for citation in result.citations
             )
         }
