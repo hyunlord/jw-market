@@ -398,7 +398,7 @@ def test_topic_period_bounds_reads_indexable_month_extrema(monkeypatch) -> None:
     assert captured["params"] is None
 
 
-def test_sliced_topic_rows_require_classified_matching_stage_hash(monkeypatch) -> None:
+def test_sliced_topic_rows_bridge_reloaded_stage_ids_by_classified_hash(monkeypatch) -> None:
     captured: dict[str, Any] = {}
 
     def fake_fetch_all(sql: str, params=None) -> list[dict[str, Any]]:
@@ -423,11 +423,14 @@ def test_sliced_topic_rows_require_classified_matching_stage_hash(monkeypatch) -
     assert result == []
     sql = captured["sql"]
     assert "row_topic_assignment_status" in sql
-    assert "status.topic_set_version = a.topic_set_version" in sql
-    assert "status.scope_id = a.scope_id" in sql
-    assert "status.row_id = a.row_id" in sql
+    assert "a.topic_set_version = status.topic_set_version" in sql
+    assert "a.scope_id = status.scope_id" in sql
+    assert "status.row_id = scoped_rows.row_id" not in sql
+    assert "scoped_rows.row_id = a.row_id" not in sql
+    assert "a.row_id = status.row_id" in sql
     assert "status.status = 'classified'" in sql
     assert "status.stage_row_sha256 = scoped_rows.stage_row_sha256" in sql
+    assert "COUNT(DISTINCT scoped_rows.row_id) AS affected_row_count" in sql
     assert "source_row_count" in sql
     assert "classified_row_count" in sql
     assert "guard_valid_row_count" in sql
@@ -569,6 +572,8 @@ def test_post_topic_service_slices_topics_from_row_assignments(monkeypatch) -> N
             "2026-06",
             "brand_activity_replay_20260703_125045",
             "atc4:C10A1",
+            "brand_activity_replay_20260703_125045",
+            "atc4:C10A1",
             "atc4:C10A1",
             "brand_activity_replay_20260703_125045",
         )
@@ -633,6 +638,8 @@ def test_post_topic_service_accepts_list_filters_as_or_with_axis_and(monkeypatch
             "increase",
             "2026-01",
             "2026-06",
+            "brand_activity_replay_20260703_125045",
+            "atc4:C10A1",
             "brand_activity_replay_20260703_125045",
             "atc4:C10A1",
             "atc4:C10A1",
@@ -1126,6 +1133,8 @@ def test_post_topic_service_uses_iqvia_product_codes_when_strategic_source_has_n
             "내과",
             "2025-04",
             "2026-03",
+            "brand_activity_group_replay",
+            "group:livalo_family",
             "brand_activity_group_replay",
             "group:livalo_family",
             "group:livalo_family",

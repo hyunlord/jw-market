@@ -752,25 +752,27 @@ def _fetch_sliced_topic_rows(
             LEFT JOIN {schema}.`row_topic_assignment_status` status
               ON status.topic_set_version = %s
              AND status.scope_id = %s
-             AND status.row_id = scoped_rows.row_id
+             AND status.stage_row_sha256 = scoped_rows.stage_row_sha256
         ),
         topic_totals AS (
             SELECT a.topic_id AS topic_id,
-                   COUNT(DISTINCT a.row_id) AS affected_row_count,
+                   COUNT(DISTINCT scoped_rows.row_id) AS affected_row_count,
                    denominator.brand_total_rows AS brand_total_rows,
-                   ROUND(COUNT(DISTINCT a.row_id) * 100.0 / NULLIF(denominator.brand_total_rows, 0), 2)
+                   ROUND(COUNT(DISTINCT scoped_rows.row_id) * 100.0 / NULLIF(denominator.brand_total_rows, 0), 2)
                        AS share_pct
-            FROM {schema}.`row_topic_assignment` a
-            JOIN scoped_rows ON scoped_rows.row_id = a.row_id
+            FROM scoped_rows
             JOIN {schema}.`row_topic_assignment_status` status
-              ON status.topic_set_version = a.topic_set_version
-             AND status.scope_id = a.scope_id
-             AND status.row_id = a.row_id
+              ON status.topic_set_version = %s
+             AND status.scope_id = %s
+             AND status.stage_row_sha256 = scoped_rows.stage_row_sha256
+             AND status.status = 'classified'
+            JOIN {schema}.`row_topic_assignment` a
+              ON a.topic_set_version = status.topic_set_version
+             AND a.scope_id = status.scope_id
+             AND a.row_id = status.row_id
             JOIN denominator
             WHERE a.scope_id = %s
               AND a.topic_set_version = %s
-              AND status.status = 'classified'
-              AND status.stage_row_sha256 = scoped_rows.stage_row_sha256
             GROUP BY a.topic_id, denominator.brand_total_rows
         )
         SELECT topic_totals.topic_id AS topic_id,
@@ -788,7 +790,15 @@ def _fetch_sliced_topic_rows(
     """
     return db.fetch_all(
         sql,
-        (*params, topic_set_version, scope_id, scope_id, topic_set_version),
+        (
+            *params,
+            topic_set_version,
+            scope_id,
+            topic_set_version,
+            scope_id,
+            scope_id,
+            topic_set_version,
+        ),
     )
 
 
