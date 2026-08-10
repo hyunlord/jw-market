@@ -40,7 +40,10 @@ class V4Planner:
                     budget_s=remaining,
                 )
                 return _parse_plan(raw)
-            except (ValueError, json.JSONDecodeError, requests.RequestException) as exc:
+            except requests.RequestException as exc:
+                error = exc
+                break
+            except (ValueError, json.JSONDecodeError) as exc:
                 error = exc
         return _fallback_plan(question, turns, reason=str(error or "planner returned no JSON"))
 

@@ -4,6 +4,12 @@ from collections.abc import Sequence
 from dataclasses import replace
 import os
 
+from jw_chat_agent_poc.genos_config import (
+    resolve_final_genos_base_url,
+    resolve_final_genos_token,
+    resolve_planner_genos_base_url,
+    resolve_planner_genos_token,
+)
 from jw_chat_agent_poc.service.genos_client import GenosClient
 
 
@@ -14,8 +20,18 @@ SYNTHESIZER_MODEL = "gemini-3-flash-preview"
 class GenOSV4Client:
     """Small GenOS serving facade that bypasses the legacy finalizer."""
 
-    def __init__(self, *, model: str, timeout_s: int, total_budget_s: int) -> None:
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        token: str | None,
+        model: str,
+        timeout_s: int,
+        total_budget_s: int,
+    ) -> None:
         self._client = GenosClient(
+            base_url=base_url,
+            token=token,
             timeout_s=timeout_s,
             total_budget_s=total_budget_s,
             model=model,
@@ -40,6 +56,8 @@ class GenOSV4Client:
 
 def planner_client() -> GenOSV4Client:
     return GenOSV4Client(
+        base_url=resolve_planner_genos_base_url(),
+        token=resolve_planner_genos_token(),
         model=os.environ.get("V4_PLANNER_MODEL", PLANNER_MODEL),
         timeout_s=int(os.environ.get("V4_PLANNER_TIMEOUT_S", "12")),
         total_budget_s=int(os.environ.get("V4_PLANNER_BUDGET_S", "24")),
@@ -48,6 +66,8 @@ def planner_client() -> GenOSV4Client:
 
 def synthesizer_client() -> GenOSV4Client:
     return GenOSV4Client(
+        base_url=resolve_final_genos_base_url(),
+        token=resolve_final_genos_token(),
         model=os.environ.get("V4_SYNTHESIZER_MODEL", SYNTHESIZER_MODEL),
         timeout_s=int(os.environ.get("V4_SYNTHESIZER_TIMEOUT_S", "15")),
         total_budget_s=int(os.environ.get("V4_SYNTHESIZER_BUDGET_S", "20")),

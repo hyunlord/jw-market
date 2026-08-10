@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
+import requests
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
@@ -20,6 +21,7 @@ from jw_chat_agent_poc.service.v4.contracts import (
 )
 from jw_chat_agent_poc.service.v4.executor import ParallelSourceExecutor
 from jw_chat_agent_poc.service.v4.gates import apply_v4_gates
+from jw_chat_agent_poc.service.v4.llm import planner_client, synthesizer_client
 from jw_chat_agent_poc.service.v4.planner import V4Planner
 from jw_chat_agent_poc.service.v4.runtime import V4Runtime
 from jw_chat_agent_poc.service.v4 import adapters as v4_adapters
@@ -236,13 +238,53 @@ def test_parallel_executor_marks_timeout_without_blocking_other_sources() -> Non
 
 def test_invalid_planner_json_falls_back_to_all_seven_sources() -> None:
     class InvalidClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
         def complete(self, _messages, *, budget_s=None) -> str:
+            self.calls += 1
             return "not-json"
 
-    output = V4Planner(InvalidClient()).plan("리바로 요즘 어때", ())
+    client = InvalidClient()
+    output = V4Planner(client).plan("리바로 요즘 어때", ())
 
+    assert client.calls == 2
     assert {name for name, _queries in output.tool_queries.items()} == set(SOURCE_NAMES)
     assert all(queries for _name, queries in output.tool_queries.items())
+
+
+def test_v4_clients_use_their_scoped_genos_endpoints_and_tokens(monkeypatch) -> None:
+    monkeypatch.setenv("GENOS_BASE_URL", "https://genos.example/api/gateway/rep/serving/163")
+    monkeypatch.setenv("GENOS_SERVING_ID", "202")
+    monkeypatch.setenv("GENOS_FINAL_SERVING_ID", "202")
+    monkeypatch.setenv("GENOS_PLANNER_SERVING_ID", "190")
+    monkeypatch.setenv("GENOS_BEARER_TOKEN", "common-token")
+    monkeypatch.setenv("GENOS_FINAL_BEARER_TOKEN", "final-token")
+    monkeypatch.setenv("GENOS_PLANNER_BEARER_TOKEN", "planner-token")
+
+    planner = planner_client()._client
+    synthesizer = synthesizer_client()._client
+
+    assert planner.base_url.endswith("/serving/190")
+    assert planner.token == "planner-token"
+    assert synthesizer.base_url.endswith("/serving/202")
+    assert synthesizer.token == "final-token"
+
+
+def test_planner_does_not_outer_retry_transport_failures() -> None:
+    class TimeoutClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def complete(self, _messages, *, budget_s=None) -> str:
+            self.calls += 1
+            raise requests.Timeout("planner transport timed out")
+
+    client = TimeoutClient()
+    output = V4Planner(client).plan("리바로 요즘 어때", ())
+
+    assert client.calls == 1
+    assert output.linking_plan == "planner fallback; no second hop: planner transport timed out"
 
 
 def test_runtime_marks_successful_citations_used() -> None:
