@@ -74,8 +74,8 @@ def parse_manifest_bytes(payload: bytes, *, manifest_path: str = "") -> Manifest
     if version != CONTRACT_VERSION:
         raise ContractError(f"unsupported contract_version {version!r}; expected {CONTRACT_VERSION!r}")
 
-    epoch = str(_require(data, "epoch"))
-    if not _EPOCH_RE.match(epoch):
+    epoch = str(data.get("epoch") or "unknown")
+    if epoch != "unknown" and not _EPOCH_RE.match(epoch):
         raise ContractError(f"epoch {epoch!r} is not YYYY-MM or YYYY-Qn")
 
     category = str(_require(data, "category")).strip().lower()

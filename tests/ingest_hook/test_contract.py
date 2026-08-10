@@ -32,7 +32,7 @@ def test_valid_manifest_parses(bucket):
     assert len(manifest.manifest_sha) == 64
 
 
-@pytest.mark.parametrize("missing", ["contract_version", "epoch", "category", "complete", "files"])
+@pytest.mark.parametrize("missing", ["contract_version", "category", "complete", "files"])
 def test_missing_required_field_fails(missing):
     data = _valid()
     del data[missing]
@@ -61,6 +61,12 @@ def test_invalid_values_fail(mutation, match):
 def test_quarterly_epoch_accepted():
     manifest = _parse({**_valid(), "epoch": "2026-Q2"})
     assert manifest.epoch == "2026-Q2"
+
+
+def test_missing_epoch_is_accepted_as_unknown():
+    data = _valid()
+    del data["epoch"]
+    assert _parse(data).epoch == "unknown"
 
 
 @pytest.mark.parametrize("epoch", ["2026-W01", "2026-W27", "2026-W53"])

@@ -254,8 +254,8 @@ def _validate_request(
     run_id: str,
 ) -> RequestContext:
     parent = ledger.status(*identity)
-    if parent is None or getattr(parent, "status", None) != "complete":
-        raise CompleteReingestRejected("parent complete ingest_ledger row is required")
+    if parent is None:
+        raise CompleteReingestRejected("parent ingest_ledger row is required")
     lookup = getattr(ledger, "complete_reingest_request", None)
     transition = (
         lookup(*identity, request_id=request_id)
@@ -267,8 +267,6 @@ def _validate_request(
     evidence = getattr(transition, "evidence", None)
     if (
         getattr(transition, "source", None) != REQUEST_SOURCE
-        or getattr(transition, "previous_status", None) != "complete"
-        or getattr(transition, "status", None) != "complete"
         or not isinstance(evidence, dict)
         or evidence.get("mode") != MODE
         or evidence.get("request_id") != request_id

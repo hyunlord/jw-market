@@ -17,10 +17,12 @@ PARENT_RUN_ID = "20260806155944833982"
 
 class _Ledger:
     def __init__(
-        self, *, category: str, affected_scope: dict[str, object] | None
+        self, *, category: str, affected_scope: dict[str, object] | None,
+        parent_status: str = "complete",
     ) -> None:
         self.category = category
         self.affected_scope = affected_scope
+        self.parent_status = parent_status
         self.stage_records: list[dict[str, object]] = []
         self.terminals: list[dict[str, object]] = []
 
@@ -28,7 +30,7 @@ class _Ledger:
         assert epoch == "2026-Q1"
         assert category == self.category
         assert len(manifest_sha) == 64
-        return SimpleNamespace(status="complete", run_id=PARENT_RUN_ID)
+        return SimpleNamespace(status=self.parent_status, run_id=PARENT_RUN_ID)
 
     def complete_reingest_request(
         self, epoch: str, category: str, manifest_sha: str, *, request_id: str
@@ -39,8 +41,8 @@ class _Ledger:
         assert request_id == REQUEST_ID
         return SimpleNamespace(
             event_id=REQUEST_ID,
-            previous_status="complete",
-            status="complete",
+            previous_status=self.parent_status,
+            status=self.parent_status,
             source="complete_reingest_request",
             evidence={
                 "request_id": REQUEST_ID,
@@ -622,6 +624,23 @@ def test_missing_affected_scope_fails_before_mart_operations(
         )
     assert ledger.stage_records == []
     assert ledger.terminals == []
+
+
+def test_noncomplete_parent_is_accepted_when_request_identity_is_persisted() -> None:
+    ledger = _Ledger(
+        category="iqvia_nsa",
+        affected_scope={"dimension": "source", "count": 1, "values": ["iqvia_nsa"]},
+        parent_status="failed",
+    )
+
+    context = runner._validate_request(
+        ledger,
+        identity=("2026-Q1", "iqvia_nsa", "c" * 64),
+        request_id=REQUEST_ID,
+        run_id=RUN_ID,
+    )
+
+    assert context.parent_run_id == PARENT_RUN_ID
 
 
 def test_record_stage_emits_status_markers_with_redacted_failure_reason(
