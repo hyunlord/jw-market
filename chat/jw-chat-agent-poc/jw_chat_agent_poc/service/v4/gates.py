@@ -58,6 +58,22 @@ def apply_v4_gates(
     else:
         trace["mart_numeric_copy_only"] = {"blocked": False, "tokens": []}
 
+    requested_display_numbers = _requested_display_numbers(mart_results, metric_fields)
+    rendered_numbers = {_normalize_number(token) for token in _NUMBER_RE.findall(text)}
+    metric_missing = bool(requested_display_numbers) and requested_display_numbers.isdisjoint(
+        rendered_numbers
+    )
+    can_repair = not trace["source_impersonation"]["blocked"] and not trace[
+        "cross_source_sum"
+    ]["blocked"]
+    if metric_missing and can_repair:
+        verified_summary = _render_mart_facts(mart_results, allowed_fields=metric_fields)
+        text = f"{verified_summary}\n\n{text}".strip()
+    trace["requested_metric_surface"] = {
+        "repaired": metric_missing and can_repair,
+        "expected_display_numbers": sorted(requested_display_numbers),
+    }
+
     timed_out = tuple(item for item in results if item.status == "timeout")
     if timed_out:
         delayed = ", ".join(dict.fromkeys(item.source for item in timed_out))
@@ -128,6 +144,25 @@ def _payload_numbers(
 
 def _normalize_number(value: str) -> str:
     return value.replace(",", "").lstrip("+")
+
+
+def _requested_display_numbers(
+    results: tuple[SourceResult, ...],
+    allowed_fields: tuple[str, ...],
+) -> set[str]:
+    numbers: set[str] = set()
+    for result in results:
+        for path, value in _walk_scalars(result.payload):
+            if isinstance(value, bool) or not isinstance(value, int | float):
+                continue
+            lowered = path.casefold()
+            if not any(field in lowered for field in allowed_fields):
+                continue
+            leaf = path.rsplit(".", 1)[-1].casefold()
+            if leaf in {"value", "amount"} or leaf.endswith("_value"):
+                continue
+            numbers.add(_normalize_number(str(value)))
+    return numbers
 
 
 def _without_numbers(text: str) -> str:

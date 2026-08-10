@@ -850,6 +850,39 @@ def test_v4_gates_render_verified_mart_summary_instead_of_raw_fields() -> None:
     assert "- value:" not in gated.text
 
 
+def test_v4_gates_prepend_requested_mart_metric_when_synthesis_omits_it() -> None:
+    results = (
+        SourceResult(
+            source="mart",
+            query="리바로 매출",
+            status="ok",
+            payload={
+                "calls": [
+                    {
+                        "summary_text": "리바로 2026-06 UBIST 전략 mart 지표: 매출 85.87억원, MS 3.72%, 순위 6위.",
+                        "render_data": {
+                            "value": 8587458961.25,
+                            "sales_억원": 85.87,
+                            "ms_pct": 3.72,
+                            "rank": 6,
+                        },
+                    }
+                ]
+            },
+        ),
+    )
+
+    gated = apply_v4_gates(
+        "리바로 매출 알려줘",
+        "리바로 매출은 시장 경쟁 상황의 영향을 받는 것으로 확인되었습니다.",
+        results,
+    )
+
+    assert gated.text.startswith("리바로 2026-06 UBIST 전략 mart 지표: 매출 85.87억원")
+    assert gated.trace["requested_metric_surface"]["repaired"] is True
+    assert "8587458961.25" not in gated.text
+
+
 def test_v4_surface_detects_raw_won_values() -> None:
     assert _INTERNAL_SURFACE_RE.search("매출은 8587458961.25 KRW입니다.")
 
