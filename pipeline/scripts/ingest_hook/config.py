@@ -40,6 +40,7 @@ ENV_CSD_CHANNEL_DB_HOST = "CSD_CHANNEL_DB_HOST"
 ENV_CSD_CHANNEL_DB_PORT = "CSD_CHANNEL_DB_PORT"
 ENV_CSD_CHANNEL_DB_USER = "CSD_CHANNEL_DB_USER"
 ENV_CSD_CHANNEL_DB_PASSWORD = "CSD_CHANNEL_DB_PASSWORD"
+ENV_KEYWORD_TOPIC_ASSIGN_ENABLED = "KEYWORD_TOPIC_ASSIGN_ENABLED"
 
 DEFAULT_LOG_ROOT = "/market-output/ingest-logs"     # durable path on llmops-market-output RWX PVC
 MARKET_OUTPUT_ROOT = Path("/market-output")
@@ -50,6 +51,14 @@ DEFAULT_JOB_IMAGE = (
     "asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/"
     "jw-pipeline-orchestrator@sha256:030f81837d05b8789b879fc04ddf0865a7953ddd2cb9d26fc8b707bf394e5e12"
 )
+
+
+def keyword_topic_assign_enabled() -> bool:
+    """Return the explicit keyword-assignment switch; deployment default is off."""
+    value = os.environ.get(ENV_KEYWORD_TOPIC_ASSIGN_ENABLED, "false").strip().lower()
+    if value not in {"true", "false"}:
+        raise RuntimeError(f"{ENV_KEYWORD_TOPIC_ASSIGN_ENABLED} must be true or false")
+    return value == "true"
 
 
 def source_activation_enabled(category: str, *, mode: str) -> bool:

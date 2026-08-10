@@ -121,7 +121,10 @@ def test_keyword_complete_signal_identifies_published_schema_and_time(monkeypatc
     plan = SimpleNamespace(
         run_id=build_run_id,
         raw=SimpleNamespace(live=SimpleNamespace(table="raw_keyword_events")),
-        stage=SimpleNamespace(live=SimpleNamespace(table="km_keyword_event_stage")),
+        stage=SimpleNamespace(
+            live=SimpleNamespace(table="km_keyword_event_stage"),
+            candidate=SimpleNamespace(schema="candidate_schema", table="km_keyword_event_stage"),
+        ),
     )
     evidence = SimpleNamespace(
         raw_rows=9512,
@@ -157,6 +160,11 @@ def test_keyword_complete_signal_identifies_published_schema_and_time(monkeypatc
     monkeypatch.setattr(csd_keyword_publish_runner.csd_keyword_activation, "evidence_from_payload", lambda _raw: evidence)
     monkeypatch.setattr(csd_keyword_publish_runner.csd_keyword_activation, "validate_candidate", lambda *_args: evidence)
     monkeypatch.setattr(csd_keyword_publish_runner.csd_keyword_activation, "publish_candidate", publish_candidate)
+    monkeypatch.setattr(
+        csd_keyword_publish_runner,
+        "_candidate_period_scope",
+        lambda *_args: {"dimension": "period_ym", "count": 2, "values": ["2025-07", "2025-10"]},
+    )
     monkeypatch.setattr(csd_keyword_publish_runner, "_emit_completion_signal", lambda **kwargs: signal.update(kwargs))
 
     assert csd_keyword_publish_runner.run(

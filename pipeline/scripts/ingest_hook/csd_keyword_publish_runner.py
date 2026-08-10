@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import sys
+import time
+from typing import Any, Callable
 
 from pipeline.scripts.ingest_hook import config, csd_keyword_activation
 from pipeline.scripts.ingest_hook.job_launcher import publish_job_name
@@ -13,23 +15,89 @@ from pipeline.scripts.ingest_hook.job_runner import (
 )
 from pipeline.scripts.ingest_hook.ledger import STATUS_PUBLISH_RUNNING, Ledger
 from pipeline.scripts.ingest_hook.ubist_mart_activation import acquire_writer_lock
+from pipeline.scripts.deploy.brand_activity_307.row_topic_monthly_wrapper import (
+    RowTopicRunResult,
+    run_for_ingest,
+)
 
 
-def _record_downstream(ledger: Ledger, identity: tuple[str, str, str], run_id: str) -> None:
-    for seq, stage in ((4, "topic_extraction"), (5, "dashboard")):
-        stamp = _stamp()
-        ledger.record_stage(
-            *identity,
-            run_id=run_id,
-            seq=seq,
-            stage=stage,
-            status="complete",
-            reason="live keyword stage is queryable after atomic publish",
-            started_at=stamp,
-            finished_at=stamp,
-            duration_ms=0,
+def _candidate_period_scope(connection: Any, plan: Any) -> dict[str, object]:
+    ref = plan.stage.candidate
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"SELECT DISTINCT period_ym FROM `{ref.schema}`.`{ref.table}` "
+            "WHERE period_ym IS NOT NULL AND period_ym <> '' ORDER BY period_ym"
         )
-        print(f"[stage] {stage} end rc=0")
+        rows = cursor.fetchall()
+    values = sorted({str(row["period_ym"] if isinstance(row, dict) else row[0]) for row in rows})
+    return {"dimension": "period_ym", "count": len(values), "values": values}
+
+
+def _record_topic_assignment(
+    *,
+    ledger: Ledger,
+    identity: tuple[str, str, str],
+    run_id: str,
+    affected_scope: dict[str, object],
+    runner: Callable[..., RowTopicRunResult] = run_for_ingest,
+) -> None:
+    started_at = _stamp()
+    duration_ms: int | None = None
+    try:
+        enabled = config.keyword_topic_assign_enabled()
+    except Exception as exc:
+        enabled = None
+        reason = f"배정 실패: {type(exc).__name__}: {exc}"
+    if enabled is False:
+        reason = "배정 비활성 (KEYWORD_TOPIC_ASSIGN_ENABLED=false)"
+    elif enabled is True:
+        started = time.monotonic()
+        try:
+            result = runner(
+                affected_scope=affected_scope,
+                category=identity[1],
+                epoch=identity[0],
+                manifest_sha=identity[2],
+                run_id=run_id,
+            )
+            reason = (
+                "배정 대상 없음"
+                if result.pending_rows == 0
+                else f"배정 {result.inserts}건 생성 · LLM 호출 {result.calls}회"
+            )
+        except Exception as exc:  # Assignment is intentionally non-fatal to atomic ingest.
+            reason = f"배정 실패: {type(exc).__name__}: {exc}"
+            print(f"[stage] topic_extraction nonfatal reason={reason}", file=sys.stderr)
+        duration_ms = max(1, round((time.monotonic() - started) * 1000))
+    finished_at = _stamp()
+    ledger.record_stage(
+        *identity,
+        run_id=run_id,
+        seq=4,
+        stage="topic_extraction",
+        status="complete",
+        reason=reason,
+        started_at=started_at,
+        finished_at=finished_at,
+        duration_ms=duration_ms,
+    )
+    print("[stage] topic_extraction end rc=0")
+
+
+def _record_dashboard(ledger: Ledger, identity: tuple[str, str, str], run_id: str) -> None:
+    stamp = _stamp()
+    ledger.record_stage(
+        *identity,
+        run_id=run_id,
+        seq=5,
+        stage="dashboard",
+        status="complete",
+        reason="live keyword stage is queryable after atomic publish",
+        started_at=stamp,
+        finished_at=stamp,
+        duration_ms=None,
+    )
+    print("[stage] dashboard end rc=0")
 
 
 def run(
@@ -108,12 +176,19 @@ def run(
             raise csd_keyword_activation.CandidateValidationError(
                 "keyword candidate evidence changed after approval"
             )
+        affected_scope = _candidate_period_scope(writer_connection, plan)
         csd_keyword_activation.publish_candidate(
             activation_connection, plan, current
         )
         published_at = _stamp()
         tracker.done()
-        _record_downstream(ledger, identity, publish_run_id)
+        _record_topic_assignment(
+            ledger=ledger,
+            identity=identity,
+            run_id=publish_run_id,
+            affected_scope=affected_scope,
+        )
+        _record_dashboard(ledger, identity, publish_run_id)
         ledger.mark_complete(
             *identity,
             row_counts={

@@ -41,6 +41,14 @@ CSD_CHANNEL_E2E_STAGES: tuple[tuple[str, str], ...] = (
     ("dashboard", "대시보드"),
 )
 
+CSD_KEYWORD_E2E_STAGES: tuple[tuple[str, str], ...] = (
+    ("g3", "G3"),
+    ("load", "적재"),
+    ("mart_publish", "CSD 원천·스테이지 게시"),
+    ("topic_extraction", "토픽 배정"),
+    ("dashboard", "대시보드"),
+)
+
 
 @dataclass(frozen=True)
 class CategorySpec:

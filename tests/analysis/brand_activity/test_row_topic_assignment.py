@@ -283,6 +283,35 @@ def test_runner_plans_batches_per_scope_brand_pair() -> None:
     assert [[row.row_id for row in batch.rows] for batch in plan.pending_batches] == [[1, 2], [3], [4]]
 
 
+def test_affected_period_scope_filters_prepared_rows_deterministically() -> None:
+    prepared = row_topic_db.PreparedRun(
+        topic_set_version="topic-set",
+        rows=(_row(1, period="2025-10"), _row(2, period="2025-09"), _row(3, period="2025-10")),
+        rubrics={},
+    )
+
+    scope = row_topic_execute.parse_affected_scope(
+        '{"dimension":"period_ym","count":1,"values":["2025-10"]}'
+    )
+    scoped = row_topic_execute.apply_affected_scope(prepared, scope)
+
+    assert scope == ("2025-10",)
+    assert [row.row_id for row in scoped.rows] == [1, 3]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '{"dimension":"atc4","count":1,"values":["L01"]}',
+        '{"dimension":"period_ym","count":2,"values":["2025-10"]}',
+        '{"dimension":"period_ym","count":2,"values":["2025-10","2025-10"]}',
+    ],
+)
+def test_affected_period_scope_rejects_broad_or_ambiguous_payloads(payload: str) -> None:
+    with pytest.raises(rta.AssignmentParseError):
+        row_topic_execute.parse_affected_scope(payload)
+
+
 def test_execute_rubric_combines_axis_with_only_that_brand_topics() -> None:
     """Given a stored scope payload, When rubrics are built, Then brand topics stay brand-local."""
     payload = {

@@ -65,6 +65,7 @@ def main() -> int:
     parser.add_argument("--serving-id", default="163")
     parser.add_argument("--pending-source", choices=(PENDING_SOURCE_FILE, PENDING_SOURCE_DB), default=PENDING_SOURCE_FILE)
     parser.add_argument("--retry-unresolved", action="store_true")
+    parser.add_argument("--affected-scope-json", default="")
     args = parser.parse_args()
     schema = validated_stage_schema(args.schema)
     connection = connect_mariadb(read_env_file())
@@ -73,6 +74,7 @@ def main() -> int:
             _print_json(apply_ddl(connection, schema=schema))
             return 0
         prepared = prepare_run(connection, schema=schema, topic_set_version=args.topic_set_version)
+        prepared = apply_affected_scope(prepared, parse_affected_scope(args.affected_scope_json))
         summary = dry_summary(
             prepared,
             connection,
@@ -102,6 +104,37 @@ def main() -> int:
         return 0
     finally:
         connection.close()
+
+
+def parse_affected_scope(raw: str) -> tuple[str, ...] | None:
+    """Parse the ingest scope without allowing an accidental global assignment run."""
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise AssignmentParseError(f"affected scope is not valid JSON: {exc}") from exc
+    if not isinstance(payload, dict) or payload.get("dimension") != "period_ym":
+        raise AssignmentParseError("affected scope dimension must be period_ym")
+    values = payload.get("values")
+    count = payload.get("count")
+    if not isinstance(values, list) or not all(isinstance(value, str) and value for value in values):
+        raise AssignmentParseError("affected scope values must be non-empty period strings")
+    if len(values) != len(set(values)) or count != len(values):
+        raise AssignmentParseError("affected scope count must match unique values")
+    return tuple(sorted(values))
+
+
+def apply_affected_scope(prepared: PreparedRun, periods: tuple[str, ...] | None) -> PreparedRun:
+    """Restrict assignment inputs to the periods atomically published by this ingest."""
+    if periods is None:
+        return prepared
+    allowed = set(periods)
+    return PreparedRun(
+        topic_set_version=prepared.topic_set_version,
+        rows=tuple(row for row in prepared.rows if row.period_ym in allowed),
+        rubrics=prepared.rubrics,
+    )
 
 
 def dry_summary(
