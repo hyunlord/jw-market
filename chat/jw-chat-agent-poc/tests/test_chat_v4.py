@@ -26,6 +26,7 @@ from jw_chat_agent_poc.service.v4.planner import V4Planner
 from jw_chat_agent_poc.service.v4.runtime import V4Runtime
 from jw_chat_agent_poc.service.v4 import adapters as v4_adapters
 from jw_chat_agent_poc.service.v4 import llm as v4_llm
+from jw_chat_agent_poc.service.v4 import synthesizer as v4_synthesizer
 from jw_chat_agent_poc.service.v4.synthesizer import V4Synthesizer, _evidence_fallback
 
 
@@ -171,6 +172,75 @@ def test_v4_fallback_writes_hira_patient_counts_as_user_facing_prose() -> None:
     assert "ptntCnt" not in answer
 
 
+def test_v4_fallback_joins_hira_name_and_split_year_rows() -> None:
+    result = SourceResult(
+        source="hira",
+        query="D693 상병 환자수 최근 5년",
+        status="ok",
+        payload={
+            "calls": [
+                {
+                    "render_data": {
+                        "items": [
+                            {"sickCd": "D693", "sickNm": "특발성 혈소판감소성 자반"}
+                        ]
+                    }
+                },
+                {
+                    "render_data": {
+                        "request": {"sickCd": "D693", "year": "2024"},
+                        "items": [
+                            {"inpatOpat": "입원", "ptntCnt": "1606"},
+                            {"inpatOpat": "외래", "ptntCnt": "9231"},
+                        ],
+                    }
+                },
+            ]
+        },
+    )
+
+    answer = _evidence_fallback((result,))
+
+    assert "D693(특발성 혈소판감소성 자반) 환자수는 2024년 입원 1,606명, 외래 9,231명" in answer
+    assert all(field not in answer for field in ("sickCd", "ptntCnt", "value"))
+
+
+def test_v4_fallback_never_lists_unknown_internal_field_names() -> None:
+    result = SourceResult(
+        source="openfda",
+        query="리바로 안전성",
+        status="ok",
+        payload={"calls": [{"render_data": {"value": 123, "secretField": "raw"}}]},
+    )
+
+    answer = _evidence_fallback((result,))
+
+    assert "value" not in answer
+    assert "secretField" not in answer
+    assert "FDA" in answer
+
+
+def test_v4_fallback_uses_mart_display_summary_not_raw_won_value() -> None:
+    result = SourceResult(
+        source="mart",
+        query="리바로 매출",
+        status="ok",
+        payload={
+            "calls": [
+                {
+                    "summary_text": "리바로 매출은 85.87억원입니다.",
+                    "render_data": {"value": 8587458961.25, "sales_억원": 85.87},
+                }
+            ]
+        },
+    )
+
+    answer = _evidence_fallback((result,))
+
+    assert "85.87억원" in answer
+    assert "8587458961.25" not in answer
+
+
 def test_v4_synthesizer_sends_detail_rows_in_question_first_layout() -> None:
     class Client:
         def __init__(self) -> None:
@@ -179,7 +249,7 @@ def test_v4_synthesizer_sends_detail_rows_in_question_first_layout() -> None:
         def complete(self, messages, *, budget_s=None, max_tokens=None) -> str:
             self.messages = messages
             assert budget_s == 15.0
-            assert max_tokens == 4096
+            assert max_tokens == 8192
             return "2024년 D693 외래 환자수는 12,345명입니다. [출처: HIRA]"
 
     client = Client()
@@ -419,7 +489,7 @@ def test_v4_clients_use_their_scoped_genos_endpoints_and_tokens(monkeypatch) -> 
     assert synthesizer.token == "synthesizer-token"
 
 
-def test_v4_synthesizer_transport_sets_explicit_token_cap(monkeypatch) -> None:
+def test_v4_synthesizer_transport_preserves_finish_reason_and_usage(monkeypatch) -> None:
     captured = {}
 
     class Response:
@@ -429,6 +499,7 @@ def test_v4_synthesizer_transport_sets_explicit_token_cap(monkeypatch) -> None:
         def iter_lines(self, *, decode_unicode):
             assert decode_unicode is True
             yield 'data: {"choices":[{"delta":{"content":"답변"}}]}'
+            yield 'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":4}}'
             yield "data: [DONE]"
 
         def close(self) -> None:
@@ -447,12 +518,99 @@ def test_v4_synthesizer_transport_sets_explicit_token_cap(monkeypatch) -> None:
         total_budget_s=20,
     )
 
-    answer = client.complete([{"role": "user", "content": "질문"}], max_tokens=4096)
+    completion = client.complete_detailed(
+        [{"role": "user", "content": "질문"}],
+        max_tokens=8192,
+    )
 
-    assert answer == "답변"
-    assert captured["json"]["max_tokens"] == 4096
+    assert completion.text == "답변"
+    assert completion.finish_reason == "stop"
+    assert completion.usage == {"prompt_tokens": 10, "completion_tokens": 4}
+    assert captured["json"]["max_tokens"] == 8192
     assert captured["json"]["model"] == "gemini-3-flash-preview"
     assert captured["closed"] is True
+
+
+def test_v4_synthesizer_uses_grounded_fallback_for_length_cutoff() -> None:
+    class Client:
+        def complete_detailed(self, _messages, *, budget_s=None, max_tokens=None):
+            assert max_tokens == 8192
+            return v4_llm.CompletionResult(
+                text="잘린 답변입니다",
+                finish_reason="length",
+                usage={"completion_tokens": 8192},
+                elapsed_ms=12_000,
+            )
+
+    result = SourceResult(
+        source="hira",
+        query="D693 환자수",
+        status="ok",
+        payload={
+            "calls": [
+                {
+                    "render_data": {
+                        "request": {"sickCd": "D693", "year": "2024"},
+                        "items": [{"inpatOpat": "입원", "ptntCnt": "1606"}],
+                    }
+                }
+            ]
+        },
+    )
+
+    outcome = V4Synthesizer(Client()).synthesize_with_trace(
+        _plan(), (result,), (), budget_s=24.0
+    )
+
+    assert "2024년 입원 1,606명" in outcome.text
+    assert outcome.trace["finish_reason"] == "length"
+    assert outcome.trace["fallback_reason"] == "length"
+
+
+def test_hira_year_calls_are_parallel_and_retry_only_failures() -> None:
+    attempts: dict[str, int] = {}
+
+    def fetch(_code: str, year: str):
+        attempts[year] = attempts.get(year, 0) + 1
+        time.sleep(0.04)
+        status = "error" if year == "2022" and attempts[year] == 1 else "live"
+        return SimpleNamespace(status=status, render_data={"request": {"year": year}})
+
+    started = time.monotonic()
+    calls = v4_adapters._parallel_hira_year_calls(
+        fetch, "D693", ("2020", "2021", "2022", "2023", "2024")
+    )
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.16
+    assert [call.render_data["request"]["year"] for call in calls] == [
+        "2020", "2021", "2022", "2023", "2024"
+    ]
+    assert attempts == {"2020": 1, "2021": 1, "2022": 2, "2023": 1, "2024": 1}
+
+
+def test_parallel_executor_soft_deadline_stops_after_answer_source_arrives() -> None:
+    def adapter(source: str, query: str) -> SourceResult:
+        time.sleep(0.01 if source == "hira" else 0.25)
+        return SourceResult(source=source, query=query, status="ok", payload={"source": source})
+
+    executor = ParallelSourceExecutor(
+        adapters={name: (lambda query, source=name: adapter(source, query)) for name in SOURCE_NAMES},
+        per_tool_timeout_s=1.0,
+        total_timeout_s=1.0,
+    )
+    started = time.monotonic()
+    results = executor.execute(
+        _plan(),
+        session_id="session-soft-deadline",
+        answer_sources=("hira",),
+        soft_deadline_s=0.06,
+    )
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.16
+    assert next(item for item in results if item.source == "hira").status == "ok"
+    assert any(item.notice == "정답 근거 도착 후 soft deadline으로 미포함" for item in results)
 
 
 def test_planner_does_not_outer_retry_transport_failures() -> None:
@@ -482,7 +640,7 @@ def test_runtime_marks_successful_citations_used() -> None:
             return None
 
     class Executor:
-        def execute(self, _plan, *, session_id, total_timeout_s):
+        def execute(self, _plan, *, session_id, total_timeout_s, **_kwargs):
             return (
                 SourceResult(
                     source="web",
@@ -531,7 +689,7 @@ def test_runtime_reserves_planner_budget_and_reports_serving_without_fallback() 
             return None
 
     class Executor:
-        def execute(self, _plan, *, session_id, total_timeout_s):
+        def execute(self, _plan, *, session_id, total_timeout_s, **_kwargs):
             return ()
 
     class Synthesizer:
@@ -546,6 +704,42 @@ def test_runtime_reserves_planner_budget_and_reports_serving_without_fallback() 
 
     assert answer.trace["planner_serving"] == "190"
     assert answer.trace["fallback"] is False
+
+
+def test_runtime_exposes_synthesizer_usage_metadata() -> None:
+    plan = _plan()
+
+    class Planner:
+        serving_id = "190"
+
+        def plan(self, _question, _turns, *, budget_s):
+            return plan
+
+        def link(self, *_args, **_kwargs):
+            return None
+
+    class Executor:
+        def execute(self, _plan, **_kwargs):
+            return ()
+
+    class Synthesizer:
+        def synthesize_with_trace(self, _plan, _results, _turns, *, budget_s):
+            return v4_synthesizer.SynthesisOutcome(
+                text="근거 기반 답변",
+                trace={
+                    "finish_reason": "stop",
+                    "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+                },
+            )
+
+    answer = V4Runtime(
+        planner=Planner(),
+        executor=Executor(),
+        synthesizer=Synthesizer(),
+    ).answer("질문", conversation_id="usage-trace", turns=())
+
+    assert answer.trace["synthesizer"]["finish_reason"] == "stop"
+    assert answer.trace["synthesizer"]["usage"]["completion_tokens"] == 20
 
 
 def test_runtime_runs_at_most_one_linking_hop() -> None:
@@ -565,7 +759,7 @@ def test_runtime_runs_at_most_one_linking_hop() -> None:
     class Executor:
         calls = 0
 
-        def execute(self, plan, *, session_id, total_timeout_s):
+        def execute(self, plan, *, session_id, total_timeout_s, **_kwargs):
             self.calls += 1
             return (
                 SourceResult(

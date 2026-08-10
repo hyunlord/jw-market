@@ -8,7 +8,7 @@ from collections.abc import Sequence
 import requests
 
 from jw_chat_agent_poc.service.conversation import ConversationTurn
-from jw_chat_agent_poc.service.v4.contracts import PlannerOutput, SourceResult, ToolQueries
+from jw_chat_agent_poc.service.v4.contracts import PlannerOutput, SourceName, SourceResult, ToolQueries
 from jw_chat_agent_poc.service.v4.llm import GenOSV4Client
 
 
@@ -103,6 +103,8 @@ def _planner_messages(question: str, turns: Sequence[ConversationTurn]) -> list[
                 "expand the user's meaning, and produce queries for every source. You do not select tools: "
                 "all seven keys mart, nedrug, hira, openfda, clinicaltrials, web, patent must contain at least "
                 "one useful query. Until patent tooling is implemented, make patent a web-search query. "
+                "Set answer_sources to the smallest source list that directly answers the user's question; "
+                "these sources form the evidence quorum while all seven sources still run. "
                 "Return JSON only, with no markdown. Set needs_second_hop only when first-hop entities are "
                 "needed for one additional linking round. Schema: "
                 + json.dumps(schema, ensure_ascii=False)
@@ -138,6 +140,7 @@ def _fallback_plan(
     return PlannerOutput(
         resolved_question=resolved,
         expanded_intents=("시장 지표", "공식 의약 정보", "외부 최신 근거"),
+        answer_sources=_fallback_answer_sources(question),
         tool_queries=ToolQueries(
             mart=(question,),
             nedrug=(f"{question} 의약품 허가 효능 성분",),
@@ -150,3 +153,16 @@ def _fallback_plan(
         linking_plan=f"planner fallback; no second hop: {reason[:160]}",
         needs_second_hop=False,
     )
+
+
+def _fallback_answer_sources(question: str) -> tuple[SourceName, ...]:
+    lowered = question.casefold()
+    if any(token in lowered for token in ("환자", "상병", "급여")):
+        return ("hira",)
+    if any(token in lowered for token in ("효능", "효과", "허가", "성분")):
+        return ("nedrug",)
+    if "nct" in lowered or "임상" in lowered:
+        return ("clinicaltrials",)
+    if any(token in lowered for token in ("매출", "점유율", "순위", "성장", "경쟁")):
+        return ("mart",)
+    return ("web",)

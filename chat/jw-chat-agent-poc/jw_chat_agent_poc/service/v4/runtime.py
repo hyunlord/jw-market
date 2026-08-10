@@ -11,7 +11,7 @@ from jw_chat_agent_poc.service.v4.executor import ParallelSourceExecutor
 from jw_chat_agent_poc.service.v4.gates import apply_v4_gates
 from jw_chat_agent_poc.service.v4.llm import planner_client, synthesizer_client
 from jw_chat_agent_poc.service.v4.planner import V4Planner
-from jw_chat_agent_poc.service.v4.synthesizer import V4Synthesizer
+from jw_chat_agent_poc.service.v4.synthesizer import SynthesisOutcome, V4Synthesizer
 
 
 _PUBLIC_SOURCE = {
@@ -58,6 +58,8 @@ class V4Runtime:
             plan,
             session_id=session_id,
             total_timeout_s=min(20.0, _remaining(deadline)),
+            answer_sources=plan.answer_sources,
+            soft_deadline_s=6.0,
         )
         linked_plan = (
             self._planner.link(
@@ -74,18 +76,32 @@ class V4Runtime:
                 linked_plan,
                 session_id=session_id,
                 total_timeout_s=min(10.0, _remaining(deadline)),
+                answer_sources=linked_plan.answer_sources,
+                soft_deadline_s=6.0,
             )
             if linked_plan is not None and _remaining(deadline) > 0.1
             else ()
         )
         results = tuple(_mark_citations_used(result) for result in (*first_results, *linked_results))
-        synthesized = self._synthesizer.synthesize(
-            plan,
-            results,
-            selected_turns,
-            budget_s=min(15.0, _remaining(deadline)),
-        )
-        gated = apply_v4_gates(plan.resolved_question, synthesized, results)
+        synthesize_with_trace = getattr(self._synthesizer, "synthesize_with_trace", None)
+        if callable(synthesize_with_trace):
+            synthesis = synthesize_with_trace(
+                plan,
+                results,
+                selected_turns,
+                budget_s=min(24.0, _remaining(deadline)),
+            )
+        else:
+            synthesis = SynthesisOutcome(
+                text=self._synthesizer.synthesize(
+                    plan,
+                    results,
+                    selected_turns,
+                    budget_s=min(24.0, _remaining(deadline)),
+                ),
+                trace={},
+            )
+        gated = apply_v4_gates(plan.resolved_question, synthesis.text, results)
         elapsed_ms = (time.monotonic() - started) * 1000
         trace = {
             "v4": True,
@@ -109,6 +125,7 @@ class V4Runtime:
                 }
                 for result in results
             ],
+            "synthesizer": synthesis.trace,
             "gates": gated.trace,
         }
         sources = tuple(

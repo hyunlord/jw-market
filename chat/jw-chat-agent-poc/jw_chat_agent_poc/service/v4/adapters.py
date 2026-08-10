@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import re
+from collections.abc import Callable, Sequence
 from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Any
@@ -35,6 +37,39 @@ _INGREDIENT_ALIASES = {
     "피타바스타틴": "Pitavastatin",
     "리바로": "Pitavastatin",
 }
+
+
+def _parallel_hira_year_calls(
+    fetch: Callable[[str, str], Any],
+    code: str,
+    years: Sequence[str],
+) -> list[Any]:
+    """Fetch independent HIRA years concurrently and retry only failed years."""
+
+    async def gather() -> list[Any]:
+        tasks = [asyncio.create_task(asyncio.to_thread(fetch, code, year)) for year in years]
+        try:
+            first = await asyncio.gather(*tasks, return_exceptions=True)
+        except asyncio.CancelledError:
+            for task in tasks:
+                task.cancel()
+            raise
+        failed = [
+            index
+            for index, result in enumerate(first)
+            if isinstance(result, Exception)
+            or str(getattr(result, "status", "")).casefold() == "error"
+        ]
+        if failed:
+            retries = await asyncio.gather(
+                *(asyncio.to_thread(fetch, code, years[index]) for index in failed),
+                return_exceptions=True,
+            )
+            for index, result in zip(failed, retries, strict=True):
+                first[index] = result
+        return [result for result in first if not isinstance(result, Exception)]
+
+    return asyncio.run(gather())
 
 
 def _nct_id(query: str) -> str | None:
@@ -231,8 +266,11 @@ def build_source_adapters() -> dict[SourceName, Any]:
             calls = [external.hira_disease_name_code(code)]
             years = hira_requested_years(base) or ("2024",)
             calls.extend(
-                external.hira_disease_hospitalization_outpatient_stats(code, year)
-                for year in years
+                _parallel_hira_year_calls(
+                    external.hira_disease_hospitalization_outpatient_stats,
+                    code,
+                    years,
+                )
             )
             return external_calls("hira", query, calls)
         return external_calls("hira", query, [external.hira_disease_name_code(base)])

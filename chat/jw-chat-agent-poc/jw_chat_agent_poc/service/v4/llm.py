@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from dataclasses import replace
 import json
 import os
@@ -20,6 +21,14 @@ from jw_chat_agent_poc.service.genos_client import GenosClient
 
 PLANNER_MODEL = "gemini-3.1-pro-preview"
 SYNTHESIZER_MODEL = "gemini-3-flash-preview"
+
+
+@dataclass(frozen=True)
+class CompletionResult:
+    text: str
+    finish_reason: str | None
+    usage: dict[str, object]
+    elapsed_ms: float
 
 
 class GenOSV4Client:
@@ -59,7 +68,32 @@ class GenOSV4Client:
             )
         if max_tokens is None:
             return client._chat_text(list(messages))  # noqa: SLF001 - direct GenOS transport reuse
-        return _chat_text_with_token_cap(client, list(messages), max_tokens=max_tokens)
+        return _chat_completion_with_token_cap(
+            client,
+            list(messages),
+            max_tokens=max_tokens,
+        ).text
+
+    def complete_detailed(
+        self,
+        messages: Sequence[dict[str, str]],
+        *,
+        budget_s: float | None = None,
+        max_tokens: int,
+    ) -> CompletionResult:
+        client = self._client
+        if budget_s is not None:
+            bounded = max(1, int(budget_s))
+            client = replace(
+                client,
+                timeout_s=min(client.timeout_s, bounded),
+                total_budget_s=min(client.total_budget_s, bounded),
+            )
+        return _chat_completion_with_token_cap(
+            client,
+            list(messages),
+            max_tokens=max_tokens,
+        )
 
     @property
     def serving_id(self) -> str:
@@ -92,17 +126,17 @@ def synthesizer_client() -> GenOSV4Client:
             or resolve_final_genos_token()
         ),
         model=os.environ.get("V4_SYNTHESIZER_MODEL", SYNTHESIZER_MODEL),
-        timeout_s=int(os.environ.get("V4_SYNTHESIZER_TIMEOUT_S", "15")),
-        total_budget_s=int(os.environ.get("V4_SYNTHESIZER_BUDGET_S", "20")),
+        timeout_s=int(os.environ.get("V4_SYNTHESIZER_TIMEOUT_S", "24")),
+        total_budget_s=int(os.environ.get("V4_SYNTHESIZER_BUDGET_S", "28")),
     )
 
 
-def _chat_text_with_token_cap(
+def _chat_completion_with_token_cap(
     client: GenosClient,
     messages: list[dict[str, str]],
     *,
     max_tokens: int,
-) -> str:
+) -> CompletionResult:
     if max_tokens <= 0:
         raise ValueError("max_tokens must be positive")
     started = time.monotonic()
@@ -125,6 +159,8 @@ def _chat_text_with_token_cap(
     )
     response.raise_for_status()
     chunks: list[str] = []
+    finish_reason: str | None = None
+    usage: dict[str, object] = {}
     try:
         for raw_line in response.iter_lines(decode_unicode=True):
             if time.monotonic() - started >= client.total_budget_s:
@@ -138,9 +174,19 @@ def _chat_text_with_token_cap(
                 data = json.loads(encoded)
             except json.JSONDecodeError:
                 continue
+            if isinstance(data.get("usage"), dict):
+                usage = dict(data["usage"])
+            for choice in data.get("choices") or ():
+                if isinstance(choice, dict) and choice.get("finish_reason"):
+                    finish_reason = str(choice["finish_reason"])
             token = client._extract_delta_from_data(data)  # noqa: SLF001 - transport-compatible parser
             if token:
                 chunks.append(token)
     finally:
         response.close()
-    return "".join(chunks).strip()
+    return CompletionResult(
+        text="".join(chunks).strip(),
+        finish_reason=finish_reason,
+        usage=usage,
+        elapsed_ms=(time.monotonic() - started) * 1000,
+    )

@@ -3,15 +3,17 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from jw_chat_agent_poc.service.conversation import ConversationTurn
 from jw_chat_agent_poc.service.v4.contracts import PlannerOutput, SourceResult
-from jw_chat_agent_poc.service.v4.llm import GenOSV4Client
+from jw_chat_agent_poc.service.v4.llm import CompletionResult, GenOSV4Client
 
 
 _INTERNAL_SURFACE_RE = re.compile(
     r"MCP\s+returned|\btotalCount\b|\bslot[_ -]?id\b|"
+    r"\b(?:sickCd|ptntCnt|value)\b|"
     r"\b(?:hira|clinicaltrials|mfds|openfda|tavily)_[a-z0-9_]+\b|"
     r"(?:\bNCT\d{8}\b\s*[,/]\s*)+\bNCT\d{8}\b",
     re.IGNORECASE,
@@ -41,7 +43,10 @@ _FOOTNOTES = {
     "patent": "특허 존속기간 만료가 곧 제네릭 진입 시점을 뜻하지 않습니다.",
 }
 _DROP_KEYS = frozenset({"tool", "summary_text", "mcp", "totalCount", "elapsed_ms"})
-_META_KEYS = frozenset({"request", "resultCode", "message", "status", "source", "safe_url"})
+@dataclass(frozen=True)
+class SynthesisOutcome:
+    text: str
+    trace: dict[str, Any]
 
 
 class V4Synthesizer:
@@ -56,6 +61,21 @@ class V4Synthesizer:
         *,
         budget_s: float = 15.0,
     ) -> str:
+        return self.synthesize_with_trace(
+            plan,
+            results,
+            turns,
+            budget_s=budget_s,
+        ).text
+
+    def synthesize_with_trace(
+        self,
+        plan: PlannerOutput,
+        results: Sequence[SourceResult],
+        turns: Sequence[ConversationTurn],
+        *,
+        budget_s: float = 24.0,
+    ) -> SynthesisOutcome:
         usable = tuple(
             result
             for result in results
@@ -64,19 +84,35 @@ class V4Synthesizer:
             and (result.source != "web" or _web_has_citable_body(result.payload))
         )
         if not usable:
-            return "이번 조회에서 확인된 근거가 없어 구체적인 답을 구성하지 못했습니다."
+            return SynthesisOutcome(
+                text="이번 조회에서 확인된 근거가 없어 구체적인 답을 구성하지 못했습니다.",
+                trace={"status": "no_usable_evidence", "fallback_reason": "no_evidence"},
+            )
 
         messages = _synthesis_messages(plan, usable, turns)
+        completion: CompletionResult | None = None
+        error_type: str | None = None
         try:
-            answer = self._client.complete(
+            completion = _complete_detailed(
+                self._client,
                 messages,
                 budget_s=budget_s,
-                max_tokens=4096,
-            ).strip()
-        except Exception:  # noqa: BLE001 - a grounded fallback is preferable to a 500
+                max_tokens=8192,
+            )
+            answer = completion.text.strip()
+        except Exception as exc:  # noqa: BLE001 - a grounded fallback is preferable to a 500
             answer = ""
+            error_type = type(exc).__name__
+
+        fallback_reason: str | None = None
+        if completion is not None and completion.finish_reason == "length":
+            answer = ""
+            fallback_reason = "length"
+        elif not answer:
+            fallback_reason = "empty_or_transport_error"
 
         if answer and _INTERNAL_SURFACE_RE.search(answer):
+            original_answer = answer
             repair_messages = [
                 *messages,
                 {"role": "assistant", "content": answer},
@@ -90,19 +126,53 @@ class V4Synthesizer:
                 },
             ]
             try:
-                answer = self._client.complete(
+                repaired = _complete_detailed(
+                    self._client,
                     repair_messages,
                     budget_s=min(6.0, budget_s),
                     max_tokens=4096,
-                ).strip()
+                )
+                answer = repaired.text.strip()
+                if repaired.finish_reason == "length":
+                    answer = original_answer
             except Exception:  # noqa: BLE001 - deterministic surface replacement follows
-                answer = ""
+                answer = original_answer
 
         if not answer:
             answer = _evidence_fallback(usable)
         elif _INTERNAL_SURFACE_RE.search(answer):
             answer = _replace_internal_blocks(answer, usable)
-        return _append_automatic_footnotes(answer, usable)
+        return SynthesisOutcome(
+            text=_append_automatic_footnotes(answer, usable),
+            trace={
+                "status": "fallback" if fallback_reason else "synthesized",
+                "finish_reason": completion.finish_reason if completion else None,
+                "usage": completion.usage if completion else {},
+                "elapsed_ms": completion.elapsed_ms if completion else None,
+                "prompt_chars": sum(len(message["content"]) for message in messages),
+                "fallback_reason": fallback_reason,
+                "error_type": error_type,
+            },
+        )
+
+
+def _complete_detailed(
+    client: Any,
+    messages: Sequence[dict[str, str]],
+    *,
+    budget_s: float,
+    max_tokens: int,
+) -> CompletionResult:
+    detailed = getattr(client, "complete_detailed", None)
+    if callable(detailed):
+        return detailed(messages, budget_s=budget_s, max_tokens=max_tokens)
+    text = client.complete(messages, budget_s=budget_s, max_tokens=max_tokens)
+    return CompletionResult(
+        text=text,
+        finish_reason="stop",
+        usage={},
+        elapsed_ms=0.0,
+    )
 
 
 def _synthesis_messages(
@@ -186,6 +256,12 @@ def _public_payload(payload: Any) -> Any:
             calls = []
             for call in payload["calls"]:
                 if not isinstance(call, Mapping):
+                    continue
+                if str(call.get("status") or "").casefold() in {
+                    "error",
+                    "no_data",
+                    "unsupported",
+                }:
                     continue
                 calls.append(
                     {
@@ -343,43 +419,66 @@ def _evidence_fallback(results: Sequence[SourceResult]) -> str:
                 " ".join(summaries) + f" [출처: {_PUBLIC_SOURCE[result.source]}]"
             )
             continue
-        facts = []
-        for path, value in _walk_scalars(_public_payload(result.payload)):
-            label = path.rsplit(".", 1)[-1]
-            if label in _META_KEYS or value in (None, "", [], {}):
-                continue
-            if isinstance(value, (str, int, float)):
-                facts.append(f"{label} {value}")
-            if len(facts) >= 12:
-                break
-        if facts:
-            paragraphs.append(
-                f"{_PUBLIC_SOURCE[result.source]}에서 " + ", ".join(facts) + "이 확인되었습니다. "
-                f"[출처: {_PUBLIC_SOURCE[result.source]}]"
-            )
+        paragraphs.append(
+            f"{_PUBLIC_SOURCE[result.source]}에서 질문과 관련된 상세 근거가 확인되었습니다. "
+            f"[출처: {_PUBLIC_SOURCE[result.source]}]"
+        )
     if not paragraphs:
         return "조회는 완료됐지만 답변 본문에 제시할 수 있는 상세 근거를 확인하지 못했습니다."
     return "\n\n".join(paragraphs)
 
 
 def _hira_patient_facts(payload: Any) -> tuple[str, ...]:
-    facts: list[str] = []
-    for rows in _dict_lists(payload):
-        for row in rows:
-            year = row.get("year")
+    if not isinstance(payload, Mapping) or not isinstance(payload.get("calls"), list):
+        return ()
+    disease_code = ""
+    disease_name = ""
+    yearly: dict[str, list[str]] = {}
+    for call in payload["calls"]:
+        if not isinstance(call, Mapping):
+            continue
+        render = call.get("render_data")
+        if not isinstance(render, Mapping):
+            continue
+        request = render.get("request") if isinstance(render.get("request"), Mapping) else {}
+        year = str(request.get("year") or "")
+        disease_code = disease_code or str(request.get("sickCd") or "")
+        items = render.get("items")
+        if not isinstance(items, list):
+            continue
+        for row in items:
+            if not isinstance(row, Mapping):
+                continue
+            disease_code = disease_code or str(row.get("sickCd") or "")
+            disease_name = disease_name or str(row.get("sickNm") or "")
+            row_year = year or str(row.get("year") or "")
             patient_count = row.get("ptntCnt")
-            care_type = row.get("inpatOpat")
-            if year in (None, "") or patient_count in (None, ""):
+            if not row_year or patient_count in (None, ""):
                 continue
             try:
                 count = f"{int(str(patient_count).replace(',', '')):,}"
             except ValueError:
                 count = str(patient_count)
-            qualifier = f" {care_type}" if care_type not in (None, "") else ""
-            facts.append(
-                f"{year}년{qualifier} 환자수는 {count}명으로 확인되었습니다."
-            )
-    return tuple(dict.fromkeys(facts))
+            care_type = str(row.get("inpatOpat") or "환자")
+            yearly.setdefault(row_year, []).append(f"{care_type} {count}명")
+    if not yearly:
+        return ()
+    subject = disease_code
+    if disease_name:
+        subject += f"({disease_name})" if subject else disease_name
+    if subject:
+        return tuple(
+            f"{subject} 환자수는 {year}년 {', '.join(values)}으로 확인되었습니다."
+            for year, values in sorted(yearly.items())
+        )
+    facts: list[str] = []
+    for year, values in sorted(yearly.items()):
+        labeled = []
+        for value in values:
+            care_type, count = value.split(" ", 1)
+            labeled.append(f"{care_type} 환자수는 {count}")
+        facts.append(f"{year}년 {', '.join(labeled)}으로 확인되었습니다.")
+    return tuple(facts)
 
 
 def _safe_summaries(payload: Any) -> tuple[str, ...]:

@@ -54,9 +54,20 @@ class ToolQueries(_StrictModel):
 class PlannerOutput(_StrictModel):
     resolved_question: str = Field(min_length=1)
     expanded_intents: tuple[str, ...] = Field(min_length=1)
+    answer_sources: tuple[SourceName, ...] = SOURCE_NAMES
     tool_queries: ToolQueries
     linking_plan: str = Field(min_length=1)
     needs_second_hop: bool = False
+
+    @field_validator("answer_sources")
+    @classmethod
+    def answer_sources_must_not_be_empty(
+        cls,
+        values: tuple[SourceName, ...],
+    ) -> tuple[SourceName, ...]:
+        if not values:
+            raise ValueError("at least one answer source is required")
+        return tuple(dict.fromkeys(values))
 
 
 class Citation(_StrictModel):

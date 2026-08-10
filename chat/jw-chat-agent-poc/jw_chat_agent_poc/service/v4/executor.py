@@ -40,6 +40,8 @@ class ParallelSourceExecutor:
         *,
         session_id: str,
         total_timeout_s: float | None = None,
+        answer_sources: tuple[SourceName, ...] | None = None,
+        soft_deadline_s: float | None = None,
     ) -> tuple[SourceResult, ...]:
         started = time.monotonic()
         output: list[SourceResult | None] = []
@@ -84,6 +86,24 @@ class ParallelSourceExecutor:
             remaining = set(futures)
             while remaining:
                 now = time.monotonic()
+                if (
+                    answer_sources
+                    and soft_deadline_s is not None
+                    and now - started >= soft_deadline_s
+                    and _answer_quorum_met(output, answer_sources)
+                ):
+                    for future in tuple(remaining):
+                        remaining.remove(future)
+                        index, source, query, submitted = futures[future]
+                        future.cancel()
+                        output[index] = SourceResult(
+                            source=source,
+                            query=query,
+                            status="timeout",
+                            elapsed_ms=(now - submitted) * 1000,
+                            notice="정답 근거 도착 후 soft deadline으로 미포함",
+                        )
+                    break
                 expired = [
                     future
                     for future in remaining
@@ -122,7 +142,16 @@ class ParallelSourceExecutor:
                 )
                 done, _ = wait(
                     remaining,
-                    timeout=max(0.001, min(remaining_total, next_tool_deadline)),
+                    timeout=max(
+                        0.001,
+                        min(
+                            remaining_total,
+                            next_tool_deadline,
+                            max(0.001, started + soft_deadline_s - time.monotonic())
+                            if answer_sources and soft_deadline_s is not None
+                            else remaining_total,
+                        ),
+                    ),
                 )
                 for future in done:
                     remaining.remove(future)
@@ -154,3 +183,18 @@ class ParallelSourceExecutor:
         return result.model_copy(
             update={"elapsed_ms": (time.monotonic() - started) * 1000}
         )
+
+
+def _answer_quorum_met(
+    output: list[SourceResult | None],
+    answer_sources: tuple[SourceName, ...],
+) -> bool:
+    return all(
+        any(
+            result is not None
+            and result.source == source
+            and result.status == "ok"
+            for result in output
+        )
+        for source in answer_sources
+    )
