@@ -176,13 +176,20 @@ def test_strategic_cause_survives_binding_and_renders_chart() -> None:
     resolver._general_view = _GeneralView()
     question = "리바로 원인분석 좀 뽑아줘"
 
-    final = service_app._compute_final_answer(
+    call = resolver._query_layer.market_scope_from_mart("리바로")
+    call["source"] = "mariadb"
+    call["render_data"]["level_segments"][0]["value_억원"] = 400.12345
+    call["render_data"]["level_segments"][0]["ms_recent_pct"] = 20.12345
+    result = _strategic_cause_result(question, call, market_name="고지혈증", brand="리바로")
+    final = service_app.compute_final_answer(
         question,
-        resolver.answer_cause_analysis(question),
+        result,
         "cause-binding",
     )
 
     assert "| 순위 | 브랜드 |" in final.text
+    assert "| 1 | 리피토 | 400.12 | 20.12 |" in final.text
+    assert "근거 payload에 없는 수치는 출력에서 제외했습니다." not in final.text
     assert final.charts
 
 

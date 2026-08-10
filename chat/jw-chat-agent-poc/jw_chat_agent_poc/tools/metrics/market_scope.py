@@ -58,8 +58,8 @@ def _strategic_cause_result(
             "rows": (
                 (
                     data.get("period"),
-                    data.get("market_size_억원"),
-                    data.get("hhi_recent"),
+                    _cause_display_number(data.get("market_size_억원")),
+                    _cause_display_number(data.get("hhi_recent")),
                 ),
             ),
         }
@@ -73,8 +73,8 @@ def _strategic_cause_result(
                     (
                         row.get("rank"),
                         row.get("brand") or row.get("name"),
-                        row.get("value_억원"),
-                        row.get("ms_recent_pct"),
+                        _cause_display_number(row.get("value_억원")),
+                        _cause_display_number(row.get("ms_recent_pct")),
                     )
                     for row in segments[:10]
                 ),
@@ -163,6 +163,12 @@ def _cause_cell(value: object) -> str:
     if value is None:
         return "확인 불가"
     return str(value)
+
+
+def _cause_display_number(value: object) -> object:
+    if isinstance(value, float):
+        return round(value, 2)
+    return value
 
 
 class MarketScopeResolver:
