@@ -60,6 +60,15 @@ _DROP_KEYS = frozenset(
         "prdlst_stdr_code",
     }
 )
+_PUBLIC_FIELD_ALIASES = {
+    "CHANGE_DATE": "change_date",
+    "ENTP_NAME": "manufacturer",
+    "ITEM_INGR_NAME": "ingredient",
+    "ITEM_NAME": "product_name",
+    "ITEM_PERMIT_DATE": "permit_date",
+    "REEXAM_DATE": "reexamination_period",
+    "REEXAM_TARGET": "reexamination_target",
+}
 _BOILERPLATE_RE = re.compile(r"다운로드|담당부서.{0,20}연락|로그인|구독", re.IGNORECASE)
 @dataclass(frozen=True)
 class SynthesisOutcome:
@@ -254,7 +263,9 @@ def _synthesis_messages(
                 "쓰고, 고시·허가사항은 투여대상·제외기준·투여방법·투여횟수처럼 의미 단위 불릿으로 요약한다. "
                 "웹페이지 안내문이나 원문 레코드를 통째로 복사하지 않는다."
                 " gap_fill로 표시된 웹 근거는 공식 통계 표나 시계열에 섞지 말고 별도 문단에서 "
-                "'공식 통계 아님'을 밝혀 서술한다. TIER1 또는 TIER2가 아닌 웹 정량값은 쓰지 않는다."
+                "'공식 통계 아님'을 밝혀 서술한다. TIER1 또는 TIER2가 아닌 웹 정량값은 쓰지 않는다. "
+                "제네릭처럼 하위 제품 집합을 묻는 질문에서는 그 집합이 근거에 없을 때 본품이나 상위 제품의 "
+                "수치를 대신 답하지 않는다."
             ),
         },
         {
@@ -298,16 +309,17 @@ def _public_payload(payload: Any) -> Any:
                     continue
                 calls.append(
                     {
-                        key: _public_payload(value)
+                        public_key: _public_payload(value)
                         for key, value in call.items()
-                        if _public_key(str(key)) and value not in (None, "", [], {})
+                        if (public_key := _public_field_name(str(key))) is not None
+                        and value not in (None, "", [], {})
                     }
                 )
             return {"calls": calls}
         return {
-            str(key): _public_payload(value)
+            public_key: _public_payload(value)
             for key, value in payload.items()
-            if _public_key(str(key))
+            if (public_key := _public_field_name(str(key))) is not None
         }
     if isinstance(payload, (list, tuple)):
         return [_public_payload(value) for value in payload]
@@ -352,6 +364,12 @@ def _period_record(value: Any) -> bool:
 
 def _public_key(key: str) -> bool:
     return key.casefold() not in _DROP_KEYS and re.fullmatch(r"[A-Z][A-Z0-9_]{2,}", key) is None
+
+
+def _public_field_name(key: str) -> str | None:
+    if key in _PUBLIC_FIELD_ALIASES:
+        return _PUBLIC_FIELD_ALIASES[key]
+    return key if _public_key(key) else None
 
 
 def _select_usable_results(

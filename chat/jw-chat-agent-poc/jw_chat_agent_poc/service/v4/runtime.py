@@ -116,7 +116,14 @@ class V4Runtime:
         can_reuse_prior = (
             prior_results
             and _is_prior_result_reference(question)
-            and _prior_results_cover_answer_sources(plan.answer_sources, prior_results)
+            and (
+                _prior_results_cover_answer_sources(plan.answer_sources, prior_results)
+                or _prior_results_cover_filter_followup(
+                    question,
+                    plan.answer_sources,
+                    prior_results,
+                )
+            )
         )
         if can_reuse_prior:
             first_execution = SimpleNamespace(
@@ -346,7 +353,7 @@ def _is_prior_result_reference(question: str) -> bool:
     normalized = " ".join(question.split()).casefold()
     return any(
         marker in normalized
-        for marker in ("아까", "방금", "그 표", "몇 위랬", "그 중에")
+        for marker in ("아까", "방금", "그 표", "몇 위랬", "그 중")
     )
 
 
@@ -361,6 +368,21 @@ def _prior_results_cover_answer_sources(
 ) -> bool:
     available = {result.source for result in prior_results if result.status == "ok"}
     return bool(answer_sources) and set(answer_sources).issubset(available)
+
+
+def _prior_results_cover_filter_followup(
+    question: str,
+    answer_sources: tuple[str, ...],
+    prior_results: tuple[SourceResult, ...],
+) -> bool:
+    normalized = " ".join(question.split()).casefold()
+    is_filter = "그 중" in normalized and any(
+        marker in normalized for marker in ("국내", "진행 중", "모집 중", "완료")
+    )
+    if not is_filter:
+        return False
+    available = {result.source for result in prior_results if result.status == "ok"}
+    return bool(available.intersection(answer_sources))
 
 
 def _merge_results(

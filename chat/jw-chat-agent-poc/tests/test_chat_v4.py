@@ -23,7 +23,11 @@ from jw_chat_agent_poc.service.v4.executor import ParallelSourceExecutor
 from jw_chat_agent_poc.service.v4.gates import apply_v4_gates
 from jw_chat_agent_poc.service.v4.llm import planner_client, synthesizer_client
 from jw_chat_agent_poc.service.v4.planner import V4Planner
-from jw_chat_agent_poc.service.v4.runtime import V4Runtime, _preserve_period_in_answer_queries
+from jw_chat_agent_poc.service.v4.runtime import (
+    V4Runtime,
+    _is_prior_result_reference,
+    _preserve_period_in_answer_queries,
+)
 from jw_chat_agent_poc.service.v4 import adapters as v4_adapters
 from jw_chat_agent_poc.service.v4 import llm as v4_llm
 from jw_chat_agent_poc.service.v4 import synthesizer as v4_synthesizer
@@ -121,6 +125,20 @@ def test_v4_mart_adapter_always_returns_source_result(monkeypatch) -> None:
     assert isinstance(result, SourceResult)
     assert result.status == "ok"
     assert result.payload["calls"][0]["metric"] == "sales"
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    (
+        ("아일리아주 급여기준", "아일리아"),
+        ("애플리버셉트(Aflibercept) 요양급여 적용기준 및 방법", "아일리아"),
+    ),
+)
+def test_v4_reimbursement_subject_normalizes_brand_and_ingredient_queries(
+    query: str,
+    expected: str,
+) -> None:
+    assert v4_adapters._reimbursement_subject(query) == expected
 
 
 def test_v4_fallback_uses_verified_summaries_instead_of_raw_json() -> None:
@@ -378,6 +396,37 @@ def test_v4_synthesis_prompt_requires_structured_markdown_and_omits_record_field
     assert "담당부서로 연락" not in serialized
     assert "## 핵심 답" in system
     assert "한 문단은 최대 4문장" in system
+
+
+def test_v4_synthesis_projects_reexamination_fields_with_public_names() -> None:
+    result = SourceResult(
+        source="nedrug",
+        query="리바로젯 재심사 종료일",
+        status="ok",
+        payload={
+            "calls": [
+                {
+                    "status": "live",
+                    "render_data": {
+                        "items": [
+                            {
+                                "ITEM_NAME": "리바로젯정2/10밀리그램",
+                                "REEXAM_DATE": "2021-07-28~2027-07-27",
+                                "REEXAM_TARGET": "재심사대상(6년)",
+                            }
+                        ]
+                    },
+                }
+            ]
+        },
+    )
+
+    serialized = v4_synthesizer._synthesis_messages(_plan(), (result,), ())[-1]["content"]
+
+    assert '"product_name": "리바로젯정2/10밀리그램"' in serialized
+    assert '"reexamination_period": "2021-07-28~2027-07-27"' in serialized
+    assert '"reexamination_target": "재심사대상(6년)"' in serialized
+    assert "REEXAM_DATE" not in serialized
 
 
 def test_v4_synthesis_payload_has_a_bounded_character_budget() -> None:
@@ -1393,6 +1442,67 @@ def test_runtime_reuses_prior_table_results_for_reference_followup() -> None:
     assert "이전 조회 재사용" in followup.text
 
 
+def test_runtime_recognizes_filter_followup_without_postposition() -> None:
+    assert _is_prior_result_reference("그 중 국내 진행 중인 것만") is True
+
+
+def test_runtime_reuses_matching_prior_source_for_filter_followup() -> None:
+    first_plan = _plan(clinicaltrials=("당뇨망막병증 임상",)).model_copy(
+        update={"answer_sources": ("clinicaltrials",)}
+    )
+    filter_plan = _plan(
+        nedrug=("국내 당뇨망막병증 임상",),
+        clinicaltrials=("국내 진행 중 당뇨망막병증 임상",),
+        web=("국내 진행 중 당뇨망막병증 임상",),
+    ).model_copy(update={"answer_sources": ("nedrug", "clinicaltrials", "web")})
+
+    class Planner:
+        serving_id = "190"
+
+        def plan_with_trace(self, question, _turns, *, budget_s):
+            plan = filter_plan if "그 중" in question else first_plan
+            return SimpleNamespace(plan=plan, trace={"elapsed_ms": 1.0, "usage": {}})
+
+        def link(self, *_args, **_kwargs):
+            return None
+
+    class Executor:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def execute_with_trace(self, _plan, **_kwargs):
+            self.calls += 1
+            return SimpleNamespace(
+                results=(
+                    SourceResult(
+                        source="clinicaltrials",
+                        query="당뇨망막병증 임상",
+                        status="ok",
+                        payload={"studies": [{"title": "국내 상태 확인 필요"}]},
+                    ),
+                ),
+                trace={"elapsed_ms": 2.0, "tools": []},
+            )
+
+    class Synthesizer:
+        def synthesize_with_trace(self, _plan, results, _turns, *, budget_s):
+            assert any(result.source == "clinicaltrials" for result in results)
+            return v4_synthesizer.SynthesisOutcome(
+                text="이전 임상 목록에서 국내 진행 여부를 확인합니다.",
+                trace={"elapsed_ms": 3.0, "usage": {}},
+            )
+
+    executor = Executor()
+    runtime = V4Runtime(planner=Planner(), executor=executor, synthesizer=Synthesizer())
+    runtime.answer("당뇨망막병증 임상 동향", conversation_id="filter", turns=())
+    followup = runtime.answer(
+        "그 중 국내 진행 중인 것만", conversation_id="filter", turns=()
+    )
+
+    assert executor.calls == 1
+    assert followup.trace["execution"]["session_result_reused"] is True
+
+
 def test_runtime_does_not_reuse_prior_results_for_a_different_answer_source() -> None:
     mart_plan = _plan().model_copy(
         update={"resolved_question": "리바로 순위", "answer_sources": ("mart",)}
@@ -1527,6 +1637,63 @@ def test_v4_gates_keep_mart_numbers_copy_only_and_require_sources() -> None:
     assert "85.87" in gated.text
     assert "## 출처" in gated.text
     assert gated.trace["mart_numeric_copy_only"]["blocked"] is True
+
+
+def test_v4_gate_does_not_substitute_originator_sales_for_generic_subset() -> None:
+    question = (
+        "리바로젯(피타바스타틴 및 에제티미브 복합제)의 제네릭 의약품들 중에서 "
+        "매출액이 가장 큰 제품은 무엇인가요?"
+    )
+    results = (
+        SourceResult(
+            source="nedrug",
+            query="리바로젯 제네릭",
+            status="ok",
+            payload={
+                "calls": [
+                    {
+                        "status": "live",
+                        "render_data": {
+                            "items": [
+                                {
+                                    "ITEM_NAME": "리바로젯정2/10밀리그램",
+                                    "ENTP_NAME": "제이더블유중외제약(주)",
+                                }
+                            ]
+                        },
+                    }
+                ]
+            },
+        ),
+        SourceResult(
+            source="mart",
+            query="리바로젯 제네릭 제품별 매출액 순위",
+            status="ok",
+            payload={
+                "calls": [
+                    {
+                        "summary_text": "리바로젯 2026-06 UBIST 전략 mart 지표: 매출 124.54억원.",
+                        "render_data": {
+                            "brand": "리바로젯",
+                            "sales_억원": 124.54,
+                        },
+                    }
+                ]
+            },
+        ),
+    )
+
+    gated = apply_v4_gates(
+        question,
+        "리바로젯 본품 매출은 124.54억원입니다.",
+        results,
+    )
+
+    assert "제네릭 제품 목록" in gated.text
+    assert "본품 매출을 제네릭 매출로 대체하지 않습니다" in gated.text
+    assert "124.54억원" not in gated.text
+    assert gated.trace["subset_scope_guard"]["blocked"] is True
+    assert gated.trace["mart_numeric_copy_only"]["blocked"] is False
 
 
 @pytest.mark.parametrize(

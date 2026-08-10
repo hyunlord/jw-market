@@ -39,6 +39,14 @@ _INGREDIENT_ALIASES = {
     "피타바스타틴": "Pitavastatin",
     "리바로": "Pitavastatin",
 }
+_REIMBURSEMENT_ALIASES = {
+    "aflibercept": "아일리아",
+    "애플리버셉트": "아일리아",
+}
+_REIMBURSEMENT_TERMS = re.compile(
+    r"(?:요양)?급여\s*(?:적용)?기준(?:\s*및\s*방법)?|건강보험|약제|고시",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -143,6 +151,19 @@ def _ingredient_query(query: str) -> str:
         if alias.casefold() in lowered:
             return ingredient
     return _base_query(query)
+
+
+def _reimbursement_subject(query: str) -> str:
+    value = _REIMBURSEMENT_TERMS.sub(" ", _base_query(query))
+    value = re.sub(r"\([^)]*\)", " ", value)
+    value = " ".join(value.split()).strip()
+    lowered = value.casefold()
+    for alias, brand in _REIMBURSEMENT_ALIASES.items():
+        if alias in lowered:
+            return brand
+    if value.endswith("주"):
+        value = value[:-1]
+    return value or _base_query(query)
 
 
 def _clinical_query(query: str) -> tuple[str, str]:
@@ -307,9 +328,16 @@ def build_source_adapters() -> dict[SourceName, Any]:
     def hira(query: str) -> SourceResult:
         base = _base_query(query)
         resolution = resolved(query)
-        if "급여" in base and resolution is not None:
+        if "급여" in base:
+            subject = _reimbursement_subject(base)
+            subject_resolution = resolved(subject)
+            brand = (
+                subject_resolution.canonical_brand
+                if subject_resolution is not None
+                else subject
+            )
             criterion = HiraReimbursementHttpClient(timeout_s=7).fetch(
-                resolution.canonical_brand
+                brand
             )
             if criterion is None:
                 return external_calls("hira", query, [])

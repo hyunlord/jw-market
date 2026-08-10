@@ -138,6 +138,17 @@ def apply_v4_gates(
         "tokens": sorted(exposed_raw_percentages),
     }
 
+    subset_scope_blocked = _generic_subset_unresolved(question, results)
+    if subset_scope_blocked:
+        text = (
+            "공식 허가 근거에서 요청한 제네릭 제품 목록을 확인하지 못해 제품별 매출 1위를 "
+            "판정할 수 없습니다. 확인된 본품 매출을 제네릭 매출로 대체하지 않습니다."
+        )
+    trace["subset_scope_guard"] = {
+        "blocked": subset_scope_blocked,
+        "reason": "generic_product_set_unresolved" if subset_scope_blocked else None,
+    }
+
     text = _append_sources(text, results)
     trace["sources_block"] = {"present": "## 출처" in text}
     return GatedAnswer(text=text, trace=trace)
@@ -282,6 +293,30 @@ def _mart_raw_percentages(results: tuple[SourceResult, ...]) -> set[str]:
             if any(field in leaf for field in percentage_fields):
                 percentages.add(_normalize_number(str(value)))
     return percentages
+
+
+def _generic_subset_unresolved(
+    question: str,
+    results: tuple[SourceResult, ...],
+) -> bool:
+    lowered = question.casefold()
+    if "제네릭" not in lowered or not any(
+        term in lowered for term in ("매출", "순위", "가장 큰", "1위")
+    ):
+        return False
+    root_match = re.match(r"\s*([^\s(]+)", question)
+    if root_match is None:
+        return False
+    root = re.sub(r"[^0-9a-z가-힣]", "", root_match.group(1).casefold())
+    item_names = [
+        re.sub(r"[^0-9a-z가-힣]", "", str(value).casefold())
+        for result in results
+        if result.source == "nedrug" and result.status == "ok"
+        for path, value in _walk_scalars(result.payload)
+        if path.rsplit(".", 1)[-1].casefold() in {"item_name", "product_name"}
+        and str(value).strip()
+    ]
+    return not item_names or all(name.startswith(root) for name in item_names)
 
 
 def _without_numbers(text: str) -> str:
