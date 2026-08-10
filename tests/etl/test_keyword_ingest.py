@@ -11,6 +11,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from pipeline.scripts.etl.brand_activity.ingest_keyword import (  # noqa: E402
+    KEYWORD_HEADERS,
+    _keyword_sheet,
     read_keyword_events,
     read_keyword_message_counts,
 )
@@ -108,6 +110,57 @@ def test_keyword_reader_discovers_sheet_by_headers_not_sheet_name(tmp_path: Path
 
     assert len(events) == 2
     assert {event.source_sheet for event in events} == {"데이터"}
+
+
+def _append_keyword_headers(sheet: openpyxl.worksheet.worksheet.Worksheet) -> None:
+    sheet.append(list(KEYWORD_HEADERS))
+
+
+def test_keyword_sheet_selects_exact_normalized_name_from_multiple_candidates() -> None:
+    workbook = openpyxl.Workbook()
+    workbook.active.title = "May 24 NTENSE"
+    _append_keyword_headers(workbook.active)
+    exact = workbook.create_sheet(" Keywords ")
+    _append_keyword_headers(exact)
+
+    selected, _, _ = _keyword_sheet(workbook)
+
+    assert selected.title == " Keywords "
+    workbook.close()
+
+
+@pytest.mark.parametrize(
+    ("titles", "exact_name_matches"),
+    [
+        (("May 24 NTENSE", "Archive"), 0),
+        (("Keywords", " Keywords "), 2),
+    ],
+)
+def test_keyword_sheet_rejects_ambiguous_multiple_candidates(
+    titles: tuple[str, str],
+    exact_name_matches: int,
+) -> None:
+    workbook = openpyxl.Workbook()
+    workbook.active.title = titles[0]
+    _append_keyword_headers(workbook.active)
+    other = workbook.create_sheet(titles[1])
+    _append_keyword_headers(other)
+
+    with pytest.raises(
+        ValueError,
+        match=rf"found 2; exact sheet name matches {exact_name_matches}",
+    ):
+        _keyword_sheet(workbook)
+    workbook.close()
+
+
+def test_keyword_sheet_rejects_workbook_without_canonical_headers() -> None:
+    workbook = openpyxl.Workbook()
+    workbook.active.append(["not", "canonical"])
+
+    with pytest.raises(ValueError, match="found 0; exact sheet name matches 0"):
+        _keyword_sheet(workbook)
+    workbook.close()
 
 
 def test_keyword_reader_rejects_period_only_row(tmp_path: Path) -> None:

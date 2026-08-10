@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import openpyxl
 
+from pipeline.etl.io.source_headers import normalize_source_header
 from pipeline.scripts.etl.brand_activity.km_core import (
     CellValue,
     KeywordEvent,
@@ -18,6 +20,9 @@ from pipeline.scripts.etl.brand_activity.km_core import (
     source_sha256,
 )
 from pipeline.scripts.etl.brand_activity.km_message_count import MessageCountCell, read_message_count_cells
+
+
+logger = logging.getLogger(__name__)
 
 
 KEYWORD_HEADERS: tuple[str, ...] = (
@@ -62,11 +67,23 @@ def _keyword_sheet(workbook):
         except ValueError:
             continue
         matches.append((sheet, headers, indexes))
-    if len(matches) != 1:
-        raise ValueError(
-            f"Keyword workbook missing canonical headers or has multiple matches; found {len(matches)}"
+    if len(matches) == 1:
+        return matches[0]
+
+    exact_name_matches = [
+        match for match in matches if normalize_source_header(match[0].title) == "keywords"
+    ]
+    if len(matches) > 1 and len(exact_name_matches) == 1:
+        logger.info(
+            "multiple canonical sheets (%d); selected by exact sheet name 'Keywords'",
+            len(matches),
         )
-    return matches[0]
+        return exact_name_matches[0]
+
+    raise ValueError(
+        "Keyword workbook missing canonical headers or has multiple matches; "
+        f"found {len(matches)}; exact sheet name matches {len(exact_name_matches)}"
+    )
 
 
 def _cell(values: tuple[CellValue, ...], index: int) -> str:
