@@ -47,7 +47,19 @@ def test_default_agent_executes_structured_plan_without_llm() -> None:
     }
 
 
-def test_competitor_growth_table_fetches_yoy_for_each_top_brand() -> None:
+@pytest.mark.parametrize(
+    "question",
+    (
+        "리바로젯 경쟁사 성장률 표",
+        "리바로젯 주요 경쟁사의 성장률에 대해 표로 정리해줘",
+        "리바로젯 경쟁사들 성장률 어떻게 되는지 표로 보여줘",
+        "리바로젯 경쟁 브랜드 YoY 성장률 정리해줘",
+        "리바로젯 경쟁사 성장 표",
+        "리바로젯 경쟁사 증감률 표",
+        "리바로젯 경쟁 브랜드 YoY 표",
+    ),
+)
+def test_competitor_growth_table_fetches_yoy_for_each_top_brand(question: str) -> None:
     periods = tuple(f"{year}-{month:02d}" for year in (2025, 2026) for month in range(1, 7))
     values = {
         "로수젯": tuple(180.0 + index * 3 for index in range(len(periods))),
@@ -66,7 +78,7 @@ def test_competitor_growth_table_fetches_yoy_for_each_top_brand() -> None:
         metrics=MetricsTool(mode="fixture", query_layer=layer),
         resolver=BrandResolver(mode="fixture"),
         query_layer=layer,
-    ).answer("리바로젯 경쟁사 성장률 표")
+    ).answer(question)
 
     yoy_calls = [
         call
@@ -79,7 +91,7 @@ def test_competitor_growth_table_fetches_yoy_for_each_top_brand() -> None:
     assert all(call["render_data"]["growth_pct"] is not None for call in yoy_calls)
     answer = fallback_fact_answer(
         {"fact_md": answer_fact_markdown(result["tool_calls"], result["sources"])},
-        question="리바로젯 경쟁사 성장률 표",
+        question=question,
     )
     assert "| 성장률(YoY, 2026-06 대비 2025-06) |" in answer
     assert answer.count("% |") >= 5

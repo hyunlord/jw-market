@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass
 import json
 import logging
 import math
+import re
 from typing import Any, Final
 
 from jw_chat_agent_poc.agent_loop.bq_planner import BqCardinalityStop, plan_bq_question
@@ -1332,7 +1333,8 @@ def _completion_calls(
 
 
 def _asks_competitor_yoy(question: str) -> bool:
-    return "성장률" in question and any(token in question for token in ("경쟁", "상위", "브랜드"))
+    asks_growth = re.search(r"성장률|증감률|성장|\bYoY\b", question, re.IGNORECASE)
+    return asks_growth is not None and any(token in question for token in ("경쟁", "상위", "브랜드"))
 
 
 def _strict_query_calls(

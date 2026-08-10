@@ -114,6 +114,9 @@ def test_semantic_parser_fast_paths(question: str, intent: AnswerIntent) -> None
     ("question", "intent"),
     (
         ("리바로젯 주요 경쟁사의 성장률에 대해 표로 정리해줘", AnswerIntent.BRAND_TREND),
+        ("리바로젯 경쟁사 성장 표", AnswerIntent.BRAND_TREND),
+        ("리바로젯 경쟁사 증감률 표", AnswerIntent.BRAND_TREND),
+        ("리바로젯 경쟁 브랜드 YoY 표", AnswerIntent.BRAND_TREND),
         ("리바로 경쟁사 순위 변화 표로 보여줘", AnswerIntent.COMPETITION_CHANGE),
         ("리바로 경쟁사 단가 표로 보여줘", AnswerIntent.BRAND_TREND),
     ),

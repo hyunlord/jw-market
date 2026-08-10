@@ -153,7 +153,8 @@ def _quarter_metric_plan(question: str, brand: str, _channel: str) -> StrictQuer
 
 
 def _yoy_plan(question: str, brand: str, _channel: str) -> StrictQueryPlan | None:
-    if _asks_yoy(question):
+    asks_competitors = any(token in question for token in ("경쟁", "상위", "브랜드"))
+    if _asks_yoy(question) and not asks_competitors:
         return StrictQueryPlan(specs=(_spec("product", metric="growth", derive=("yoy",), filters={"brand": brand}),))
     return None
 

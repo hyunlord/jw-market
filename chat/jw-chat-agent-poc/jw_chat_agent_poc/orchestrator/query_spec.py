@@ -272,7 +272,7 @@ def canonical_metrics_for_question(question: str) -> tuple[CanonicalMetric, ...]
         (CanonicalMetric.MARKET_SIZE, ("시장 규모", "시장규모")),
         (CanonicalMetric.RANK_CHANGE, ("순위 변화", "순위변화", "순위 변동", "순위변동", "랭킹 변화", "랭킹변화")),
         (CanonicalMetric.RANK, ("순위", "랭킹")),
-        (CanonicalMetric.GROWTH, ("성장률", "증감률", "YOY")),
+        (CanonicalMetric.GROWTH, ("성장률", "성장", "증감률", "YOY")),
         (CanonicalMetric.PRESCRIPTION_VOLUME, ("처방량",)),
         (CanonicalMetric.PRESCRIPTION_COUNT, ("처방건수", "처방 건수")),
         (CanonicalMetric.UNIT_PRICE, ("단가",)),

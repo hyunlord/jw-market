@@ -197,6 +197,9 @@ def test_runtime_reconciliation_never_drops_preflight_entities() -> None:
     ("question", "expected"),
     (
         ("경쟁사 성장률", (CanonicalMetric.GROWTH,)),
+        ("경쟁사 성장", (CanonicalMetric.GROWTH,)),
+        ("경쟁사 증감률", (CanonicalMetric.GROWTH,)),
+        ("경쟁 브랜드 YoY", (CanonicalMetric.GROWTH,)),
         ("경쟁사 매출", (CanonicalMetric.SALES,)),
         ("경쟁사 점유율", (CanonicalMetric.SHARE,)),
         ("경쟁사 순위", (CanonicalMetric.RANK,)),

@@ -68,7 +68,7 @@ _METRICS: Final[tuple[MetricSpec, ...]] = (
     MetricSpec(
         "brand_growth",
         "brand",
-        re.compile(r"성장률|증감률|성장"),
+        re.compile(r"성장률|증감률|성장|\bYoY\b", re.IGNORECASE),
         ("get_brand_series", "get_brand_sales", "get_top_brands"),
     ),
     MetricSpec(

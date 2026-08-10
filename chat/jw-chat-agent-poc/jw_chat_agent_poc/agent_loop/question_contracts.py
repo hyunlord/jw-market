@@ -264,7 +264,7 @@ def intent_for_question(question: str) -> AnswerIntent:
         return AnswerIntent.SALES_ACTIVITY_TREND
     if re.search(r"매출|처방", question):
         return AnswerIntent.BRAND_TREND
-    if re.search(r"성장률|증감률|\bYoY\b|\bCAGR\b|단가", question, re.IGNORECASE):
+    if re.search(r"성장률|증감률|성장|\bYoY\b|\bCAGR\b|단가", question, re.IGNORECASE):
         return AnswerIntent.BRAND_TREND
     return AnswerIntent.EXTERNAL_LOOKUP
 
