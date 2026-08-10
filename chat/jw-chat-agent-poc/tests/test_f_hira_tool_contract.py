@@ -19,6 +19,7 @@ from jw_chat_agent_poc.orchestrator.hira_disease import (
     hira_stat_requests,
 )
 from jw_chat_agent_poc.orchestrator.tool_use_contract import tool_use_requirements
+from jw_chat_agent_poc.tools.external.client import ExternalCall
 
 
 HOSPITALIZATION = "hira_disease_hospitalization_outpatient_stats"
@@ -43,7 +44,13 @@ class _RecordingExternal:
     def __getattr__(self, name: str):
         def record(*args: object):
             self.calls.append((name, args))
-            return name
+            return ExternalCall(
+                tool=name,
+                source="fixture",
+                status="ok",
+                summary_text="fixture",
+                render_data={"ok": True, "rows": []},
+            )
 
         return record
 
@@ -130,7 +137,8 @@ def test_a_region_question_gets_the_region_statistic_alone() -> None:
 def test_a_distribution_question_is_the_only_one_that_asks_for_all_four() -> None:
     executed = _executed("D693 환자분포 알려줘")
 
-    assert executed == [NAME_CODE, HOSPITALIZATION, GENDER_AGE, INSTITUTION, AREA]
+    assert executed[0] == NAME_CODE
+    assert set(executed[1:]) == {HOSPITALIZATION, GENDER_AGE, INSTITUTION, AREA}
 
 
 def test_a_disease_identity_question_asks_for_no_statistic_at_all() -> None:

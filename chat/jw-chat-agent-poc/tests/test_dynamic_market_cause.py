@@ -155,6 +155,30 @@ class _StrategicQueryLayer:
         assert market_display_name == "고지혈증"
         return self.market_scope_from_mart("리바로")
 
+    def cause_card_data(self, anchor_brand: str, market: str) -> dict[str, object]:
+        assert anchor_brand in {"리바로", "리피토"}
+        assert market == "ml_006"
+        return {
+            "company_ranking_series": (
+                {"rank": 1, "name": "A사", "value_recent_억원": 700.0, "ms_recent_pct": 35.0},
+                {"rank": 2, "name": "B사", "value_recent_억원": 500.0, "ms_recent_pct": 25.0},
+            ),
+            "ei_ms": {"brand": "리바로", "ei": 120.0, "ms_recent_pct": 15.0},
+            "growth_contribution": {
+                "brand": "리바로",
+                "growth_contribution_pct": 12.5,
+                "ms_recent_pct": 15.0,
+                "growth_contribution_period_start": "2025-06",
+                "growth_contribution_period_end": "2026-06",
+            },
+            "analysis_level_trend": (
+                {"name": "스타틴", "from_period": "2025-09", "from_ms_pct": 80.0, "to_period": "2026-06", "to_ms_pct": 82.0},
+            ),
+            "customer_competition": (
+                {"name": "의원", "from_period": "2025-09", "from_ms_pct": 55.0, "to_period": "2026-06", "to_ms_pct": 58.0},
+            ),
+        }
+
 
 class _GeneralView:
     def answer(self, *_args, **_kwargs):
@@ -173,6 +197,58 @@ def test_strategic_cause_uses_mart_and_returns_table_and_chart() -> None:
     assert result["resolution"]["market_id"] == "ml_006"
     assert "| 순위 | 브랜드 |" in result["answer"]
     assert result["tool_calls"][0]["render_data"]["chart_payloads"]
+
+
+def test_strategic_cause_projects_only_cards_backed_by_mart_data() -> None:
+    resolver = MarketScopeResolver.__new__(MarketScopeResolver)
+    resolver._resolver = _StrategicResolver()
+    resolver._query_layer = _StrategicQueryLayer()
+    resolver._general_view = _GeneralView()
+
+    result = resolver.answer_cause_analysis("리바로 원인분석 좀 뽑아줘")
+    data = result["tool_calls"][0]["render_data"]
+    table_names = {table["name"] for table in data["dashboard_tables"]}
+
+    assert {
+        "회사 순위",
+        "회사 집중도",
+        "EI & MS",
+        "성장기여 & MS",
+        "분석레벨별 추세",
+        "Waterfall",
+        "고객별 경쟁구도",
+    } <= table_names
+    assert all(data["cause_card_support"][key] for key in (
+        "A4_company_ranking",
+        "A5_company_concentration",
+        "B1_ei_ms",
+        "B2_growth_contribution_ms",
+        "C1_analysis_level_trend",
+        "D1_waterfall",
+        "D2_customer_competition",
+    ))
+
+
+def test_strategic_cause_does_not_claim_cards_without_mart_data() -> None:
+    call = _StrategicQueryLayer().market_scope_from_mart("리바로")
+
+    result = _strategic_cause_result(
+        "리바로 원인분석",
+        call,
+        market_name="고지혈증",
+        brand="리바로",
+    )
+
+    support = result["tool_calls"][0]["render_data"]["cause_card_support"]
+    assert not any(support[key] for key in (
+        "A4_company_ranking",
+        "A5_company_concentration",
+        "B1_ei_ms",
+        "B2_growth_contribution_ms",
+        "C1_analysis_level_trend",
+        "D1_waterfall",
+        "D2_customer_competition",
+    ))
 
 
 class _NamedMarketResolver(_StrategicResolver):

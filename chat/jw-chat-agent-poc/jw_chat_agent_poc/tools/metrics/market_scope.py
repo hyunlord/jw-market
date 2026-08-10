@@ -80,6 +80,99 @@ def _strategic_cause_result(
                 ),
             }
         )
+    company_rows = [
+        dict(row)
+        for row in data.get("company_ranking_series", ())
+        if isinstance(row, dict)
+    ]
+    if company_rows:
+        tables.append(
+            {
+                "name": "회사 순위",
+                "columns": ("순위", "회사", "매출(억원)", "점유율(%)"),
+                "rows": tuple(
+                    (
+                        row.get("rank"),
+                        row.get("company") or row.get("name") or row.get("brand"),
+                        _cause_display_number(
+                            row.get("value_recent_억원")
+                            if row.get("value_recent_억원") is not None
+                            else row.get("value_억원")
+                        ),
+                        _cause_display_number(row.get("ms_recent_pct")),
+                    )
+                    for row in company_rows[:10]
+                ),
+            }
+        )
+        company_shares = [
+            float(row["ms_recent_pct"])
+            for row in company_rows[:5]
+            if isinstance(row.get("ms_recent_pct"), int | float)
+        ]
+        if company_shares:
+            data["company_cr5_pct"] = round(sum(company_shares), 4)
+            tables.append(
+                {
+                    "name": "회사 집중도",
+                    "columns": ("기준시점", "상위 회사 수", "CR5(%)"),
+                    "rows": ((data.get("period"), len(company_shares), data["company_cr5_pct"]),),
+                }
+            )
+
+    ei_ms = data.get("ei_ms") if isinstance(data.get("ei_ms"), dict) else None
+    if ei_ms and isinstance(ei_ms.get("ei"), int | float):
+        tables.append(
+            {
+                "name": "EI & MS",
+                "columns": ("브랜드", "EI", "점유율(%)", "산정 기준"),
+                "rows": ((
+                    ei_ms.get("brand") or brand,
+                    _cause_display_number(ei_ms.get("ei")),
+                    _cause_display_number(ei_ms.get("ms_recent_pct")),
+                    ei_ms.get("ei_basis"),
+                ),),
+            }
+        )
+
+    growth = data.get("growth_contribution") if isinstance(data.get("growth_contribution"), dict) else None
+    if growth and isinstance(growth.get("growth_contribution_pct"), int | float):
+        growth_row = (
+            growth.get("brand") or brand,
+            _cause_display_number(growth.get("growth_contribution_pct")),
+            _cause_display_number(growth.get("ms_recent_pct")),
+            growth.get("growth_contribution_period_start"),
+            growth.get("growth_contribution_period_end"),
+        )
+        tables.extend(
+            (
+                {
+                    "name": "성장기여 & MS",
+                    "columns": ("브랜드", "성장기여(%)", "점유율(%)", "시작", "종료"),
+                    "rows": (growth_row,),
+                },
+                {
+                    "name": "Waterfall",
+                    "columns": ("브랜드", "성장기여(%)", "시작", "종료"),
+                    "rows": ((growth_row[0], growth_row[1], growth_row[3], growth_row[4]),),
+                },
+            )
+        )
+
+    analysis_rows = [
+        dict(row)
+        for row in data.get("analysis_level_trend", ())
+        if isinstance(row, dict)
+    ]
+    if analysis_rows:
+        tables.append(_cause_trend_table("분석레벨별 추세", analysis_rows))
+    customer_rows = [
+        dict(row)
+        for row in data.get("customer_competition", ())
+        if isinstance(row, dict)
+    ]
+    if customer_rows:
+        tables.append(_cause_trend_table("고객별 경쟁구도", customer_rows))
     charts = []
     chart_segments = [
         (index, row)
@@ -108,6 +201,7 @@ def _strategic_cause_result(
                 ],
             }
         )
+    _append_strategic_cause_charts(charts, data, market_name=market_name)
     data.update(
         {
             "dashboard_tables": tables,
@@ -116,13 +210,17 @@ def _strategic_cause_result(
                 "A1_market_size_growth": data.get("market_size_recent_krw") is not None,
                 "A2_brand_ranking": bool(segments),
                 "A3_hhi": data.get("hhi_recent") is not None,
-                "A4_company_ranking": False,
-                "A5_company_concentration": False,
-                "B1_ei_ms": False,
-                "B2_growth_contribution_ms": False,
-                "C1_analysis_level_trend": False,
-                "D1_waterfall": False,
-                "D2_customer_competition": False,
+                "A4_company_ranking": bool(company_rows),
+                "A5_company_concentration": data.get("company_cr5_pct") is not None,
+                "B1_ei_ms": bool(ei_ms and isinstance(ei_ms.get("ei"), int | float)),
+                "B2_growth_contribution_ms": bool(
+                    growth and isinstance(growth.get("growth_contribution_pct"), int | float)
+                ),
+                "C1_analysis_level_trend": bool(analysis_rows),
+                "D1_waterfall": bool(
+                    growth and isinstance(growth.get("growth_contribution_pct"), int | float)
+                ),
+                "D2_customer_competition": bool(customer_rows),
                 "D3_level_top5": bool(segments),
             },
         }
@@ -163,6 +261,58 @@ def _cause_cell(value: object) -> str:
     if value is None:
         return "확인 불가"
     return str(value)
+
+
+def _cause_trend_table(name: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "name": name,
+        "columns": ("구분", "시작", "시작 점유율(%)", "종료", "종료 점유율(%)", "변화(%p)"),
+        "rows": tuple(
+            (
+                row.get("name") or row.get("brand"),
+                row.get("from_period"),
+                _cause_display_number(row.get("from_ms_pct")),
+                row.get("to_period"),
+                _cause_display_number(row.get("to_ms_pct")),
+                _cause_display_number(row.get("share_delta_pctp")),
+            )
+            for row in rows[:10]
+        ),
+    }
+
+
+def _append_strategic_cause_charts(
+    charts: list[dict[str, Any]],
+    data: dict[str, Any],
+    *,
+    market_name: str,
+) -> None:
+    specs = (
+        ("회사 순위", "company_ranking_series", "value_recent_억원", "매출", "억원"),
+        ("분석레벨별 추세", "analysis_level_trend", "to_ms_pct", "점유율", "%"),
+        ("고객별 경쟁구도", "customer_competition", "to_ms_pct", "점유율", "%"),
+    )
+    for title, field, value_key, label, unit in specs:
+        rows = [dict(row) for row in data.get(field, ()) if isinstance(row, dict)]
+        points = [
+            (index, row)
+            for index, row in enumerate(rows)
+            if isinstance(row.get(value_key), int | float)
+        ][:5]
+        if not points:
+            continue
+        charts.append(
+            {
+                "scope": "MARKET",
+                "chart_type": "bar",
+                "title": f"{market_name} {title}",
+                "labels": [row.get("company") or row.get("name") or row.get("brand") for _, row in points],
+                "datasets": [{"label": label, "data": [row[value_key] for _, row in points], "unit": unit}],
+                "source": str(data.get("source_label") or "전략 mart"),
+                "unit": unit,
+                "evidence_refs": [f"render_data.{field}[{index}].{value_key}" for index, _ in points],
+            }
+        )
 
 
 def _cause_display_number(value: object) -> object:
@@ -291,6 +441,7 @@ class MarketScopeResolver:
                         market_name,
                         started_at=qa_trace_started_at(),
                     )
+                call = self._with_strategic_cause_cards(call, market_id=market_id)
                 attach_tool_qa_trace(call, started_at=started_at, cache_hit=False)
                 return _strategic_cause_result(question, call, market_name=market_name)
             try:
@@ -308,6 +459,15 @@ class MarketScopeResolver:
                         resolution.canonical_brand,
                         started_at=qa_trace_started_at(),
                     )
+                call = self._with_strategic_cause_cards(
+                    call,
+                    market_id=str(
+                        (call.get("render_data") or {}).get("market_id")
+                        or resolution.market_id
+                        or resolution.market_ids[0]
+                    ),
+                    anchor_brand=resolution.canonical_brand,
+                )
                 attach_tool_qa_trace(call, started_at=started_at, cache_hit=False)
                 return _strategic_cause_result(
                     question,
@@ -320,6 +480,32 @@ class MarketScopeResolver:
             (result.get("general_view_contract") or {}).get("unavailable")
         )
         return result
+
+    def _with_strategic_cause_cards(
+        self,
+        call: dict[str, Any],
+        *,
+        market_id: str,
+        anchor_brand: str = "",
+    ) -> dict[str, Any]:
+        data = dict(call.get("render_data") or {})
+        segments = [row for row in data.get("level_segments", ()) if isinstance(row, dict)]
+        selected_brand = anchor_brand or str(
+            (segments[0].get("brand") or segments[0].get("name")) if segments else ""
+        )
+        if not selected_brand:
+            return call
+        cause_card_data = getattr(self._query_layer, "cause_card_data", None)
+        if not callable(cause_card_data):
+            return call
+        try:
+            supplemental = cause_card_data(selected_brand, market_id)
+        except (LookupError, TypeError, ValueError):
+            return call
+        if not isinstance(supplemental, dict):
+            return call
+        data.update(supplemental)
+        return {**call, "render_data": data}
 
     def answer(self, question: str, *, view_type: MarketView) -> dict[str, Any]:
         started_at = qa_trace_started_at()

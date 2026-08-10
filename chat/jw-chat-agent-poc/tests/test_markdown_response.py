@@ -816,7 +816,7 @@ def test_genos_web_only_answer_skips_final_llm_and_appends_unverified_section(mo
         )
     )
 
-    body, web_section = answer.split("### 웹 검색 결과(미검증)", maxsplit=1)
+    body, web_section = answer.split("### 웹 검색 결과(출처 등급)", maxsplit=1)
     assert "경쟁제품 디테일링 웹 스니펫" not in body
     assert "https://example.com/livalo-detailing" not in body
     assert "웹 검색 결과는 하단 웹 검색 결과(미검증) 섹션을 참조하세요." in body
@@ -3103,11 +3103,13 @@ def test_top_brand_fallback_adds_requested_growth_column_from_direct_facts() -> 
 ### 로수젯 지표 fact
 | 항목 | 값 |
 | --- | --- |
+| 기간 | 2025-06→2026-06 |
 | 매출 변화율 | 12.30% |
 
 ### 리바로젯 지표 fact
 | 항목 | 값 |
 | --- | --- |
+| 기간 | 2025-06→2026-06 |
 | YoY 성장률 | -4.50% |
 """
 
@@ -3116,7 +3118,7 @@ def test_top_brand_fallback_adds_requested_growth_column_from_direct_facts() -> 
         question="리바로젯 주요 경쟁사의 성장률에 대해 표로 정리해줘",
     )
 
-    assert "| 성장률(YoY) |" in answer
+    assert "| 성장률(YoY, 2026-06 대비 2025-06) |" in answer
     assert "| 1위 | 로수젯 | 9.17% | 206.85억원 | 12.30% |" in answer
     assert "| 2위 | 리바로젯 | 5.32% | 120.09억원 | -4.50% |" in answer
 

@@ -193,9 +193,10 @@ def prepare_external_passthrough(
         str(call.get("tool") or "").strip().casefold() == "web_search"
         for call in calls
     ) and not core_web_present
+    identity_mismatch = any(_call_has_identity_mismatch(call) for call in calls)
     web_fallback_attempted = (
         bool(failed_official_tools) or failed_web_search
-    ) and not _exact_hira_patient_count_question(question)
+    ) and not _exact_hira_patient_count_question(question) and not identity_mismatch
     web_fallback_used = web_fallback_attempted and usable_web_present
     fallback_queries: list[str] = []
     if web_fallback_attempted and not core_web_present:
@@ -231,9 +232,9 @@ def prepare_external_passthrough(
     projected_markdown["evidence"] = []
     projected_markdown["verification"] = {
         "status": (
-            "pass"
-            if any(external_call_has_usable_result(call) for call in calls)
-            else "partial"
+            "partial"
+            if any(external_result_status(call) != "PARTIAL" for call in calls)
+            else "pass"
         )
     }
     existing_sources = payload.get("sources")
@@ -467,6 +468,16 @@ def _payload_failed(payload: Mapping[str, object]) -> bool:
 
 def _call_needs_web_fallback(call: Mapping[str, object]) -> bool:
     return external_result_status(call) in {"HARD_FAIL", "EMPTY", "SEMANTIC_EMPTY"}
+
+
+def _call_has_identity_mismatch(call: Mapping[str, object]) -> bool:
+    render_data = call.get("render_data")
+    if not isinstance(render_data, Mapping):
+        return False
+    return (
+        str(render_data.get("error_code") or "").strip().upper() == "IDENTITY_MISMATCH"
+        or str(render_data.get("blocked_reason") or "").strip().casefold() == "identity_mismatch"
+    )
 
 
 def external_result_status(call: Mapping[str, object]) -> str:

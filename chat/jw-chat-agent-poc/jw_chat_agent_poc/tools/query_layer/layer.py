@@ -322,6 +322,58 @@ class StrategicQueryLayer:
             "render_data": render_data,
         }
 
+    def cause_card_data(self, anchor_brand: str, market: str) -> dict[str, object]:
+        """Return only strategic cause-card inputs that the current mart can prove."""
+
+        catalog = self.catalog_for_brand(anchor_brand, market)
+        available = set(catalog.dimensions)
+        result: dict[str, object] = {}
+
+        def query_dimension(dimension: str) -> dict[str, Any]:
+            return self.query(
+                {
+                    "market": market,
+                    "metrics": ["sales"],
+                    "group_by": [dimension, "period"],
+                    "derive": ["trend"],
+                    "sort": "sales_desc",
+                    "limit": 10,
+                },
+                fallback_brand=anchor_brand,
+            )
+
+        if "company" in available:
+            company_data = dict(query_dimension("company").get("render_data") or {})
+            result["company_ranking_series"] = tuple(company_data.get("level_top5_trend_series") or ())
+
+        for key, metric in (("ei_ms", "ei"), ("growth_contribution", "growth_contribution")):
+            try:
+                data = dict(
+                    self.brand_derived_metric(anchor_brand, metric, market=market).get("render_data")
+                    or {}
+                )
+            except LookupError:
+                continue
+            result[key] = data
+
+        analysis_dimension = next(
+            (dimension for dimension in ("class_2", "class_1", "molecule") if dimension in available),
+            None,
+        )
+        if analysis_dimension is not None:
+            analysis_data = dict(query_dimension(analysis_dimension).get("render_data") or {})
+            result["analysis_level"] = analysis_dimension
+            result["analysis_level_trend"] = tuple(
+                analysis_data.get("level_top5_trend_series") or ()
+            )
+
+        if "channel" in available:
+            channel_data = dict(query_dimension("channel").get("render_data") or {})
+            result["customer_competition"] = tuple(
+                channel_data.get("level_top5_trend_series") or ()
+            )
+        return result
+
     def market_members(
         self,
         brand: str = "",

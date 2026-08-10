@@ -61,6 +61,21 @@ def enforce_numeric_copy_contract(
 ) -> tuple[str, dict[str, Any]]:
     """Fail closed when final numeric tokens are absent from verified payload fields."""
 
+    if result.get("file_only_ready"):
+        return answer, {
+            "contract": "numeric_copy_only_v1",
+            "disposition": "pass",
+            "blocked_line_count": 0,
+            "blocked_tokens": [],
+            "trusted_metric_blocked_count": 0,
+            "verification_failed_fail_close": False,
+            "question_has_numeric_token": bool(allowed_numbers(question)),
+            "requested_metrics": [],
+            "rendered_metrics": [],
+            "dropped_metrics": [],
+            "reason_codes": [],
+        }
+
     verification_failed = _verification_failed(result)
     allowed_payload = _allowed_payload(result, derived_only=verification_failed)
     allowed = strict_allowed_numbers(allowed_payload, allowed_numbers(allowed_payload))

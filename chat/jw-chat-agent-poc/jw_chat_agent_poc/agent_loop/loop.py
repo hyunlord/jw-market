@@ -1208,6 +1208,42 @@ def _completion_calls(
 ) -> list[dict[str, Any]]:
     completed: list[dict[str, Any]] = []
     facade: AgentToolFacade | None = None
+    if query_layer is not None and _asks_competitor_yoy(question):
+        top_data = next(
+            (
+                _metric_data(call)
+                for call in calls
+                if isinstance(_metric_data(call).get("level_top5_trend_series"), list)
+            ),
+            None,
+        )
+        if top_data is not None:
+            market = str(top_data.get("market_id") or top_data.get("market") or "") or None
+            source = "iqvia_nsa" if str(top_data.get("source_label") or "").upper().startswith("IQVIA") else "ubist"
+            brands = tuple(
+                dict.fromkeys(
+                    str(item.get("brand") or item.get("name") or "").strip()
+                    for item in top_data["level_top5_trend_series"][:5]
+                    if isinstance(item, dict) and (item.get("brand") or item.get("name"))
+                )
+            )
+            for brand in brands:
+                call = query_layer.query(
+                    {
+                        "market": market,
+                        "source": source,
+                        "dimensions": ["product"],
+                        "group_by": ["product"],
+                        "metrics": ["growth"],
+                        "derive": ["yoy"],
+                        "filters": {"brand": brand},
+                    },
+                    fallback_brand=brand,
+                )
+                data = call.setdefault("render_data", {})
+                if isinstance(data, dict):
+                    data["completion_reason"] = "requested_competitor_growth_requires_yoy"
+                completed.append(call)
     if _asks_share_delta(question):
         facade = _completion_facade(metrics, resolver, current_month, period_grounding, news, external, query_layer, metric_brands, observations)
         for metric_brand in metric_brands:
@@ -1293,6 +1329,10 @@ def _completion_calls(
             data["completion_reason"] = "largest_competitor_requires_member_metric"
         completed.append(call)
     return completed
+
+
+def _asks_competitor_yoy(question: str) -> bool:
+    return "성장률" in question and any(token in question for token in ("경쟁", "상위", "브랜드"))
 
 
 def _strict_query_calls(

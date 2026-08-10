@@ -281,7 +281,15 @@ def test_target_before_after_uses_same_authoritative_answer_with_new_route_owner
 
     before, after = payloads
     assert before["answer"] == after["answer"]
-    assert before["tool_calls"] == after["tool_calls"]
+    before_calls = [
+        {key: value for key, value in call.items() if key != "queried_at_utc"}
+        for call in before["tool_calls"]
+    ]
+    after_calls = [
+        {key: value for key, value in call.items() if key != "queried_at_utc"}
+        for call in after["tool_calls"]
+    ]
+    assert before_calls == after_calls
     assert "canonical_router_cutover" not in before["router_diagnostics"]
     assert after["router_diagnostics"]["canonical_router_cutover"] == {
         "domain": "hira",
@@ -289,7 +297,8 @@ def test_target_before_after_uses_same_authoritative_answer_with_new_route_owner
         "mode": "deterministic",
     }
     assert [call["tool"] for call in after["tool_calls"]] == [
-        "hira_reimbursement_criteria"
+        "hira_reimbursement_criteria",
+        "web_search",
     ]
     assert after["agent_loop_metrics"]["status"] == "typed_stop"
     assert "확인 가능한 기록을 찾지 못했습니다" in after["answer"]

@@ -12,8 +12,10 @@ from jw_chat_agent_poc.agent_loop.planner import GenosToolPlanner
 from jw_chat_agent_poc.agent_loop.tools import AgentToolFacade
 from jw_chat_agent_poc.orchestrator.insight_acceptance import verify_insight_answer
 from jw_chat_agent_poc.orchestrator.market_insights import forbidden_claims
+from jw_chat_agent_poc.orchestrator.answer_facts import answer_fact_markdown
 from jw_chat_agent_poc.orchestrator.provenance import evidence_from_calls
 from jw_chat_agent_poc.resolver import BrandResolver
+from jw_chat_agent_poc.service.answer_safety import fallback_fact_answer
 from jw_chat_agent_poc.tools.metrics import MetricsTool
 from jw_chat_agent_poc.tools.query_layer import MartRecord, StaticStrategicMartReader, StrategicQueryLayer
 
@@ -43,6 +45,45 @@ def test_default_agent_executes_structured_plan_without_llm() -> None:
         "get_brand_series",
         "get_top_brands",
     }
+
+
+def test_competitor_growth_table_fetches_yoy_for_each_top_brand() -> None:
+    periods = tuple(f"{year}-{month:02d}" for year in (2025, 2026) for month in range(1, 7))
+    values = {
+        "로수젯": tuple(180.0 + index * 3 for index in range(len(periods))),
+        "리피토": tuple(150.0 + index for index in range(len(periods))),
+        "리바로젯": tuple(90.0 + index * 4 for index in range(len(periods))),
+        "아토젯": tuple(100.0 + index * 2 for index in range(len(periods))),
+        "로수바미브": tuple(80.0 + index * 3 for index in range(len(periods))),
+    }
+    totals = tuple(sum(series[index] for series in values.values()) for index in range(len(periods)))
+    layer = StrategicQueryLayer(
+        reader=StaticStrategicMartReader(
+            tuple(_record(brand, series, periods, totals) for brand, series in values.items())
+        )
+    )
+    result = ToolUseAgent(
+        metrics=MetricsTool(mode="fixture", query_layer=layer),
+        resolver=BrandResolver(mode="fixture"),
+        query_layer=layer,
+    ).answer("리바로젯 경쟁사 성장률 표")
+
+    yoy_calls = [
+        call
+        for call in result["tool_calls"]
+        if call.get("render_data", {}).get("metric") == "yoy_growth"
+    ]
+    assert [call["render_data"]["brand"] for call in yoy_calls] == list(values)
+    assert all(call["render_data"]["from_period"] == "2025-06" for call in yoy_calls)
+    assert all(call["render_data"]["to_period"] == "2026-06" for call in yoy_calls)
+    assert all(call["render_data"]["growth_pct"] is not None for call in yoy_calls)
+    answer = fallback_fact_answer(
+        {"fact_md": answer_fact_markdown(result["tool_calls"], result["sources"])},
+        question="리바로젯 경쟁사 성장률 표",
+    )
+    assert "| 성장률(YoY, 2026-06 대비 2025-06) |" in answer
+    assert answer.count("% |") >= 5
+    assert "요청 지표 미제공" not in answer
 
 
 def test_standard_structured_market_batch_overlaps_three_tools_and_records_trace(monkeypatch) -> None:

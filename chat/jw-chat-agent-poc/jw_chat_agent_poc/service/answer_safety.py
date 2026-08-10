@@ -811,7 +811,7 @@ def _top_brand_fallback_answer(
         if metric not in {CanonicalMetric.RANK, CanonicalMetric.SHARE, CanonicalMetric.SALES}
         and any(_requested_metric_value(metric_facts.get(row["brand"], {}), metric) for row in rows)
     )
-    dynamic_labels = [_requested_metric_label(metric) for metric in dynamic_metrics]
+    dynamic_labels = [_requested_metric_label(metric, metric_facts) for metric in dynamic_metrics]
     table = [
         "| " + " | ".join(("순위", "브랜드", "점유율", "매출", *dynamic_labels)) + " |",
         "| " + " | ".join(("---", "---", "---:", "---:", *("---:" for _ in dynamic_labels))) + " |",
@@ -873,7 +873,20 @@ def _requested_metric_value(values: dict[str, str], metric: CanonicalMetric) -> 
     return next((values[label] for label in labels if values.get(label)), "")
 
 
-def _requested_metric_label(metric: CanonicalMetric) -> str:
+def _requested_metric_label(
+    metric: CanonicalMetric,
+    metric_facts: dict[str, dict[str, str]] | None = None,
+) -> str:
+    if metric is CanonicalMetric.GROWTH and metric_facts:
+        periods = {
+            values.get("기간", "")
+            for values in metric_facts.values()
+            if values.get("기간") and _requested_metric_value(values, CanonicalMetric.GROWTH)
+        }
+        if len(periods) == 1:
+            start, separator, end = next(iter(periods)).partition("→")
+            if separator and start and end:
+                return f"성장률(YoY, {end} 대비 {start})"
     return {
         CanonicalMetric.GROWTH: "성장률(YoY)",
         CanonicalMetric.RANK_CHANGE: "순위 변화",
