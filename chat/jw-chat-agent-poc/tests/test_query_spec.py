@@ -6,6 +6,8 @@ import pytest
 
 from jw_chat_agent_poc.agent_loop.periods import build_period_grounding
 from jw_chat_agent_poc.orchestrator.query_spec import (
+    CANONICAL_METRIC_DEFINITIONS,
+    CanonicalMetric,
     EntityKind,
     QueryFacet,
     QueryOperation,
@@ -189,6 +191,45 @@ def test_runtime_reconciliation_never_drops_preflight_entities() -> None:
         "아일리아",
         "비오뷰",
     )
+
+
+@pytest.mark.parametrize(
+    ("question", "expected"),
+    (
+        ("경쟁사 성장률", (CanonicalMetric.GROWTH,)),
+        ("경쟁사 매출", (CanonicalMetric.SALES,)),
+        ("경쟁사 점유율", (CanonicalMetric.SHARE,)),
+        ("경쟁사 순위", (CanonicalMetric.RANK,)),
+        ("경쟁사 순위 변화", (CanonicalMetric.RANK_CHANGE,)),
+        ("처방량과 처방건수", (CanonicalMetric.PRESCRIPTION_VOLUME, CanonicalMetric.PRESCRIPTION_COUNT)),
+        ("브랜드 단가", (CanonicalMetric.UNIT_PRICE,)),
+        ("5년 CAGR", (CanonicalMetric.CAGR,)),
+        ("시장 HHI", (CanonicalMetric.HHI,)),
+    ),
+)
+def test_canonical_metric_vocabulary_is_stable(
+    question: str,
+    expected: tuple[CanonicalMetric, ...],
+) -> None:
+    spec = extract_query_spec(question, _AcceptanceResolver(), build_period_grounding(question))
+
+    assert spec.metrics == expected
+
+
+def test_rank_change_does_not_collapse_into_rank() -> None:
+    question = "리바로 경쟁사 순위 변화 표로 보여줘"
+    spec = extract_query_spec(question, _AcceptanceResolver(), build_period_grounding(question))
+
+    assert spec.metrics == (CanonicalMetric.RANK_CHANGE,)
+    assert CANONICAL_METRIC_DEFINITIONS[CanonicalMetric.GROWTH].calculation == "year_over_year"
+    assert CANONICAL_METRIC_DEFINITIONS[CanonicalMetric.RANK_CHANGE].period_basis == "requested_period_range"
+
+
+def test_cagr_wording_does_not_duplicate_yoy_growth_metric() -> None:
+    question = "리바로 5년 연평균 성장률 알려줘"
+    spec = extract_query_spec(question, _AcceptanceResolver(), build_period_grounding(question))
+
+    assert spec.metrics == (CanonicalMetric.CAGR,)
 
 
 @pytest.mark.parametrize(

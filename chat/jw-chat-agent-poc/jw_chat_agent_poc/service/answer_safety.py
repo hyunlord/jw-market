@@ -16,6 +16,7 @@ from jw_chat_agent_poc.orchestrator.comparison_compatibility import (
 from jw_chat_agent_poc.orchestrator.dosage_notes import dosage_combination_note, is_dosage_combination_note
 from jw_chat_agent_poc.orchestrator.markdown_formatting import allowed_numbers, eok_value, normalize_number, pct_value
 from jw_chat_agent_poc.orchestrator.provenance_labels import provenance_source_block_from_facts
+from jw_chat_agent_poc.orchestrator.query_spec import CanonicalMetric, canonical_metrics_for_question
 from jw_chat_agent_poc.service.deep_report_cleanup import repair_plain_table_urls, slim_source_tables
 from jw_chat_agent_poc.service.failure_disposition import failure_kind as detect_failure_kind
 from jw_chat_agent_poc.tools.query_layer.errors import INCOMPATIBLE_COMPARISON_REASON
@@ -449,7 +450,7 @@ def ensure_multi_file_evidence_coverage(question: str, answer: str, file_context
     return cleanup_markdown_answer(f"{before}\n\n{section}\n\n{source}")
 
 
-def fallback_fact_answer(markdown_response: Any) -> str:
+def fallback_fact_answer(markdown_response: Any, *, question: str = "") -> str:
     """Build a non-empty deterministic answer from verified fact markdown."""
     if not isinstance(markdown_response, dict):
         return "확정 데이터만으로 답변을 구성할 수 있는 정보가 제한적입니다."
@@ -464,7 +465,12 @@ def fallback_fact_answer(markdown_response: Any) -> str:
     sales_delta_answer = _sales_delta_fallback_answer(lines, fact_md, source_line)
     if sales_delta_answer:
         return sales_delta_answer
-    top_brand_answer = _top_brand_fallback_answer(lines, fact_md, source_line)
+    top_brand_answer = _top_brand_fallback_answer(
+        lines,
+        fact_md,
+        source_line,
+        requested_metrics=canonical_metrics_for_question(question),
+    )
     if top_brand_answer:
         return top_brand_answer
     csd_answer = _csd_activity_fallback_answer(lines, source_line)
@@ -570,7 +576,7 @@ def finalized_fallback_fact_answer(question: str, markdown_response: Any) -> str
     fact_md = ""
     if isinstance(markdown_response, dict):
         fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
-    answer = cleanup_markdown_answer(fallback_fact_answer(markdown_response))
+    answer = cleanup_markdown_answer(fallback_fact_answer(markdown_response, question=question))
     answer = ensure_share_delta_line(question, answer, fact_md)
     answer = ensure_causal_structure(question, answer, fact_md)
     answer = strip_generated_source_sections(answer)
@@ -768,7 +774,13 @@ def replace_empty_news_shells(answer: str, fact_md: str) -> str:
     return cleanup_markdown_answer("\n\n".join(part for part in (kept_text, replacement) if part))
 
 
-def _top_brand_fallback_answer(lines: list[str], fact_md: str, source_line: str) -> str:
+def _top_brand_fallback_answer(
+    lines: list[str],
+    fact_md: str,
+    source_line: str,
+    *,
+    requested_metrics: tuple[CanonicalMetric, ...] = (),
+) -> str:
     rows = [_parse_top_brand_line(line) for line in lines]
     rows = [row for row in rows if row]
     if not rows:
@@ -792,19 +804,96 @@ def _top_brand_fallback_answer(lines: list[str], fact_md: str, source_line: str)
         f"{row['brand']} 시장점유율 {row['share']}%, 매출 {row['sales']}억원" for row in rows
     )
     detail_sentence = f"구체적으로는 {verified_values}입니다."
+    metric_facts = _metric_fact_values(fact_md)
+    dynamic_metrics = tuple(
+        metric
+        for metric in requested_metrics
+        if metric not in {CanonicalMetric.RANK, CanonicalMetric.SHARE, CanonicalMetric.SALES}
+        and any(_requested_metric_value(metric_facts.get(row["brand"], {}), metric) for row in rows)
+    )
+    dynamic_labels = [_requested_metric_label(metric) for metric in dynamic_metrics]
     table = [
-        "| 순위 | 브랜드 | 점유율 | 매출 |",
-        "| --- | --- | ---: | ---: |",
+        "| " + " | ".join(("순위", "브랜드", "점유율", "매출", *dynamic_labels)) + " |",
+        "| " + " | ".join(("---", "---", "---:", "---:", *("---:" for _ in dynamic_labels))) + " |",
     ]
     for row in rows:
-        table.append(f"| {row['rank']}위 | {row['brand']} | {row['share']}% | {row['sales']}억원 |")
+        dynamic_values = [
+            _requested_metric_value(metric_facts.get(row["brand"], {}), metric) or "확인 불가"
+            for metric in dynamic_metrics
+        ]
+        table.append(
+            "| "
+            + " | ".join(
+                (f"{row['rank']}위", row["brand"], f"{row['share']}%", f"{row['sales']}억원", *dynamic_values)
+            )
+            + " |"
+        )
     parts = [intro, detail_sentence, "\n".join(table)]
+    rendered = {CanonicalMetric.RANK, CanonicalMetric.SHARE, CanonicalMetric.SALES, *dynamic_metrics}
+    missing = tuple(metric for metric in requested_metrics if metric not in rendered)
+    if missing:
+        parts.append("## 요청 지표 미제공\n\n" + "\n".join(_missing_metric_notice(metric) for metric in missing))
     news_lines = list(safe_news_summary_lines(fact_md))[:3]
     if news_lines:
         parts.extend(("관련 이슈 맥락", "\n".join(news_lines)))
     if source_line:
         parts.append(source_line)
     return "\n\n".join(parts)
+
+
+def _metric_fact_values(fact_md: str) -> dict[str, dict[str, str]]:
+    values: dict[str, dict[str, str]] = {}
+    subject = ""
+    for raw_line in fact_md.splitlines():
+        line = raw_line.strip()
+        heading = re.fullmatch(r"###\s+(.+?)\s+지표 fact", line)
+        if heading:
+            subject = heading.group(1).strip()
+            values.setdefault(subject, {})
+            continue
+        if not subject or not line.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        if len(cells) == 2 and cells[0] not in {"항목", "---"}:
+            values[subject][cells[0]] = cells[1]
+    return values
+
+
+def _requested_metric_value(values: dict[str, str], metric: CanonicalMetric) -> str:
+    labels = {
+        CanonicalMetric.GROWTH: ("YoY 성장률", "매출 변화율", "성장률"),
+        CanonicalMetric.RANK_CHANGE: ("순위 변화", "순위변화"),
+        CanonicalMetric.PRESCRIPTION_VOLUME: ("처방량",),
+        CanonicalMetric.PRESCRIPTION_COUNT: ("처방건수", "처방 건수"),
+        CanonicalMetric.UNIT_PRICE: ("단가",),
+        CanonicalMetric.CAGR: ("CAGR",),
+        CanonicalMetric.HHI: ("HHI",),
+        CanonicalMetric.MARKET_SIZE: ("시장 규모", "시장규모"),
+    }.get(metric, ())
+    return next((values[label] for label in labels if values.get(label)), "")
+
+
+def _requested_metric_label(metric: CanonicalMetric) -> str:
+    return {
+        CanonicalMetric.GROWTH: "성장률(YoY)",
+        CanonicalMetric.RANK_CHANGE: "순위 변화",
+        CanonicalMetric.PRESCRIPTION_VOLUME: "처방량",
+        CanonicalMetric.PRESCRIPTION_COUNT: "처방건수",
+        CanonicalMetric.UNIT_PRICE: "단가",
+        CanonicalMetric.CAGR: "CAGR",
+        CanonicalMetric.HHI: "HHI",
+        CanonicalMetric.MARKET_SIZE: "시장 규모",
+    }.get(metric, metric.value)
+
+
+def _missing_metric_notice(metric: CanonicalMetric) -> str:
+    if metric is CanonicalMetric.GROWTH:
+        return "요청하신 성장률은 현재 근거에서 확인하지 못해 제외했습니다.\n아래는 확인된 점유율과 매출입니다."
+    if metric is CanonicalMetric.RANK_CHANGE:
+        return "요청하신 순위 변화는 현재 근거에서 확인하지 못해 제외했습니다."
+    if metric is CanonicalMetric.UNIT_PRICE:
+        return "현재 근거에는 요청 지표의 정의·산식이 없어 산출할 수 없습니다."
+    return f"요청하신 {_requested_metric_label(metric)} 데이터가 현재 근거에 없습니다."
 
 
 def ensure_natural_fact_lead(question: str, answer: str, fact_md: str) -> str:
@@ -1194,7 +1283,12 @@ def ensure_judgment_insight(question: str, answer: str, fact_md: str) -> str:
     revised = _drop_raw_mandatory_lines(answer, judgment_lines)
     revised = _drop_empty_markdown_tables(revised)
     if _needs_top_brand_insight(question, revised):
-        top_brand_answer = _top_brand_fallback_answer(list(mandatory), fact_md, _source_line(fact_md))
+        top_brand_answer = _top_brand_fallback_answer(
+            list(mandatory),
+            fact_md,
+            _source_line(fact_md),
+            requested_metrics=canonical_metrics_for_question(question),
+        )
         if top_brand_answer:
             return cleanup_markdown_answer(top_brand_answer)
     market_line = next((line for line in mandatory if "시장/브랜드 변화율 대조" in line), "")

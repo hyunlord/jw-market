@@ -111,6 +111,21 @@ def test_semantic_parser_fast_paths(question: str, intent: AnswerIntent) -> None
 
 
 @pytest.mark.parametrize(
+    ("question", "intent"),
+    (
+        ("리바로젯 주요 경쟁사의 성장률에 대해 표로 정리해줘", AnswerIntent.BRAND_TREND),
+        ("리바로 경쟁사 순위 변화 표로 보여줘", AnswerIntent.COMPETITION_CHANGE),
+        ("리바로 경쟁사 단가 표로 보여줘", AnswerIntent.BRAND_TREND),
+    ),
+)
+def test_requested_internal_metrics_do_not_fall_through_to_external_lookup(
+    question: str,
+    intent: AnswerIntent,
+) -> None:
+    assert question_spec_for(question).intent is intent
+
+
+@pytest.mark.parametrize(
     ("question", "operation"),
     (
         ("환자수랑 매출 한번에 나란히 보여줘", OperationMode.SIDE_BY_SIDE),

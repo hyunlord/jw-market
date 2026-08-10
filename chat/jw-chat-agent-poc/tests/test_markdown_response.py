@@ -3093,6 +3093,64 @@ def test_fallback_fact_answer_summarizes_top_brand_trend() -> None:
     assert "상위권 점유율·매출 변화" in answer
 
 
+def test_top_brand_fallback_adds_requested_growth_column_from_direct_facts() -> None:
+    fact_md = """### 필수 답변 fact
+| 구분 | 반드시 반영할 내용 |
+| --- | --- |
+| Brand 상위 | 1위 로수젯 시장점유율 9.17% 매출 206.85억원 |
+| Brand 상위 | 2위 리바로젯 시장점유율 5.32% 매출 120.09억원 |
+
+### 로수젯 지표 fact
+| 항목 | 값 |
+| --- | --- |
+| 매출 변화율 | 12.30% |
+
+### 리바로젯 지표 fact
+| 항목 | 값 |
+| --- | --- |
+| YoY 성장률 | -4.50% |
+"""
+
+    answer = fallback_fact_answer(
+        {"fact_md": fact_md},
+        question="리바로젯 주요 경쟁사의 성장률에 대해 표로 정리해줘",
+    )
+
+    assert "| 성장률(YoY) |" in answer
+    assert "| 1위 | 로수젯 | 9.17% | 206.85억원 | 12.30% |" in answer
+    assert "| 2위 | 리바로젯 | 5.32% | 120.09억원 | -4.50% |" in answer
+
+
+@pytest.mark.parametrize(
+    ("question", "expected"),
+    (
+        (
+            "리바로 경쟁사 순위 변화 표로 보여줘",
+            "요청하신 순위 변화는 현재 근거에서 확인하지 못해 제외했습니다.",
+        ),
+        (
+            "리바로 경쟁사 단가 표로 보여줘",
+            "현재 근거에는 요청 지표의 정의·산식이 없어 산출할 수 없습니다.",
+        ),
+    ),
+)
+def test_top_brand_fallback_explains_unavailable_requested_metric(
+    question: str,
+    expected: str,
+) -> None:
+    fact_md = """### 필수 답변 fact
+| 구분 | 반드시 반영할 내용 |
+| --- | --- |
+| Brand 상위 | 1위 로수젯 시장점유율 9.17% 매출 206.85억원 |
+| Brand 상위 | 2위 리바로젯 시장점유율 5.32% 매출 120.09억원 |
+"""
+
+    answer = fallback_fact_answer({"fact_md": fact_md}, question=question)
+
+    assert "요청 지표 미제공" in answer
+    assert expected in answer
+
+
 def test_natural_fact_lead_precedes_existing_sales_table_without_replacing_it() -> None:
     fact_md = """### 필수 답변 fact
 | 구분 | 반드시 반영할 내용 |

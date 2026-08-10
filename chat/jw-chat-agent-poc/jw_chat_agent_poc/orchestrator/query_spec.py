@@ -46,6 +46,42 @@ class QueryFacet(StrEnum):
     GROWTH_DRIVER = "growth_driver"
 
 
+class CanonicalMetric(StrEnum):
+    GROWTH = "growth"
+    SALES = "sales"
+    SHARE = "share"
+    RANK = "rank"
+    RANK_CHANGE = "rank_change"
+    PRESCRIPTION_VOLUME = "prescription_volume"
+    PRESCRIPTION_COUNT = "prescription_count"
+    UNIT_PRICE = "unit_price"
+    CAGR = "cagr"
+    HHI = "hhi"
+    MARKET_SIZE = "market_size"
+
+
+@dataclass(frozen=True, slots=True)
+class MetricDefinition:
+    label: str
+    period_basis: str
+    calculation: str
+
+
+CANONICAL_METRIC_DEFINITIONS: dict[CanonicalMetric, MetricDefinition] = {
+    CanonicalMetric.GROWTH: MetricDefinition("성장률", "latest_comparable_period", "year_over_year"),
+    CanonicalMetric.SALES: MetricDefinition("매출", "requested_period", "direct_value"),
+    CanonicalMetric.SHARE: MetricDefinition("점유율", "requested_period", "direct_value"),
+    CanonicalMetric.RANK: MetricDefinition("순위", "requested_period", "direct_value"),
+    CanonicalMetric.RANK_CHANGE: MetricDefinition("순위 변화", "requested_period_range", "end_rank_minus_start_rank"),
+    CanonicalMetric.PRESCRIPTION_VOLUME: MetricDefinition("처방량", "requested_period", "direct_value"),
+    CanonicalMetric.PRESCRIPTION_COUNT: MetricDefinition("처방건수", "requested_period", "direct_value"),
+    CanonicalMetric.UNIT_PRICE: MetricDefinition("단가", "requested_period", "source_defined_direct_or_derived_value"),
+    CanonicalMetric.CAGR: MetricDefinition("CAGR", "requested_period_range", "compound_annual_growth_rate"),
+    CanonicalMetric.HHI: MetricDefinition("HHI", "requested_period", "sum_of_squared_market_shares"),
+    CanonicalMetric.MARKET_SIZE: MetricDefinition("시장 규모", "requested_period", "direct_value"),
+}
+
+
 @dataclass(frozen=True, slots=True)
 class QueryEntity:
     kind: EntityKind
@@ -57,7 +93,7 @@ class QueryEntity:
 class RequestQuerySpec:
     entities: tuple[QueryEntity, ...]
     operation: QueryOperation
-    metrics: tuple[str, ...]
+    metrics: tuple[CanonicalMetric, ...]
     start_period: str | None = None
     end_period: str | None = None
     window_count: int | None = None
@@ -158,7 +194,7 @@ def query_spec_observation(spec: RequestQuerySpec) -> QuerySpecObservation:
     return {
         "entities": [_observed_entity(entity) for entity in spec.entities],
         "operation": spec.operation.value,
-        "metrics": list(spec.metrics),
+        "metrics": [metric.value for metric in spec.metrics],
         "start_period": spec.start_period,
         "end_period": spec.end_period,
         "window_count": spec.window_count,
@@ -226,21 +262,34 @@ def _entities(
     )
 
 
-def _metrics(question: str) -> tuple[str, ...]:
+def canonical_metrics_for_question(question: str) -> tuple[CanonicalMetric, ...]:
+    rank_change = bool(re.search(r"(?:순위|랭킹)\s*(?:변화|변동)", question, re.IGNORECASE))
+    cagr = bool(re.search(r"CAGR|연평균\s*성장률", question, re.IGNORECASE))
     candidates = (
-        ("sales", ("매출", "실적", "판매", "팔렸", "팔려")),
-        ("share", ("점유율", "MS")),
-        ("hhi", ("HHI", "집중도")),
-        ("market_size", ("시장 규모", "시장규모")),
-        ("rank", ("순위", "랭킹")),
-        ("growth", ("성장률",)),
+        (CanonicalMetric.SALES, ("매출", "실적", "판매", "팔렸", "팔려")),
+        (CanonicalMetric.SHARE, ("점유율", "MS")),
+        (CanonicalMetric.HHI, ("HHI", "집중도")),
+        (CanonicalMetric.MARKET_SIZE, ("시장 규모", "시장규모")),
+        (CanonicalMetric.RANK_CHANGE, ("순위 변화", "순위변화", "순위 변동", "순위변동", "랭킹 변화", "랭킹변화")),
+        (CanonicalMetric.RANK, ("순위", "랭킹")),
+        (CanonicalMetric.GROWTH, ("성장률", "증감률", "YOY")),
+        (CanonicalMetric.PRESCRIPTION_VOLUME, ("처방량",)),
+        (CanonicalMetric.PRESCRIPTION_COUNT, ("처방건수", "처방 건수")),
+        (CanonicalMetric.UNIT_PRICE, ("단가",)),
+        (CanonicalMetric.CAGR, ("CAGR", "연평균 성장률", "연평균성장률")),
     )
     normalized = question.upper()
     return tuple(
         metric
         for metric, tokens in candidates
         if any(token.upper() in normalized for token in tokens)
+        and not (metric is CanonicalMetric.RANK and rank_change)
+        and not (metric is CanonicalMetric.GROWTH and cagr)
     )
+
+
+def _metrics(question: str) -> tuple[CanonicalMetric, ...]:
+    return canonical_metrics_for_question(question)
 
 
 def _window(question: str) -> tuple[int | None, TimeGranularity | None]:

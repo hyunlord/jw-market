@@ -250,6 +250,8 @@ def intent_for_question(question: str) -> AnswerIntent:
         return AnswerIntent.NEW_ENTRANT_THREAT
     if re.search(r"경쟁\s*구도", question) and re.search(r"변|최근", question):
         return AnswerIntent.COMPETITION_CHANGE
+    if re.search(r"(?:순위|랭킹)\s*(?:변화|변동)", question):
+        return AnswerIntent.COMPETITION_CHANGE
     if re.search(r"경쟁\s*상대|우리\s*위치", question):
         return AnswerIntent.COMPETITOR_POSITION
     if re.search(r"채널|진료과", question):
@@ -261,6 +263,8 @@ def intent_for_question(question: str) -> AnswerIntent:
     if re.search(r"영업\s*활동", question):
         return AnswerIntent.SALES_ACTIVITY_TREND
     if re.search(r"매출|처방", question):
+        return AnswerIntent.BRAND_TREND
+    if re.search(r"성장률|증감률|\bYoY\b|\bCAGR\b|단가", question, re.IGNORECASE):
         return AnswerIntent.BRAND_TREND
     return AnswerIntent.EXTERNAL_LOOKUP
 

@@ -149,6 +149,12 @@ class _StrategicQueryLayer:
             },
         }
 
+    def market_scope_by_id(self, market_id: str, period: str, *, market_display_name: str):
+        assert market_id == "ml_006"
+        assert period == "latest"
+        assert market_display_name == "고지혈증"
+        return self.market_scope_from_mart("리바로")
+
 
 class _GeneralView:
     def answer(self, *_args, **_kwargs):
@@ -167,6 +173,39 @@ def test_strategic_cause_uses_mart_and_returns_table_and_chart() -> None:
     assert result["resolution"]["market_id"] == "ml_006"
     assert "| 순위 | 브랜드 |" in result["answer"]
     assert result["tool_calls"][0]["render_data"]["chart_payloads"]
+
+
+class _NamedMarketResolver(_StrategicResolver):
+    def explicit_market(self, question: str):
+        assert "고지혈증 시장" in question
+        return "ml_006", "고지혈증"
+
+
+def test_named_market_cause_uses_catalog_market_and_mart_projection() -> None:
+    resolver = MarketScopeResolver.__new__(MarketScopeResolver)
+    resolver._resolver = _NamedMarketResolver()
+    resolver._query_layer = _StrategicQueryLayer()
+    resolver._general_view = _GeneralView()
+
+    result = resolver.answer_cause_analysis("고지혈증 시장 원인분석")
+
+    assert result["cause_analysis_ready"] is True
+    assert result["resolution"]["market_id"] == "ml_006"
+    assert result["resolution"]["market_name"] == "고지혈증"
+    assert result["tool_calls"][0]["render_data"]["chart_payloads"]
+    assert set(result["tool_calls"][0]["render_data"]["cause_card_support"]) == {
+        "A1_market_size_growth",
+        "A2_brand_ranking",
+        "A3_hhi",
+        "A4_company_ranking",
+        "A5_company_concentration",
+        "B1_ei_ms",
+        "B2_growth_contribution_ms",
+        "C1_analysis_level_trend",
+        "D1_waterfall",
+        "D2_customer_competition",
+        "D3_level_top5",
+    }
 
 
 def test_strategic_cause_survives_binding_and_renders_chart() -> None:

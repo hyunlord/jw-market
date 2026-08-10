@@ -3336,6 +3336,13 @@ def _controlled_block_diagnostics(
     }
 
 
+def _public_numeric_copy_summary(report: Mapping[str, Any]) -> dict[str, list[str]]:
+    """Expose metric coverage without leaking blocked numeric tokens."""
+
+    fields = ("requested_metrics", "rendered_metrics", "dropped_metrics", "reason_codes")
+    return {field: [str(value) for value in report.get(field, ())] for field in fields}
+
+
 def compute_final_answer(
     question: str,
     result: dict,
@@ -3510,6 +3517,7 @@ def compute_final_answer(
             timing=final_answer.timing,
             conversation_id=conversation_id,
         )
+        trace["numeric_copy_contract"] = _public_numeric_copy_summary(numeric_copy_report)
         return replace(
             final_answer,
             text=user_answer,
@@ -3604,6 +3612,7 @@ def _compute_external_passthrough_final_answer(
         timing=timing_payload,
         conversation_id=conversation_id,
     )
+    trace["numeric_copy_contract"] = _public_numeric_copy_summary(numeric_copy_report)
     return FinalAnswer(
         text=user_answer,
         charts=[],

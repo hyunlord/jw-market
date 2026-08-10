@@ -9,6 +9,7 @@ from jw_chat_agent_poc.orchestrator.markdown_formatting import allowed_numbers, 
 from jw_chat_agent_poc.orchestrator.external_passthrough_render import (
     normalize_external_section_headings,
 )
+from jw_chat_agent_poc.orchestrator.query_spec import CanonicalMetric, canonical_metrics_for_question
 from jw_chat_agent_poc.service.answer_safety import fact_token_allowed, strict_allowed_numbers
 
 
@@ -70,6 +71,7 @@ def enforce_numeric_copy_contract(
     blocked_tokens: set[str] = set()
     blocked_line_count = 0
     trusted_metric_blocked_count = 0
+    blocked_metrics: set[CanonicalMetric] = set()
     section = ""
     for line in answer.splitlines():
         stripped = line.strip()
@@ -95,6 +97,7 @@ def enforce_numeric_copy_contract(
             blocked_tokens.update(unsupported or trusted_unsupported or tokens)
             if web_metric_violation or trusted_metric_violation:
                 trusted_metric_blocked_count += 1
+            blocked_metrics.update(canonical_metrics_for_question(line))
             continue
         kept.append(line)
 
@@ -104,6 +107,12 @@ def enforce_numeric_copy_contract(
     if not cleaned:
         cleaned = _blocked_numeric_notice(result)
     cleaned = normalize_external_section_headings(cleaned, result)
+    requested_metrics = canonical_metrics_for_question(question)
+    rendered_metrics = _rendered_metrics(cleaned, requested_metrics)
+    dropped_metrics = tuple(metric for metric in requested_metrics if metric not in rendered_metrics)
+    reason_codes = _metric_reason_codes(result, dropped_metrics, blocked_metrics)
+    if dropped_metrics and "## 요청 지표 미제공" not in cleaned:
+        cleaned = _insert_before_sources(cleaned, _requested_metric_missing_notice(dropped_metrics))
     report = {
         "contract": "numeric_copy_only_v1",
         "disposition": "blocked" if blocked_line_count else "pass",
@@ -112,8 +121,85 @@ def enforce_numeric_copy_contract(
         "trusted_metric_blocked_count": trusted_metric_blocked_count,
         "verification_failed_fail_close": verification_failed,
         "question_has_numeric_token": bool(allowed_numbers(question)),
+        "requested_metrics": [metric.value for metric in requested_metrics],
+        "rendered_metrics": [metric.value for metric in rendered_metrics],
+        "dropped_metrics": [metric.value for metric in dropped_metrics],
+        "reason_codes": list(reason_codes),
     }
     return cleaned, report
+
+
+def _rendered_metrics(
+    answer: str,
+    requested: tuple[CanonicalMetric, ...],
+) -> tuple[CanonicalMetric, ...]:
+    table_headers = "\n".join(
+        line for line in answer.splitlines() if line.strip().startswith("|") and not re.search(r"\d", line)
+    )
+    rendered: list[CanonicalMetric] = []
+    for metric in requested:
+        labels = _metric_surface_labels(metric)
+        in_header = any(label.casefold() in table_headers.casefold() for label in labels)
+        numeric_claim = any(
+            re.search(rf"{re.escape(label)}[^\n|]{{0,32}}[-+]?\d", answer, re.IGNORECASE)
+            for label in labels
+        )
+        if in_header or numeric_claim:
+            rendered.append(metric)
+    return tuple(rendered)
+
+
+def _metric_surface_labels(metric: CanonicalMetric) -> tuple[str, ...]:
+    return {
+        CanonicalMetric.GROWTH: ("성장률", "증감률", "YoY"),
+        CanonicalMetric.SALES: ("매출",),
+        CanonicalMetric.SHARE: ("점유율",),
+        CanonicalMetric.RANK: ("순위",),
+        CanonicalMetric.RANK_CHANGE: ("순위 변화", "순위변화", "순위 변동", "순위변동"),
+        CanonicalMetric.PRESCRIPTION_VOLUME: ("처방량",),
+        CanonicalMetric.PRESCRIPTION_COUNT: ("처방건수", "처방 건수"),
+        CanonicalMetric.UNIT_PRICE: ("단가",),
+        CanonicalMetric.CAGR: ("CAGR",),
+        CanonicalMetric.HHI: ("HHI",),
+        CanonicalMetric.MARKET_SIZE: ("시장 규모", "시장규모"),
+    }[metric]
+
+
+def _metric_reason_codes(
+    result: Mapping[str, Any],
+    dropped: tuple[CanonicalMetric, ...],
+    blocked: set[CanonicalMetric],
+) -> tuple[str, ...]:
+    codes: list[str] = []
+    if blocked:
+        codes.append("numeric_copy_blocked")
+    for metric in dropped:
+        if metric in blocked:
+            continue
+        if metric is CanonicalMetric.UNIT_PRICE:
+            code = "calculation_unavailable"
+        elif metric is CanonicalMetric.RANK_CHANGE:
+            code = "period_insufficient"
+        elif not result.get("tool_calls"):
+            code = "tool_not_run"
+        else:
+            code = "data_unavailable"
+        if code not in codes:
+            codes.append(code)
+    return tuple(codes)
+
+
+def _requested_metric_missing_notice(metrics: tuple[CanonicalMetric, ...]) -> str:
+    if metrics == (CanonicalMetric.GROWTH,):
+        reason = "요청하신 성장률은 현재 근거에서 확인하지 못해 제외했습니다."
+    elif metrics == (CanonicalMetric.UNIT_PRICE,):
+        reason = "현재 근거에는 요청 지표의 정의·산식이 없어 산출할 수 없습니다."
+    elif metrics == (CanonicalMetric.RANK_CHANGE,):
+        reason = "요청 기간의 비교 기준 데이터가 부족해 순위 변화를 계산할 수 없습니다."
+    else:
+        labels = ", ".join(_metric_surface_labels(metric)[0] for metric in metrics)
+        reason = f"요청하신 {labels}는 현재 근거에서 확인하지 못했습니다."
+    return f"## 요청 지표 미제공\n\n{reason}"
 
 
 def _blocked_numeric_notice(result: Mapping[str, Any]) -> str:
