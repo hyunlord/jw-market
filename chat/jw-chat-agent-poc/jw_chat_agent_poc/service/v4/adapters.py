@@ -175,6 +175,23 @@ def build_source_adapters() -> dict[SourceName, Any]:
                 for payload in payloads
             )
         )
+        return SourceResult(
+            source="mart",
+            query=query,
+            status="ok" if payloads else "empty",
+            payload={"calls": payloads},
+            citations=tuple(
+                Citation(
+                    source=label,
+                    query=query,
+                    url="mart://read-only/query-layer",
+                    retrieved_at=started_at,
+                    used=False,
+                )
+                for label in source_labels
+            ),
+            notice=None if payloads else "mart read-only adapters returned no rows",
+        )
 
     def nedrug(query: str) -> SourceResult:
         base = _base_query(query)
@@ -245,23 +262,6 @@ def build_source_adapters() -> dict[SourceName, Any]:
             term, query_type = _clinical_query(query)
             calls = [external.clinicaltrials_v2_search(term, query_type=query_type)]
         return external_calls("clinicaltrials", query, calls)
-        return SourceResult(
-            source="mart",
-            query=query,
-            status="ok" if payloads else "empty",
-            payload={"calls": payloads},
-            citations=tuple(
-                Citation(
-                    source=label,
-                    query=query,
-                    url="mart://read-only/query-layer",
-                    retrieved_at=started_at,
-                    used=False,
-                )
-                for label in source_labels
-            ),
-            notice=None if payloads else "mart read-only adapters returned no rows",
-        )
 
     return {
         "mart": mart,

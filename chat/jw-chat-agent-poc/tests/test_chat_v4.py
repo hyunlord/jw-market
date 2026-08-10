@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 import time
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -73,6 +74,45 @@ def test_v4_mart_relevance_rejects_external_only_questions() -> None:
     assert v4_adapters._mart_relevant("리바로 매출 알려줘") is True
     assert v4_adapters._mart_relevant("리바로 효능효과") is False
     assert v4_adapters._mart_relevant("리바로 특허 언제 만료돼") is False
+
+
+def test_v4_mart_adapter_always_returns_source_result(monkeypatch) -> None:
+    from jw_chat_agent_poc.agent_loop import factory
+    from jw_chat_agent_poc.service import general_view_routing
+
+    class Resolver:
+        def resolve(self, _query, *, allow_default):
+            assert allow_default is False
+            return SimpleNamespace(canonical_brand="리바로", molecule_en=("Pitavastatin",))
+
+    class QueryLayer:
+        def brand_metric(self, brand, metric, period):
+            return {"source": "UBIST", "brand": brand, "metric": metric, "period": period}
+
+        def top_brands(self, brand, *, limit, metric):
+            return {"source": "UBIST", "brand": brand, "limit": limit, "metric": metric}
+
+    class GeneralView:
+        def route(self, _query):
+            return general_view_routing.GeneralRoute.EXISTING
+
+    dependencies = SimpleNamespace(
+        external=SimpleNamespace(),
+        resolver=Resolver(),
+        query_layer=QueryLayer(),
+    )
+    monkeypatch.setattr(factory, "build_chat_agent_dependencies", lambda **_kwargs: dependencies)
+    monkeypatch.setattr(
+        general_view_routing.GeneralViewService,
+        "from_env",
+        lambda _resolver: GeneralView(),
+    )
+
+    result = v4_adapters.build_source_adapters()["mart"]("리바로 매출 알려줘")
+
+    assert isinstance(result, SourceResult)
+    assert result.status == "ok"
+    assert result.payload["calls"][0]["metric"] == "sales"
 
 
 def test_v4_fallback_uses_verified_summaries_instead_of_raw_json() -> None:
