@@ -1245,9 +1245,21 @@ class IngestService:
             raise HTTPException(status_code=409, detail="publish candidate is absent")
         if candidate.build_run_id != payload.run_id:
             raise HTTPException(status_code=409, detail="run_id does not match prepared candidate")
+        publish_ledger = job_runner._ledger_for_run(
+            self.ledger,
+            (payload.epoch, payload.category, payload.manifest_sha),
+            payload.run_id,
+        )
+        entry = publish_ledger.status(
+            payload.epoch,
+            payload.category,
+            payload.manifest_sha,
+        )
+        if entry is None:
+            raise HTTPException(status_code=404, detail="unknown submission identity")
         now = self.timestamp()
         if _utc_timestamp(now) > _utc_timestamp(candidate.expires_at):
-            expired = self.ledger.mark_publish_candidate_expired(
+            expired = publish_ledger.mark_publish_candidate_expired(
                 payload.epoch,
                 payload.category,
                 payload.manifest_sha,
@@ -1266,7 +1278,7 @@ class IngestService:
                         ),
                     ) from exc
             if not expired:
-                entry = self.ledger.status(
+                entry = publish_ledger.status(
                     payload.epoch,
                     payload.category,
                     payload.manifest_sha,
@@ -1307,7 +1319,7 @@ class IngestService:
             payload.manifest_sha,
             publish_run_id,
         )
-        changed = self.ledger.mark_publish_running(
+        changed = publish_ledger.mark_publish_running(
             payload.epoch,
             payload.category,
             payload.manifest_sha,
@@ -1330,7 +1342,7 @@ class IngestService:
                     "idempotent": True,
                 }
             if refreshed and _utc_timestamp(now) > _utc_timestamp(refreshed.expires_at):
-                expired = self.ledger.mark_publish_candidate_expired(
+                expired = publish_ledger.mark_publish_candidate_expired(
                     payload.epoch,
                     payload.category,
                     payload.manifest_sha,
@@ -1395,7 +1407,7 @@ class IngestService:
                     status_code=500,
                     detail="publish Job is terminal and requires reconciliation",
                 ) from exc
-            restored = self.ledger.restore_awaiting_approval_after_submit_failure(
+            restored = publish_ledger.restore_awaiting_approval_after_submit_failure(
                 payload.epoch,
                 payload.category,
                 payload.manifest_sha,
@@ -1412,7 +1424,7 @@ class IngestService:
                 detail="publish Job submission failed; approval remains retryable",
             ) from exc
         if name != expected_name:
-            restored = self.ledger.restore_awaiting_approval_after_submit_failure(
+            restored = publish_ledger.restore_awaiting_approval_after_submit_failure(
                 payload.epoch,
                 payload.category,
                 payload.manifest_sha,

@@ -12,6 +12,7 @@ from pipeline.scripts.ingest_hook.job_launcher import publish_job_name
 from pipeline.scripts.ingest_hook.job_runner import (
     _StageTracker,
     _emit_completion_signal,
+    _ledger_for_run,
     _release_writer_lock_preserving_primary,
     _run_commands_with_writer_lock,
 )
@@ -101,6 +102,8 @@ def run(
     build_run_id: str,
     publish_run_id: str,
 ) -> int:
+    identity = (epoch, category, manifest_sha)
+    ledger = _ledger_for_run(ledger, identity, build_run_id)
     if resolve_category(category).activation_kind is ActivationKind.CSD_CHANNEL:
         from pipeline.scripts.ingest_hook import csd_channel_publish_runner
 
@@ -123,7 +126,6 @@ def run(
             build_run_id=build_run_id,
             publish_run_id=publish_run_id,
         )
-    identity = (epoch, category, manifest_sha)
     entry = ledger.status(*identity)
     if entry is None:
         print("result=failed reason=unknown publish identity", file=sys.stderr)

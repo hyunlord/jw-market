@@ -321,6 +321,39 @@ def test_full_scan_load_rebuilds_all_current_files_for_fresh_target_database(
     assert observed["rebuild_all_current"] is True
 
 
+def test_complete_reingest_reuses_full_current_inventory_for_ubist(
+    staging_env,
+    bucket,
+    monkeypatch,
+    tmp_path,
+):
+    manifest = _manifest(bucket, category="ubist", epoch="2026-03")
+    observed: dict[str, object] = {}
+
+    class Policy:
+        root = tmp_path
+
+    def fake_run_full_scan(_policy, **kwargs):
+        observed.update(kwargs)
+        return type("Outcome", (), {"rebuild_result": {"epoch_rows": 1}})()
+
+    monkeypatch.setattr(job_runner, "load_scan_policy", lambda category, required: Policy())
+    monkeypatch.setattr(job_runner, "latest_successful_snapshot", lambda root, category: object())
+    monkeypatch.setattr(job_runner, "run_full_scan", fake_run_full_scan)
+
+    job_runner._load_with_source_inventory(
+        manifest,
+        resolve_category("ubist"),
+        bucket,
+        run_id="complete-reingest-run",
+        target_dir_override=None,
+        required=True,
+        rebuild_all_current=True,
+    )
+
+    assert observed["rebuild_all_current"] is True
+
+
 def test_automatic_publish_contract_carries_pg4_pg5_and_warnings(tmp_path):
     snapshot = ScanSnapshot(
         schema_version="1",

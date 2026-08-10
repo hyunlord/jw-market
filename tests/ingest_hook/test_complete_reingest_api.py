@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 import pytest
@@ -134,6 +135,57 @@ def test_normal_runner_adapter_preserves_completed_parent(sqlite_ledger, fake_tr
     assert asdict(sqlite_ledger.status(*IDENTITY)) == parent_before
     attempt = sqlite_ledger.complete_reingest_attempts()[0]
     assert attempt.status == "complete"
+
+
+def test_reingest_publish_lifecycle_cas_uses_attempt_without_mutating_parent(
+    sqlite_ledger,
+    fake_transport,
+) -> None:
+    _complete_identity(sqlite_ledger)
+    parent_before = asdict(sqlite_ledger.status(*IDENTITY))
+    service = IngestService(
+        sqlite_ledger,
+        None,
+        transport=fake_transport,
+        now=lambda: "20260809221530123456",
+    )
+    response = TestClient(create_app(service)).post("/ingest/reingest", json=_payload())
+    assert response.status_code == 202
+    run_id = response.json()["run_id"]
+    attempt_ledger = job_runner._ledger_for_run(sqlite_ledger, IDENTITY, run_id)
+    prepared_at = datetime.now(timezone.utc)
+
+    attempt_ledger.mark_awaiting_approval(
+        *IDENTITY,
+        run_id=run_id,
+        candidate={"automatic_publish": {"hard_gates": {}}},
+        prepared_at=prepared_at.isoformat(),
+        expires_at=(prepared_at + timedelta(minutes=30)).isoformat(),
+    )
+
+    assert asdict(sqlite_ledger.status(*IDENTITY)) == parent_before
+    assert attempt_ledger.status(*IDENTITY).status == "awaiting_approval"
+    approval = TestClient(create_app(service)).post(
+        "/ingest/publish/approve",
+        json={
+            "epoch": IDENTITY[0],
+            "category": IDENTITY[1],
+            "manifest_sha": IDENTITY[2],
+            "run_id": run_id,
+            "requested_by": "operator@jw.example",
+        },
+    )
+    assert approval.status_code == 200
+    publish_job = approval.json()["publish_job_name"]
+    assert asdict(sqlite_ledger.status(*IDENTITY)) == parent_before
+    publish_view = job_runner._ledger_for_run(sqlite_ledger, IDENTITY, run_id)
+    assert publish_view.status(*IDENTITY).status == "publish_running"
+    assert publish_view.status(*IDENTITY).job_name == publish_job
+
+    publish_view.mark_complete(*IDENTITY, row_counts={"rows": 1})
+
+    assert asdict(sqlite_ledger.status(*IDENTITY)) == parent_before
+    assert sqlite_ledger.complete_reingest_attempts()[0].status == "complete"
 
 
 def test_complete_reingest_api_same_uuid_is_idempotent(

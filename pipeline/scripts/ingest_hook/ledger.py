@@ -956,6 +956,61 @@ class Ledger:
             )
         ]
 
+    def _running_complete_reingest_attempt_with_cursor(
+        self,
+        cursor,
+        epoch: str,
+        category: str,
+        manifest_sha: str,
+        *,
+        request_id: str,
+        run_id: str,
+    ) -> CompleteReingestAttempt | None:
+        """Lock and validate the immutable parent plus one running attempt."""
+        mark = self._mark
+        parent_sql = (
+            "SELECT status FROM ingest_ledger"
+            f" WHERE epoch={mark} AND category={mark} AND manifest_sha={mark}"
+        )
+        attempt_sql = (
+            "SELECT event_id, epoch, category, manifest_sha, status, actor, source,"
+            " reason, job_name, evidence_json, created_at"
+            " FROM ingest_status_transition"
+            f" WHERE epoch={mark} AND category={mark} AND manifest_sha={mark}"
+            f" AND source IN ({mark},{mark},{mark}) ORDER BY id"
+        )
+        if self._dialect == "mysql":
+            parent_sql += " FOR UPDATE"
+            attempt_sql += " FOR UPDATE"
+        cursor.execute(parent_sql, (epoch, category, manifest_sha))
+        parent = cursor.fetchone()
+        if parent is None:
+            return None
+        parent_values = tuple(parent.values()) if isinstance(parent, dict) else tuple(parent)
+        if str(parent_values[0]) != STATUS_COMPLETE:
+            return None
+        cursor.execute(
+            attempt_sql,
+            (
+                epoch,
+                category,
+                manifest_sha,
+                "complete_reingest_request",
+                "complete_reingest_started",
+                "complete_reingest_terminal",
+            ),
+        )
+        return next(
+            (
+                item
+                for item in self._complete_reingest_attempts_from_rows(cursor.fetchall())
+                if item.request_id == request_id
+                and item.run_id == run_id
+                and item.status == STATUS_RUNNING
+            ),
+            None,
+        )
+
     def _locked_global_queue(
         self, cursor
     ) -> tuple[list[LedgerEntry], list[CompleteReingestAttempt]]:
@@ -1434,6 +1489,182 @@ class Ledger:
 
         if not self._transaction(operation):
             raise RuntimeError("ledger changed before publish candidate could be prepared")
+
+    def prepare_complete_reingest_candidate(
+        self,
+        epoch: str,
+        category: str,
+        manifest_sha: str,
+        *,
+        request_id: str,
+        run_id: str,
+        candidate: dict,
+        prepared_at: str,
+        expires_at: str,
+    ) -> None:
+        """Prepare an attempt candidate while preserving its completed parent."""
+        payload_json = json.dumps(
+            candidate, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        mark = self._mark
+        upsert_sql = (
+            "INSERT INTO ingest_publish_candidate"
+            " (epoch, category, manifest_sha, build_run_id, payload_json, prepared_at, expires_at)"
+            f" VALUES ({', '.join([mark] * 7)})"
+        )
+        if self._dialect == "sqlite":
+            upsert_sql += (
+                " ON CONFLICT(epoch, category, manifest_sha) DO UPDATE SET"
+                " build_run_id=excluded.build_run_id, payload_json=excluded.payload_json,"
+                " prepared_at=excluded.prepared_at, expires_at=excluded.expires_at,"
+                " publish_job_name=NULL, approved_at=NULL, approved_by=NULL"
+            )
+        else:
+            upsert_sql += (
+                " ON DUPLICATE KEY UPDATE build_run_id=VALUES(build_run_id),"
+                " payload_json=VALUES(payload_json), prepared_at=VALUES(prepared_at),"
+                " expires_at=VALUES(expires_at), publish_job_name=NULL,"
+                " approved_at=NULL, approved_by=NULL"
+            )
+
+        def operation(cursor):
+            attempt = self._running_complete_reingest_attempt_with_cursor(
+                cursor,
+                epoch,
+                category,
+                manifest_sha,
+                request_id=request_id,
+                run_id=run_id,
+            )
+            if attempt is None:
+                return False
+            cursor.execute(
+                upsert_sql,
+                (
+                    epoch,
+                    category,
+                    manifest_sha,
+                    run_id,
+                    payload_json,
+                    self._database_datetime(prepared_at),
+                    self._database_datetime(expires_at),
+                ),
+            )
+            return True
+
+        if not self._transaction(operation):
+            raise RuntimeError("reingest attempt changed before publish candidate could be prepared")
+
+    def mark_complete_reingest_publish_running(
+        self,
+        epoch: str,
+        category: str,
+        manifest_sha: str,
+        *,
+        request_id: str,
+        build_run_id: str,
+        publish_job_name: str,
+        approved_by: str,
+        approved_at: str,
+    ) -> bool:
+        """Reserve an attempt publish candidate without changing its parent row."""
+        mark = self._mark
+        select_sql = (
+            "SELECT build_run_id, publish_job_name, expires_at"
+            " FROM ingest_publish_candidate"
+            f" WHERE epoch={mark} AND category={mark} AND manifest_sha={mark}"
+        )
+        if self._dialect == "mysql":
+            select_sql += " FOR UPDATE"
+        update_sql = (
+            f"UPDATE ingest_publish_candidate SET publish_job_name={mark},"
+            f" approved_at={mark}, approved_by={mark}"
+            f" WHERE epoch={mark} AND category={mark} AND manifest_sha={mark}"
+            f" AND build_run_id={mark} AND publish_job_name IS NULL"
+        )
+
+        def operation(cursor):
+            if self._running_complete_reingest_attempt_with_cursor(
+                cursor,
+                epoch,
+                category,
+                manifest_sha,
+                request_id=request_id,
+                run_id=build_run_id,
+            ) is None:
+                return False
+            cursor.execute(select_sql, (epoch, category, manifest_sha))
+            row = cursor.fetchone()
+            if row is None:
+                return False
+            values = tuple(row.values()) if isinstance(row, dict) else tuple(row)
+            if (
+                str(values[0]) != build_run_id
+                or values[1] is not None
+                or _utc_timestamp(approved_at) > _utc_timestamp(values[2])
+            ):
+                return False
+            cursor.execute(
+                update_sql,
+                (
+                    publish_job_name,
+                    self._database_datetime(approved_at),
+                    approved_by,
+                    epoch,
+                    category,
+                    manifest_sha,
+                    build_run_id,
+                ),
+            )
+            return cursor.rowcount == 1
+
+        changed = bool(self._transaction(operation))
+        if not changed:
+            refreshed = self.prepared_candidate(epoch, category, manifest_sha)
+            return bool(refreshed and refreshed.publish_job_name == publish_job_name)
+        return True
+
+    def restore_complete_reingest_awaiting_approval(
+        self,
+        epoch: str,
+        category: str,
+        manifest_sha: str,
+        *,
+        request_id: str,
+        build_run_id: str,
+        publish_job_name: str,
+    ) -> bool:
+        mark = self._mark
+        update_sql = (
+            "UPDATE ingest_publish_candidate SET publish_job_name=NULL,"
+            " approved_at=NULL, approved_by=NULL"
+            f" WHERE epoch={mark} AND category={mark} AND manifest_sha={mark}"
+            f" AND build_run_id={mark} AND publish_job_name={mark}"
+        )
+
+        def operation(cursor):
+            if self._running_complete_reingest_attempt_with_cursor(
+                cursor,
+                epoch,
+                category,
+                manifest_sha,
+                request_id=request_id,
+                run_id=build_run_id,
+            ) is None:
+                return False
+            cursor.execute(
+                update_sql,
+                (
+                    epoch,
+                    category,
+                    manifest_sha,
+                    build_run_id,
+                    publish_job_name,
+                ),
+            )
+            return cursor.rowcount == 1
+
+        return bool(self._transaction(operation))
 
     def mark_publish_running(
         self,

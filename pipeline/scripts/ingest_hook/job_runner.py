@@ -64,6 +64,18 @@ class _ReingestAttemptLedger:
     def status(self, epoch: str, category: str, manifest_sha: str):
         entry = self._ledger.status(epoch, category, manifest_sha)
         if entry is not None and entry.status == STATUS_COMPLETE:
+            candidate = self._ledger.prepared_candidate(epoch, category, manifest_sha)
+            if candidate is not None and candidate.build_run_id == self._attempt.run_id:
+                return replace(
+                    entry,
+                    status=(
+                        STATUS_PUBLISH_RUNNING
+                        if candidate.publish_job_name
+                        else STATUS_AWAITING_APPROVAL
+                    ),
+                    run_id=self._attempt.run_id,
+                    job_name=candidate.publish_job_name or self._attempt.job_name,
+                )
             return replace(
                 entry,
                 status=STATUS_RUNNING,
@@ -96,13 +108,73 @@ class _ReingestAttemptLedger:
     def mark_gate_failed(self, *_identity: str, reason: str) -> None:
         self._terminal(STATUS_FAILED, reason)
 
+    def mark_awaiting_approval(
+        self,
+        *identity: str,
+        run_id: str,
+        candidate: dict,
+        prepared_at: str,
+        expires_at: str,
+    ) -> None:
+        self._ledger.prepare_complete_reingest_candidate(
+            *identity,
+            request_id=self._attempt.request_id,
+            run_id=run_id,
+            candidate=candidate,
+            prepared_at=prepared_at,
+            expires_at=expires_at,
+        )
+
+    def mark_publish_running(
+        self,
+        *identity: str,
+        build_run_id: str,
+        publish_job_name: str,
+        approved_by: str,
+        approved_at: str,
+    ) -> bool:
+        return self._ledger.mark_complete_reingest_publish_running(
+            *identity,
+            request_id=self._attempt.request_id,
+            build_run_id=build_run_id,
+            publish_job_name=publish_job_name,
+            approved_by=approved_by,
+            approved_at=approved_at,
+        )
+
+    def restore_awaiting_approval_after_submit_failure(
+        self,
+        *identity: str,
+        build_run_id: str,
+        publish_job_name: str,
+    ) -> bool:
+        return self._ledger.restore_complete_reingest_awaiting_approval(
+            *identity,
+            request_id=self._attempt.request_id,
+            build_run_id=build_run_id,
+            publish_job_name=publish_job_name,
+        )
+
+    def mark_publish_candidate_expired(
+        self,
+        *_identity: str,
+        build_run_id: str,
+        actor: str,
+    ) -> bool:
+        del build_run_id, actor
+        self._terminal(STATUS_FAILED, "publish candidate expired before approval")
+        return True
+
 
 def _ledger_for_run(
     ledger: Ledger,
     identity: tuple[str, str, str],
     run_id: str,
 ) -> Ledger | _ReingestAttemptLedger:
-    attempts = ledger.complete_reingest_attempts(category=identity[1])
+    lookup = getattr(ledger, "complete_reingest_attempts", None)
+    if not callable(lookup):
+        return ledger
+    attempts = lookup(category=identity[1])
     attempt = next(
         (
             item
@@ -701,6 +773,7 @@ def _load_with_source_inventory(
     target_dir_override: Path | None,
     target_db_override: str | None = None,
     required: bool,
+    rebuild_all_current: bool = False,
 ) -> tuple[dict, ScanOutcome | None]:
     """Run a source-wide scan and publish its immutable anchor after load."""
     policy = load_scan_policy(manifest.category, required=required)
@@ -728,7 +801,7 @@ def _load_with_source_inventory(
         ),
         # Run-scoped databases start empty. Reuse classification metadata, but
         # feed every current source file to the loader that populates the new DB.
-        rebuild_all_current=target_db_override is not None,
+        rebuild_all_current=(target_db_override is not None or rebuild_all_current),
         permissive=config.e2e_commissioning(),
         rebuild=lambda source_files: _real_load(
             manifest,
@@ -1241,6 +1314,7 @@ def run(
                         else None
                     ),
                 ),
+                rebuild_all_current=isinstance(ledger, _ReingestAttemptLedger),
             )
             rows_before = int(load_result.get("rows_before") or 0)
             rows_after = int(load_result.get("epoch_rows") or 0)
