@@ -14,6 +14,7 @@ from jw_chat_agent_poc.service.v4.llm import CompletionResult, GenOSV4Client
 _INTERNAL_SURFACE_RE = re.compile(
     r"MCP\s+returned|\btotalCount\b|\bslot[_ -]?id\b|"
     r"\b(?:sickCd|ptntCnt|value)\b|"
+    r"\b\d{7,}(?:\.\d+)?\s*KRW(?![A-Za-z])|"
     r"\b(?:hira|clinicaltrials|mfds|openfda|tavily)_[a-z0-9_]+\b|"
     r"(?:\bNCT\d{8}\b\s*[,/]\s*)+\bNCT\d{8}\b",
     re.IGNORECASE,
@@ -120,7 +121,8 @@ class V4Synthesizer:
                     "role": "user",
                     "content": (
                         "내부 도구명, MCP 상태 문구, totalCount, slot id, 쉼표로 나열한 NCT 식별자를 "
-                        "노출하지 말고 같은 근거로 자연스러운 답변을 다시 작성하라. 개별 임상 ID는 "
+                        "노출하지 말고 원 단위 큰 수는 payload의 억원 display 값으로 바꿔 같은 근거로 "
+                        "자연스러운 답변을 다시 작성하라. 개별 임상 ID는 "
                         "시험명·단계·설명에 녹여 쓸 때만 허용한다."
                     ),
                 },

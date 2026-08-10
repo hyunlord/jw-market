@@ -140,18 +140,40 @@ def _render_mart_facts(
     *,
     allowed_fields: tuple[str, ...],
 ) -> str:
+    summaries: list[str] = []
+    for result in results:
+        calls = result.payload.get("calls") if isinstance(result.payload, dict) else None
+        if not isinstance(calls, list):
+            continue
+        for call in calls:
+            if not isinstance(call, dict):
+                continue
+            summary = str(call.get("summary_text") or "").strip()
+            if summary and not re.search(
+                r"MCP\s+returned|\btotalCount\b|\b(?:sickCd|ptntCnt)\b|"
+                r"\b\d{7,}(?:\.\d+)?\s*KRW\b",
+                summary,
+                re.IGNORECASE,
+            ):
+                summaries.append(summary)
+    if summaries:
+        return "\n".join(dict.fromkeys(summaries))
+
     facts: list[str] = []
     for result in results:
         for key, value in _walk_scalars(result.payload):
             if isinstance(value, bool) or not isinstance(value, int | float):
                 continue
-            if not any(field in key.casefold() for field in allowed_fields):
+            lowered = key.casefold()
+            if not any(field in lowered for field in allowed_fields):
                 continue
-            label = key.rsplit(".", 1)[-1].replace("_", " ")
-            facts.append(f"- {label}: {value}")
+            leaf = key.rsplit(".", 1)[-1]
+            if leaf.endswith("_억원") or leaf.endswith("_eok"):
+                label = "매출" if "sales" in lowered or "value" in lowered else "금액"
+                facts.append(f"{label} {value}억원")
     if not facts:
         return "mart 근거는 확인했지만 복사 가능한 수치 필드를 찾지 못했습니다."
-    return "확인된 mart 원시 필드만 제시합니다.\n\n" + "\n".join(facts[:20])
+    return "확인된 내부 데이터마트 지표는 " + ", ".join(dict.fromkeys(facts[:20])) + "입니다."
 
 
 def _walk_scalars(value: Any, prefix: str = ""):

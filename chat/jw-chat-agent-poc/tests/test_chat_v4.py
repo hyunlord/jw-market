@@ -27,7 +27,11 @@ from jw_chat_agent_poc.service.v4.runtime import V4Runtime
 from jw_chat_agent_poc.service.v4 import adapters as v4_adapters
 from jw_chat_agent_poc.service.v4 import llm as v4_llm
 from jw_chat_agent_poc.service.v4 import synthesizer as v4_synthesizer
-from jw_chat_agent_poc.service.v4.synthesizer import V4Synthesizer, _evidence_fallback
+from jw_chat_agent_poc.service.v4.synthesizer import (
+    V4Synthesizer,
+    _INTERNAL_SURFACE_RE,
+    _evidence_fallback,
+)
 
 
 def _plan(**queries: tuple[str, ...]) -> PlannerOutput:
@@ -814,6 +818,40 @@ def test_v4_gates_keep_mart_numbers_copy_only_and_require_sources() -> None:
     assert "85.87" in gated.text
     assert "## 출처" in gated.text
     assert gated.trace["mart_numeric_copy_only"]["blocked"] is True
+
+
+def test_v4_gates_render_verified_mart_summary_instead_of_raw_fields() -> None:
+    results = (
+        SourceResult(
+            source="mart",
+            query="리바로 매출",
+            status="ok",
+            payload={
+                "calls": [
+                    {
+                        "summary_text": "리바로 2026-06 UBIST 전략 mart 지표: 매출 85.87억원.",
+                        "render_data": {
+                            "value": 8587458961.25,
+                            "sales_억원": 85.87,
+                            "market_value": 230833352390.9699,
+                        },
+                    }
+                ]
+            },
+        ),
+    )
+
+    gated = apply_v4_gates("리바로 매출 알려줘", "리바로 매출은 99.99억원입니다.", results)
+
+    assert "85.87억원" in gated.text
+    assert "8587458961.25" not in gated.text
+    assert "230833352390.9699" not in gated.text
+    assert "원시 필드" not in gated.text
+    assert "- value:" not in gated.text
+
+
+def test_v4_surface_detects_raw_won_values() -> None:
+    assert _INTERNAL_SURFACE_RE.search("매출은 8587458961.25 KRW입니다.")
 
 
 def test_v4_gates_do_not_treat_unrelated_payload_numbers_as_rank_evidence() -> None:
