@@ -71,7 +71,7 @@ class V4Synthesizer:
             answer = self._client.complete(
                 messages,
                 budget_s=budget_s,
-                max_tokens=1800,
+                max_tokens=4096,
             ).strip()
         except Exception:  # noqa: BLE001 - a grounded fallback is preferable to a 500
             answer = ""
@@ -93,7 +93,7 @@ class V4Synthesizer:
                 answer = self._client.complete(
                     repair_messages,
                     budget_s=min(6.0, budget_s),
-                    max_tokens=1800,
+                    max_tokens=4096,
                 ).strip()
             except Exception:  # noqa: BLE001 - deterministic surface replacement follows
                 answer = ""

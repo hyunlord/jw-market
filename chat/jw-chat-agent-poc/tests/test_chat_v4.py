@@ -179,7 +179,7 @@ def test_v4_synthesizer_sends_detail_rows_in_question_first_layout() -> None:
         def complete(self, messages, *, budget_s=None, max_tokens=None) -> str:
             self.messages = messages
             assert budget_s == 15.0
-            assert max_tokens == 1800
+            assert max_tokens == 4096
             return "2024년 D693 외래 환자수는 12,345명입니다. [출처: HIRA]"
 
     client = Client()
@@ -447,10 +447,10 @@ def test_v4_synthesizer_transport_sets_explicit_token_cap(monkeypatch) -> None:
         total_budget_s=20,
     )
 
-    answer = client.complete([{"role": "user", "content": "질문"}], max_tokens=1800)
+    answer = client.complete([{"role": "user", "content": "질문"}], max_tokens=4096)
 
     assert answer == "답변"
-    assert captured["json"]["max_tokens"] == 1800
+    assert captured["json"]["max_tokens"] == 4096
     assert captured["json"]["model"] == "gemini-3-flash-preview"
     assert captured["closed"] is True
 
