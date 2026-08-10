@@ -250,11 +250,6 @@ class IngestService:
         )
         if entry is None:
             raise HTTPException(status_code=404, detail="unknown submission identity")
-        if entry.status != STATUS_COMPLETE:
-            raise HTTPException(
-                status_code=409,
-                detail="parent identity must be complete before mart_from_existing_raw",
-            )
         try:
             canonical_request_id = str(uuid.UUID(payload.request_id))
         except (TypeError, ValueError) as exc:

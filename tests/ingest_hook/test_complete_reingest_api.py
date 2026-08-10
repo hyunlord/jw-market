@@ -236,20 +236,25 @@ def test_complete_reingest_api_rejects_nonstandard_attempt_run_id(
     assert fake_transport.submitted == []
 
 
-def test_complete_reingest_api_rejects_noncomplete_parent(
+def test_complete_reingest_api_accepts_noncomplete_parent_without_mutating_it(
     sqlite_ledger, fake_transport
 ) -> None:
     sqlite_ledger.receive(
         *IDENTITY,
         manifest_path="_manifests/ubist/2026-06/manifest.json",
     )
+    before = asdict(sqlite_ledger.status(*IDENTITY))
     response = TestClient(
         create_app(IngestService(sqlite_ledger, None, transport=fake_transport))
     ).post("/ingest/reingest", json=_payload())
 
-    assert response.status_code == 409
-    assert "must be complete" in response.json()["detail"]
-    assert fake_transport.submitted == []
+    assert response.status_code == 202
+    assert asdict(sqlite_ledger.status(*IDENTITY)) == before
+    assert len(fake_transport.submitted) == 1
+    attempt_ledger = job_runner._ledger_for_run(
+        sqlite_ledger, IDENTITY, response.json()["run_id"]
+    )
+    assert attempt_ledger.status(*IDENTITY).status == "running"
 
 
 def test_complete_reingest_api_supports_csd_keyword(

@@ -63,7 +63,7 @@ class _ReingestAttemptLedger:
 
     def status(self, epoch: str, category: str, manifest_sha: str):
         entry = self._ledger.status(epoch, category, manifest_sha)
-        if entry is not None and entry.status == STATUS_COMPLETE:
+        if entry is not None:
             candidate = self._ledger.prepared_candidate(epoch, category, manifest_sha)
             if candidate is not None and candidate.build_run_id == self._attempt.run_id:
                 return replace(

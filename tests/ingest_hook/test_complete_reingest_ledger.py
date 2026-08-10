@@ -172,18 +172,28 @@ def test_complete_reingest_request_rejects_uuid_reuse_with_changed_contract(
         _record_request(sqlite_ledger, reason="different operator intent")
 
 
-def test_complete_reingest_request_requires_complete_parent(sqlite_ledger) -> None:
+@pytest.mark.parametrize("terminal_status", ["queued", "failed", "gate_failed"])
+def test_complete_reingest_request_accepts_parent_regardless_of_status(
+    sqlite_ledger, terminal_status: str
+) -> None:
     sqlite_ledger.receive(*IDENTITY, manifest_path=MANIFEST_PATH)
+    if terminal_status != "queued":
+        assert sqlite_ledger.mark_running(
+            *IDENTITY,
+            job_name="jw-ingest-ubist-original",
+            run_id="20260809010101000000",
+        )
+        if terminal_status == "failed":
+            sqlite_ledger.mark_failed(*IDENTITY, reason="original run failed")
+        else:
+            sqlite_ledger.mark_gate_failed(*IDENTITY, reason="original gate failed")
     before = asdict(sqlite_ledger.status(*IDENTITY))
 
-    with pytest.raises(RuntimeError, match="parent identity must be complete"):
-        _record_request(sqlite_ledger)
+    decision = _record_request(sqlite_ledger)
 
+    assert decision.created is True
     assert asdict(sqlite_ledger.status(*IDENTITY)) == before
-    assert all(
-        transition.event_id != REQUEST_ID
-        for transition in sqlite_ledger.status_transitions(*IDENTITY)
-    )
+    assert sqlite_ledger.complete_reingest_attempts()[0].status == "queued"
 
 
 def test_complete_reingest_terminal_is_append_only_and_idempotent(sqlite_ledger) -> None:

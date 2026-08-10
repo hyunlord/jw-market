@@ -986,9 +986,6 @@ class Ledger:
         parent = cursor.fetchone()
         if parent is None:
             return None
-        parent_values = tuple(parent.values()) if isinstance(parent, dict) else tuple(parent)
-        if str(parent_values[0]) != STATUS_COMPLETE:
-            return None
         cursor.execute(
             attempt_sql,
             (
@@ -2045,11 +2042,7 @@ class Ledger:
             parent_values = (
                 tuple(parent.values()) if isinstance(parent, dict) else tuple(parent)
             )
-            parent_status, manifest_path = str(parent_values[0]), str(parent_values[1])
-            if parent_status != STATUS_COMPLETE:
-                raise RuntimeError(
-                    "parent identity must be complete before mart_from_existing_raw"
-                )
+            _parent_status, manifest_path = str(parent_values[0]), str(parent_values[1])
 
             cursor.execute(
                 active_attempt_sql,
