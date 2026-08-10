@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import replace
+import json
 import os
+import time
+
+import requests
 
 from jw_chat_agent_poc.genos_config import (
     resolve_final_genos_base_url,
@@ -42,6 +46,7 @@ class GenOSV4Client:
         messages: Sequence[dict[str, str]],
         *,
         budget_s: float | None = None,
+        max_tokens: int | None = None,
     ) -> str:
         client = self._client
         if budget_s is not None:
@@ -51,7 +56,9 @@ class GenOSV4Client:
                 timeout_s=min(client.timeout_s, bounded),
                 total_budget_s=min(client.total_budget_s, bounded),
             )
-        return client._chat_text(list(messages))  # noqa: SLF001 - direct GenOS transport reuse
+        if max_tokens is None:
+            return client._chat_text(list(messages))  # noqa: SLF001 - direct GenOS transport reuse
+        return _chat_text_with_token_cap(client, list(messages), max_tokens=max_tokens)
 
     @property
     def serving_id(self) -> str:
@@ -78,3 +85,52 @@ def synthesizer_client() -> GenOSV4Client:
         timeout_s=int(os.environ.get("V4_SYNTHESIZER_TIMEOUT_S", "15")),
         total_budget_s=int(os.environ.get("V4_SYNTHESIZER_BUDGET_S", "20")),
     )
+
+
+def _chat_text_with_token_cap(
+    client: GenosClient,
+    messages: list[dict[str, str]],
+    *,
+    max_tokens: int,
+) -> str:
+    if max_tokens <= 0:
+        raise ValueError("max_tokens must be positive")
+    started = time.monotonic()
+    payload = {
+        "messages": messages,
+        "stream": True,
+        "temperature": 0.0,
+        "max_tokens": max_tokens,
+        "stream_options": {"include_usage": True},
+    }
+    if client.model:
+        payload["model"] = client.model
+    headers = {"Authorization": f"Bearer {client.token}"} if client.token else {}
+    response = requests.post(
+        f"{client.base_url.rstrip('/')}/chat/completions",
+        headers=headers,
+        json=payload,
+        stream=True,
+        timeout=float(client.timeout_s),
+    )
+    response.raise_for_status()
+    chunks: list[str] = []
+    try:
+        for raw_line in response.iter_lines(decode_unicode=True):
+            if time.monotonic() - started >= client.total_budget_s:
+                raise requests.Timeout("V4 synthesis budget exceeded")
+            if not raw_line or not raw_line.startswith("data:"):
+                continue
+            encoded = raw_line.removeprefix("data:").strip()
+            if encoded == "[DONE]":
+                break
+            try:
+                data = json.loads(encoded)
+            except json.JSONDecodeError:
+                continue
+            token = client._extract_delta_from_data(data)  # noqa: SLF001 - transport-compatible parser
+            if token:
+                chunks.append(token)
+    finally:
+        response.close()
+    return "".join(chunks).strip()

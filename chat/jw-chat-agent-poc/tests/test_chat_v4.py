@@ -25,7 +25,8 @@ from jw_chat_agent_poc.service.v4.llm import planner_client, synthesizer_client
 from jw_chat_agent_poc.service.v4.planner import V4Planner
 from jw_chat_agent_poc.service.v4.runtime import V4Runtime
 from jw_chat_agent_poc.service.v4 import adapters as v4_adapters
-from jw_chat_agent_poc.service.v4.synthesizer import _evidence_fallback
+from jw_chat_agent_poc.service.v4 import llm as v4_llm
+from jw_chat_agent_poc.service.v4.synthesizer import V4Synthesizer, _evidence_fallback
 
 
 def _plan(**queries: tuple[str, ...]) -> PlannerOutput:
@@ -138,6 +139,120 @@ def test_v4_fallback_uses_verified_summaries_instead_of_raw_json() -> None:
 
     assert "2상 무작위배정 이중눈가림" in answer
     assert "secret_internal" not in answer
+
+
+def test_v4_synthesizer_sends_detail_rows_in_question_first_layout() -> None:
+    class Client:
+        def __init__(self) -> None:
+            self.messages = None
+
+        def complete(self, messages, *, budget_s=None, max_tokens=None) -> str:
+            self.messages = messages
+            assert budget_s == 15.0
+            assert max_tokens == 1800
+            return "2024년 D693 외래 환자수는 12,345명입니다. [출처: HIRA]"
+
+    client = Client()
+    result = SourceResult(
+        source="hira",
+        query="D693 상병별 환자수 최근 5년",
+        status="ok",
+        payload={
+            "calls": [
+                {
+                    "tool": "hira_disease_hospitalization_outpatient_stats",
+                    "summary_text": "hira MCP returned totalCount=4",
+                    "render_data": {
+                        "items": [
+                            {"year": "2024", "inpatient": "321", "outpatient": "12,345"}
+                        ]
+                    },
+                }
+            ]
+        },
+    )
+
+    answer = V4Synthesizer(client).synthesize(_plan(), (result,), (), budget_s=15.0)
+
+    prompt = client.messages[1]["content"]
+    assert "2024" in prompt
+    assert "12,345" in prompt
+    assert prompt.index("external_evidence") < prompt.index("user_question")
+    assert "12,345명" in answer
+
+
+def test_v4_synthesizer_retries_internal_surface_once() -> None:
+    class Client:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def complete(self, _messages, *, budget_s=None, max_tokens=None) -> str:
+            self.calls += 1
+            if self.calls == 1:
+                return "hira_disease_name_code MCP returned totalCount=1"
+            return "D693 환자 통계는 HIRA 근거에서 확인되었습니다. [출처: HIRA]"
+
+    result = SourceResult(
+        source="hira",
+        query="D693 환자수",
+        status="ok",
+        payload={"calls": [{"render_data": {"items": [{"year": "2024", "patients": "10"}]}}]},
+    )
+
+    answer = V4Synthesizer(Client()).synthesize(_plan(), (result,), (), budget_s=15.0)
+
+    assert "MCP returned" not in answer
+    assert "totalCount" not in answer
+    assert "hira_disease_name_code" not in answer
+
+
+def test_v4_synthesizer_replaces_repeated_internal_block_and_adds_hira_footnote() -> None:
+    class Client:
+        def complete(self, _messages, *, budget_s=None, max_tokens=None) -> str:
+            return "설명입니다.\n\nhira_disease_name_code MCP returned totalCount=1"
+
+    result = SourceResult(
+        source="hira",
+        query="D693 환자수",
+        status="ok",
+        payload={"calls": [{"render_data": {"items": [{"year": "2024", "patients": "10"}]}}]},
+    )
+
+    answer = V4Synthesizer(Client()).synthesize(_plan(), (result,), (), budget_s=15.0)
+
+    assert "MCP returned" not in answer
+    assert "totalCount" not in answer
+    assert "hira_disease_name_code" not in answer
+    assert "주상병 기준 청구 실인원" in answer
+
+
+def test_v4_synthesizer_labels_scope_and_excludes_web_without_body() -> None:
+    class Client:
+        def __init__(self) -> None:
+            self.prompt = ""
+
+        def complete(self, messages, *, budget_s=None, max_tokens=None) -> str:
+            self.prompt = messages[1]["content"]
+            return "확인된 근거로 답변합니다."
+
+    client = Client()
+    web = SourceResult(
+        source="web",
+        query="최근 개정",
+        status="ok",
+        payload={"calls": [{"render_data": {"title": "로그인", "content": "짧음"}}]},
+    )
+    fda = SourceResult(
+        source="openfda",
+        query="리바로 안전성",
+        status="ok",
+        payload={"calls": [{"render_data": {"items": [{"drug": "Pitavastatin"}]}}]},
+    )
+
+    V4Synthesizer(client).synthesize(_plan(), (web, fda), (), budget_s=15.0)
+
+    assert '"source_scope": "US"' in client.prompt
+    assert '"source": "web"' not in client.prompt
 
 
 def test_parallel_executor_calls_every_source_concurrently_and_reuses_session_cache() -> None:
@@ -270,6 +385,42 @@ def test_v4_clients_use_their_scoped_genos_endpoints_and_tokens(monkeypatch) -> 
     assert planner.timeout_s == 18
     assert synthesizer.base_url.endswith("/serving/202")
     assert synthesizer.token == "final-token"
+
+
+def test_v4_synthesizer_transport_sets_explicit_token_cap(monkeypatch) -> None:
+    captured = {}
+
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def iter_lines(self, *, decode_unicode):
+            assert decode_unicode is True
+            yield 'data: {"choices":[{"delta":{"content":"답변"}}]}'
+            yield "data: [DONE]"
+
+        def close(self) -> None:
+            captured["closed"] = True
+
+    def post(url, *, headers, json, stream, timeout):
+        captured.update(url=url, headers=headers, json=json, stream=stream, timeout=timeout)
+        return Response()
+
+    monkeypatch.setattr(v4_llm.requests, "post", post)
+    client = v4_llm.GenOSV4Client(
+        base_url="https://genos.example/serving/202",
+        token="scoped-token",
+        model="gemini-3-flash-preview",
+        timeout_s=15,
+        total_budget_s=20,
+    )
+
+    answer = client.complete([{"role": "user", "content": "질문"}], max_tokens=1800)
+
+    assert answer == "답변"
+    assert captured["json"]["max_tokens"] == 1800
+    assert captured["json"]["model"] == "gemini-3-flash-preview"
+    assert captured["closed"] is True
 
 
 def test_planner_does_not_outer_retry_transport_failures() -> None:

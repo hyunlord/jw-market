@@ -25,8 +25,7 @@ class V4Runtime:
         self._planner = planner
         self._executor = executor
         self._synthesizer = synthesizer
-        # Keep one second of transport shutdown margin while honoring the 45s contract.
-        self._total_timeout_s = 44.0
+        self._total_timeout_s = 54.0
 
     def answer(
         self,
@@ -47,7 +46,7 @@ class V4Runtime:
         first_results = self._executor.execute(
             plan,
             session_id=session_id,
-            total_timeout_s=min(10.0, _remaining(deadline)),
+            total_timeout_s=min(20.0, _remaining(deadline)),
         )
         linked_plan = (
             self._planner.link(
@@ -121,7 +120,11 @@ class V4Runtime:
 def build_default_runtime() -> V4Runtime:
     return V4Runtime(
         planner=V4Planner(planner_client()),
-        executor=ParallelSourceExecutor(adapters=build_source_adapters()),
+        executor=ParallelSourceExecutor(
+            adapters=build_source_adapters(),
+            per_tool_timeout_s=20.0,
+            total_timeout_s=20.0,
+        ),
         synthesizer=V4Synthesizer(synthesizer_client()),
     )
 
