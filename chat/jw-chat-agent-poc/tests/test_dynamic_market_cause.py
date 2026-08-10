@@ -10,7 +10,7 @@ from jw_chat_agent_poc.service.general_view_routing import (
     _general_view_projection,
 )
 from jw_chat_agent_poc.tools.general_view_backend import GeneralMarket, TopBrand
-from jw_chat_agent_poc.tools.metrics.market_scope import MarketScopeResolver
+from jw_chat_agent_poc.tools.metrics.market_scope import MarketScopeResolver, _strategic_cause_result
 
 
 def _general_market() -> GeneralMarket:
@@ -215,6 +215,42 @@ def test_cause_chart_fails_closed_when_an_evidence_reference_is_missing() -> Non
     }
 
     assert filter_charts_for_binding([chart], result=result, question="리바로 원인분석") == []
+
+
+def test_partial_general_cause_chart_keeps_only_evidenced_numeric_points() -> None:
+    market = replace(
+        _general_market(),
+        top_brands=(
+            TopBrand(brand="아일리아", rank=1, value=42_000_000_000, share_pct=42.0),
+            TopBrand(brand="누락", rank=2, value=1_000_000_000, share_pct=None),
+            TopBrand(brand="루센티스", rank=3, value=24_000_000_000, share_pct=24.0),
+        ),
+    )
+    projection = _general_view_projection(market, "아일리아 원인분석")
+    assert projection is not None
+    _intent, _question, data, charts = projection
+    result = {
+        "cause_analysis_ready": True,
+        "tool_calls": [{"tool": "general_view_dynamic_market", "source": "UBIST", "render_data": data}],
+    }
+    share_chart = next(chart for chart in charts if chart["title"] == "브랜드 점유율")
+
+    assert share_chart["labels"] == ["아일리아", "루센티스"]
+    assert share_chart["datasets"][0]["data"] == [42.0, 24.0]
+    assert filter_charts_for_binding(charts, result=result, question="아일리아 원인분석") == charts
+
+
+def test_partial_strategic_cause_chart_keeps_only_evidenced_numeric_points() -> None:
+    call = _StrategicQueryLayer().market_scope_from_mart("리바로")
+    segments = list(call["render_data"]["level_segments"])
+    segments.insert(1, {"brand": "누락", "value_억원": None, "ms_recent_pct": None, "rank": 2})
+    call["render_data"]["level_segments"] = tuple(segments)
+    result = _strategic_cause_result("리바로 원인분석", call, market_name="고지혈증", brand="리바로")
+    charts = result["tool_calls"][0]["render_data"]["chart_payloads"]
+
+    assert charts[0]["labels"] == ["리피토", "리바로"]
+    assert charts[0]["datasets"][0]["data"] == [400.0, 300.0]
+    assert filter_charts_for_binding(charts, result=result, question="리바로 원인분석") == charts
 
 
 class _CauseResolver:

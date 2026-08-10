@@ -17,6 +17,7 @@ from jw_chat_agent_poc.common.periods import requested_period
 from jw_chat_agent_poc.common.qa_trace import attach_tool_qa_trace, qa_trace_started_at
 from jw_chat_agent_poc.orchestrator.answer_projection import apply_answer_control_layer
 from jw_chat_agent_poc.orchestrator.markdown_renderers import market_members_md
+from jw_chat_agent_poc.orchestrator.markdown_formatting import number_value
 from jw_chat_agent_poc.resolver.catalog_membership import MariaDbCatalogMembershipReader
 from jw_chat_agent_poc.tools.general_view_backend import (
     AtcCandidate,
@@ -908,6 +909,11 @@ def _cause_analysis_projection(
         }
         for row in market.top_brands
     ]
+    chart_top_brands = [
+        (index, row)
+        for index, row in enumerate(market.top_brands)
+        if number_value(row.share_pct)
+    ][:5]
     charts: list[dict[str, Any]] = []
     if len(market.market_size_series) >= 2:
         charts.append(
@@ -931,17 +937,17 @@ def _cause_analysis_projection(
                 ],
             }
         )
-    if market.top_brands:
+    if chart_top_brands:
         charts.append(
             {
                 "scope": "MARKET",
                 "chart_type": "bar",
                 "title": "브랜드 점유율",
-                "labels": [row.brand for row in market.top_brands[:5]],
+                "labels": [row.brand for _, row in chart_top_brands],
                 "datasets": [
                     {
                         "label": "점유율",
-                        "data": [row.share_pct for row in market.top_brands[:5]],
+                        "data": [row.share_pct for _, row in chart_top_brands],
                         "unit": "%",
                     }
                 ],
@@ -949,7 +955,7 @@ def _cause_analysis_projection(
                 "unit": "%",
                 "evidence_refs": [
                     f"render_data.cause_top_brands[{index}].share_pct"
-                    for index in range(min(5, len(top_brands)))
+                    for index, _ in chart_top_brands
                 ],
             }
         )

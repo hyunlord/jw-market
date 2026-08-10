@@ -81,17 +81,22 @@ def _strategic_cause_result(
             }
         )
     charts = []
-    if segments:
+    chart_segments = [
+        (index, row)
+        for index, row in enumerate(segments)
+        if eok_value(row.get("value_억원"), None)
+    ][:5]
+    if chart_segments:
         charts.append(
             {
                 "scope": "MARKET",
                 "chart_type": "bar",
                 "title": f"{market_name} 브랜드 순위",
-                "labels": [row.get("brand") or row.get("name") for row in segments[:5]],
+                "labels": [row.get("brand") or row.get("name") for _, row in chart_segments],
                 "datasets": [
                     {
                         "label": "매출",
-                        "data": [row.get("value_억원") for row in segments[:5]],
+                        "data": [row.get("value_억원") for _, row in chart_segments],
                         "unit": "억원",
                     }
                 ],
@@ -99,7 +104,7 @@ def _strategic_cause_result(
                 "unit": "억원",
                 "evidence_refs": [
                     f"render_data.level_segments[{index}].value_억원"
-                    for index in range(min(5, len(segments)))
+                    for index, _ in chart_segments
                 ],
             }
         )
