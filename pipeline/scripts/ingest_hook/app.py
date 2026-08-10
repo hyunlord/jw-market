@@ -147,7 +147,7 @@ class CompleteReingestPayload(BaseModel):
     request_id: str
     mode: Literal["mart_from_existing_raw"]
     requested_by: str = Field(min_length=1, max_length=64)
-    reason: str = Field(min_length=1, max_length=4000)
+    reason: str = Field(default="", max_length=4000)
 
 
 class CompleteReingestTerminalPayload(BaseModel):

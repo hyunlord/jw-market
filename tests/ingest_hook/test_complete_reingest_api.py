@@ -278,6 +278,29 @@ def test_complete_reingest_api_supports_csd_keyword(
     assert len(fake_transport.submitted) == 1
 
 
+def test_complete_reingest_api_accepts_blank_optional_reason(
+    sqlite_ledger, fake_transport
+) -> None:
+    identity = ("2023-01", "iqvia_csd_keyword", "c" * 64)
+    _complete_identity(sqlite_ledger, identity)
+
+    response = TestClient(
+        create_app(IngestService(sqlite_ledger, None, transport=fake_transport))
+    ).post(
+        "/ingest/reingest",
+        json=_payload(
+            epoch=identity[0],
+            category=identity[1],
+            manifest_sha=identity[2],
+            reason="",
+        ),
+    )
+
+    assert response.status_code == 202, response.json()
+    assert response.json()["action"] == "submitted"
+    assert sqlite_ledger.complete_reingest_attempts()[0].reason == ""
+
+
 def test_complete_reingest_waits_behind_active_upload_instead_of_rejecting(
     sqlite_ledger, fake_transport
 ) -> None:

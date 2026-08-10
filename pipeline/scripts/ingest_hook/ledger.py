@@ -1991,8 +1991,6 @@ class Ledger:
             raise ValueError("run_id must contain 1 to 64 characters")
         if not requested_by.strip():
             raise ValueError("requested_by is required")
-        if not reason.strip():
-            raise ValueError("reason is required")
         if not isinstance(affected_scope, dict):
             raise ValueError("affected_scope must be an object")
 
