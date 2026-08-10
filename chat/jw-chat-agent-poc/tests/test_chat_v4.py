@@ -1273,6 +1273,9 @@ def test_v4_gates_prepend_requested_mart_metric_when_synthesis_omits_it() -> Non
                             "sales_억원": 85.87,
                             "ms_pct": 3.72,
                             "rank": 6,
+                            "brand_value_series_10pt": [
+                                {"rank": 6, "value_억원": 85.87}
+                            ],
                         },
                     }
                 ]
@@ -1282,7 +1285,10 @@ def test_v4_gates_prepend_requested_mart_metric_when_synthesis_omits_it() -> Non
 
     gated = apply_v4_gates(
         "리바로 매출 알려줘",
-        "리바로 매출은 시장 경쟁 상황의 영향을 받는 것으로 확인되었습니다.",
+        (
+            "리바로는 전략시장 내 6위이며 HHI 262.6243인 시장에서 "
+            "경쟁 중인 것으로 확인되었습니다."
+        ),
         results,
     )
 

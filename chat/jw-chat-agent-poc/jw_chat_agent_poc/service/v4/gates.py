@@ -77,7 +77,11 @@ def apply_v4_gates(
     else:
         trace["mart_numeric_copy_only"] = {"blocked": False, "tokens": []}
 
-    requested_display_numbers = _requested_display_numbers(mart_results, metric_fields)
+    requested_display_numbers = _requested_display_numbers(
+        mart_results,
+        question,
+        metric_fields,
+    )
     rendered_numbers = {_normalize_number(token) for token in _NUMBER_RE.findall(text)}
     metric_missing = bool(requested_display_numbers) and requested_display_numbers.isdisjoint(
         rendered_numbers
@@ -192,17 +196,33 @@ def _normalize_number(value: str) -> str:
 
 def _requested_display_numbers(
     results: tuple[SourceResult, ...],
+    question: str,
     allowed_fields: tuple[str, ...],
 ) -> set[str]:
+    summary_numbers: set[str] = set()
+    for result in results:
+        calls = result.payload.get("calls") if isinstance(result.payload, dict) else None
+        if not isinstance(calls, list):
+            continue
+        for call in calls:
+            if not isinstance(call, dict):
+                continue
+            summary = str(call.get("summary_text") or "").strip()
+            summary_numbers.update(
+                _normalize_number(token)
+                for token in _answer_mart_metric_numbers(summary, question)
+            )
+    if summary_numbers:
+        return summary_numbers
+
     numbers: set[str] = set()
     for result in results:
         for path, value in _walk_scalars(result.payload):
             if isinstance(value, bool) or not isinstance(value, int | float):
                 continue
-            lowered = path.casefold()
-            if not any(field in lowered for field in allowed_fields):
-                continue
             leaf = path.rsplit(".", 1)[-1].casefold()
+            if not any(field in leaf for field in allowed_fields):
+                continue
             if leaf in {"value", "amount"} or leaf.endswith("_value"):
                 continue
             numbers.add(_normalize_number(str(value)))
