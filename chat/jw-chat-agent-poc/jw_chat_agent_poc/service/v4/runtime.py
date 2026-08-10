@@ -97,7 +97,7 @@ class V4Runtime:
         _emit_progress(
             progress_callback,
             "조회 계획",
-            f"확장 각도 {len(plan.expanded_intents)}개 · 조회 경로 7개",
+            _expanded_intents_detail(plan.expanded_intents),
         )
         completed_sources: list[str] = []
 
@@ -254,7 +254,10 @@ class V4Runtime:
         }
         trace = {
             "v4": True,
-            "planner_serving": getattr(self._planner, "serving_id", "unknown"),
+            "planner_serving": planner_outcome.trace.get("serving_id", "not_applicable"),
+            "planner_model": planner_outcome.trace.get("model", "not_applicable"),
+            "synth_serving": synthesis.trace.get("serving_id", "not_applicable"),
+            "synth_model": synthesis.trace.get("model", "not_applicable"),
             "fallback": plan.linking_plan.startswith("planner fallback;"),
             "planner": plan.model_dump(mode="json"),
             "planner_usage": planner_usage,
@@ -454,6 +457,13 @@ def _emit_progress(callback: ProgressCallback | None, name: str, detail: str) ->
         callback({"name": name, "detail": detail})
     except Exception:  # Progress is observational and must not become an answer gate.
         LOGGER.exception("V4 progress event emission failed")
+
+
+def _expanded_intents_detail(intents: Sequence[str]) -> str:
+    visible = [value.strip() for value in intents if value.strip()][:5]
+    detail = " · ".join(visible) if visible else "질문에 맞는 조회 경로를 구성했습니다"
+    remaining = max(0, len(intents) - len(visible))
+    return f"{detail} · 외 {remaining}개" if remaining else detail
 
 
 def _one_line(value: str, limit: int = 120) -> str:

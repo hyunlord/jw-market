@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from dataclasses import replace
 import json
+import logging
 import os
 import re
 import time
@@ -19,8 +20,10 @@ from jw_chat_agent_poc.genos_config import (
 from jw_chat_agent_poc.service.genos_client import GenosClient
 
 
+LOGGER = logging.getLogger(__name__)
+
 PLANNER_MODEL = "gemini-3.1-pro-preview"
-SYNTHESIZER_MODEL = "gemini-3-flash-preview"
+SYNTHESIZER_MODEL = "gemini-3.1-pro-preview"
 
 
 @dataclass(frozen=True)
@@ -29,6 +32,8 @@ class CompletionResult:
     finish_reason: str | None
     usage: dict[str, object]
     elapsed_ms: float
+    serving_id: str = "unknown"
+    model: str = "unknown"
 
 
 class GenOSV4Client:
@@ -113,7 +118,13 @@ def planner_client() -> GenOSV4Client:
 
 
 def synthesizer_client() -> GenOSV4Client:
-    serving_id = os.environ.get("V4_SYNTHESIZER_SERVING_ID", "190")
+    serving_id = os.environ.get("GENOS_SYNTH_SERVING_ID")
+    if serving_id is None:
+        serving_id = os.environ.get("V4_SYNTHESIZER_SERVING_ID", "202")
+        LOGGER.warning(
+            "GENOS_SYNTH_SERVING_ID is unset; using fail-safe serving %s",
+            serving_id,
+        )
     base_url = re.sub(
         r"/serving/\d+(?=/|$)",
         f"/serving/{serving_id}",
@@ -122,10 +133,14 @@ def synthesizer_client() -> GenOSV4Client:
     return GenOSV4Client(
         base_url=base_url,
         token=(
-            os.environ.get("V4_SYNTHESIZER_BEARER_TOKEN")
+            os.environ.get("GENOS_SYNTH_BEARER_TOKEN")
+            or os.environ.get("V4_SYNTHESIZER_BEARER_TOKEN")
             or resolve_final_genos_token()
         ),
-        model=os.environ.get("V4_SYNTHESIZER_MODEL", SYNTHESIZER_MODEL),
+        model=os.environ.get(
+            "GENOS_SYNTH_MODEL",
+            os.environ.get("V4_SYNTHESIZER_MODEL", SYNTHESIZER_MODEL),
+        ),
         timeout_s=int(os.environ.get("V4_SYNTHESIZER_TIMEOUT_S", "24")),
         total_budget_s=int(os.environ.get("V4_SYNTHESIZER_BUDGET_S", "28")),
     )
@@ -161,6 +176,8 @@ def _chat_completion_with_token_cap(
     chunks: list[str] = []
     finish_reason: str | None = None
     usage: dict[str, object] = {}
+    serving_id = "unknown"
+    model = "unknown"
     try:
         for raw_line in response.iter_lines(decode_unicode=True):
             if time.monotonic() - started >= client.total_budget_s:
@@ -176,6 +193,9 @@ def _chat_completion_with_token_cap(
                 continue
             if isinstance(data.get("usage"), dict):
                 usage = dict(data["usage"])
+            response_model = data.get("model")
+            if isinstance(response_model, str) and response_model:
+                serving_id, model = _response_model_identity(response_model)
             for choice in data.get("choices") or ():
                 if isinstance(choice, dict) and choice.get("finish_reason"):
                     finish_reason = str(choice["finish_reason"])
@@ -189,4 +209,13 @@ def _chat_completion_with_token_cap(
         finish_reason=finish_reason,
         usage=usage,
         elapsed_ms=(time.monotonic() - started) * 1000,
+        serving_id=serving_id,
+        model=model,
     )
+
+
+def _response_model_identity(response_model: str) -> tuple[str, str]:
+    match = re.fullmatch(r"genos/([^/]+)/(.+)", response_model.strip())
+    if match is None:
+        return "unknown", response_model.strip() or "unknown"
+    return match.group(1), match.group(2)

@@ -572,7 +572,8 @@ def test_v4_clients_use_their_scoped_genos_endpoints_and_tokens(monkeypatch) -> 
     monkeypatch.setenv("GENOS_SERVING_ID", "202")
     monkeypatch.setenv("GENOS_FINAL_SERVING_ID", "202")
     monkeypatch.setenv("GENOS_PLANNER_SERVING_ID", "190")
-    monkeypatch.setenv("V4_SYNTHESIZER_SERVING_ID", "191")
+    monkeypatch.setenv("GENOS_SYNTH_SERVING_ID", "202")
+    monkeypatch.setenv("GENOS_SYNTH_MODEL", "gemini-3.1-pro-preview")
     monkeypatch.setenv("GENOS_BEARER_TOKEN", "common-token")
     monkeypatch.setenv("GENOS_FINAL_BEARER_TOKEN", "final-token")
     monkeypatch.setenv("GENOS_PLANNER_BEARER_TOKEN", "planner-token")
@@ -584,21 +585,41 @@ def test_v4_clients_use_their_scoped_genos_endpoints_and_tokens(monkeypatch) -> 
     assert planner.base_url.endswith("/serving/190")
     assert planner.token == "planner-token"
     assert planner.timeout_s == 18
-    assert synthesizer.base_url.endswith("/serving/191")
+    assert synthesizer.base_url.endswith("/serving/202")
     assert synthesizer.token == "synthesizer-token"
+    assert synthesizer.model == "gemini-3.1-pro-preview"
+
+
+def test_v4_synthesizer_defaults_to_pro_202_and_warns_when_env_is_missing(
+    monkeypatch, caplog
+) -> None:
+    monkeypatch.setenv("GENOS_BASE_URL", "https://genos.example/api/gateway/rep/serving/163")
+    monkeypatch.setenv("GENOS_FINAL_SERVING_ID", "202")
+    monkeypatch.delenv("GENOS_SYNTH_SERVING_ID", raising=False)
+    monkeypatch.delenv("GENOS_SYNTH_MODEL", raising=False)
+    monkeypatch.delenv("V4_SYNTHESIZER_SERVING_ID", raising=False)
+    monkeypatch.delenv("V4_SYNTHESIZER_MODEL", raising=False)
+
+    client = synthesizer_client()._client
+
+    assert client.base_url.endswith("/serving/202")
+    assert client.model == "gemini-3.1-pro-preview"
+    assert "GENOS_SYNTH_SERVING_ID is unset" in caplog.text
 
 
 def test_v4_synthesizer_transport_preserves_finish_reason_and_usage(monkeypatch) -> None:
     captured = {}
 
     class Response:
+        url = "https://genos.example/serving/202/chat/completions"
+
         def raise_for_status(self) -> None:
             return None
 
         def iter_lines(self, *, decode_unicode):
             assert decode_unicode is True
-            yield 'data: {"choices":[{"delta":{"content":"답변"}}]}'
-            yield 'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":4}}'
+            yield 'data: {"model":"genos/202/gemini-3.1-pro-preview","choices":[{"delta":{"content":"답변"}}]}'
+            yield 'data: {"model":"genos/202/gemini-3.1-pro-preview","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":4}}'
             yield "data: [DONE]"
 
         def close(self) -> None:
@@ -625,6 +646,8 @@ def test_v4_synthesizer_transport_preserves_finish_reason_and_usage(monkeypatch)
     assert completion.text == "답변"
     assert completion.finish_reason == "stop"
     assert completion.usage == {"prompt_tokens": 10, "completion_tokens": 4}
+    assert completion.serving_id == "202"
+    assert completion.model == "gemini-3.1-pro-preview"
     assert captured["json"]["max_tokens"] == 8192
     assert captured["json"]["model"] == "gemini-3-flash-preview"
     assert captured["closed"] is True
@@ -860,6 +883,8 @@ def test_planner_detailed_trace_keeps_usage_and_corrects_obvious_answer_source()
                     "completion_tokens_details": {"reasoning_tokens": 11},
                 },
                 elapsed_ms=1250.0,
+                serving_id="190",
+                model="gemini-3-flash-preview",
             )
 
     outcome = V4Planner(Client()).plan_with_trace(
@@ -874,6 +899,8 @@ def test_planner_detailed_trace_keeps_usage_and_corrects_obvious_answer_source()
         "thinking_tokens": 11,
     }
     assert outcome.trace["elapsed_ms"] == 1250.0
+    assert outcome.trace["serving_id"] == "190"
+    assert outcome.trace["model"] == "gemini-3-flash-preview"
 
 
 def test_planner_limits_first_wave_to_one_query_per_source() -> None:
@@ -967,7 +994,7 @@ def test_runtime_marks_successful_citations_used() -> None:
     assert answer.trace["tool_results"][0]["citations"][0]["source"] == "웹 자료"
 
 
-def test_runtime_reserves_planner_budget_and_reports_serving_without_fallback() -> None:
+def test_runtime_reserves_planner_budget_without_echoing_config_as_actual_serving() -> None:
     plan = _plan()
 
     class Planner:
@@ -994,7 +1021,7 @@ def test_runtime_reserves_planner_budget_and_reports_serving_without_fallback() 
         synthesizer=Synthesizer(),
     ).answer("질문", conversation_id="conversation-planner", turns=())
 
-    assert answer.trace["planner_serving"] == "190"
+    assert answer.trace["planner_serving"] == "not_applicable"
     assert answer.trace["fallback"] is False
 
 
@@ -1021,6 +1048,8 @@ def test_runtime_exposes_synthesizer_usage_metadata() -> None:
                 trace={
                     "finish_reason": "stop",
                     "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+                    "serving_id": "202",
+                    "model": "gemini-3.1-pro-preview",
                 },
             )
 
@@ -1032,6 +1061,8 @@ def test_runtime_exposes_synthesizer_usage_metadata() -> None:
 
     assert answer.trace["synthesizer"]["finish_reason"] == "stop"
     assert answer.trace["synthesizer"]["usage"]["completion_tokens"] == 20
+    assert answer.trace["synth_serving"] == "202"
+    assert answer.trace["synth_model"] == "gemini-3.1-pro-preview"
 
 
 def test_runtime_exposes_normalized_usage_and_stage_breakdown() -> None:
@@ -1183,7 +1214,16 @@ def test_runtime_emits_public_five_stage_progress_for_linked_answer() -> None:
     ]
     assert progress[2]["detail"] == "건강보험심사평가원 완료"
     assert progress[3]["detail"] == "건강보험심사평가원 완료 · 웹 자료 완료"
+    assert progress[1]["detail"] == "시장 · 허가 · 임상"
     assert all("MCP" not in event["detail"] for event in progress)
+
+
+def test_query_plan_progress_limits_expanded_intents_to_five() -> None:
+    detail = __import__(
+        "jw_chat_agent_poc.service.v4.runtime", fromlist=["_expanded_intents_detail"]
+    )._expanded_intents_detail(("시장", "허가", "임상", "환자수", "특허", "급여", "안전성"))
+
+    assert detail == "시장 · 허가 · 임상 · 환자수 · 특허 · 외 2개"
 
 
 def test_runtime_runs_one_web_gap_fill_for_missing_hira_periods() -> None:
@@ -1860,6 +1900,7 @@ def test_flag_on_live_stream_emits_progress_before_running_v4(monkeypatch) -> No
 
     assert response.status_code == 200
     assert body.index("event: step") < body.index("V4 자유 답변")
+    assert body.index('"name":"질문 해석 중"') < body.index('"name":"질문 해석"')
     assert body.index("질문 해석") < body.index("조회 계획")
     assert body.index("조회 계획") < body.index("자료 수집 중")
     assert body.index("자료 수집 중") < body.index("답변 작성 중")

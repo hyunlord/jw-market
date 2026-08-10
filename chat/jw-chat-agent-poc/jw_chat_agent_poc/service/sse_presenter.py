@@ -4,7 +4,11 @@ import json
 import os
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import date, datetime, time
+from decimal import Decimal
+from enum import Enum
 from typing import Any, Final, Protocol
+from uuid import UUID
 
 from jw_chat_agent_poc.service.sse_protocol import iter_markdown_sse_events
 
@@ -19,7 +23,12 @@ def sse_delta(token: str) -> str:
 
 
 def sse_json_event(event_name: str, payload: object) -> str:
-    data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    data = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        default=_json_default,
+    )
     lines = data.split("\n")
     encoded = "\n".join(f"data: {line}" for line in lines)
     return f"event: {event_name}\n{encoded}\n\n"
@@ -32,10 +41,25 @@ def legacy_sse_delta(token: str) -> str:
 
 
 def legacy_sse_json_event(event_name: str, payload: object) -> str:
-    data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    data = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        default=_json_default,
+    )
     lines = data.split("\n")
     encoded = "\n".join(f"data: {line}" for line in lines)
     return f"event: {event_name}\n{encoded}\n\n"
+
+
+def _json_default(value: object) -> object:
+    if isinstance(value, (datetime, date, time)):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, (UUID, Enum)):
+        return str(value.value if isinstance(value, Enum) else value)
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
 def iter_busy_events(busy_message: str) -> Iterator[str]:

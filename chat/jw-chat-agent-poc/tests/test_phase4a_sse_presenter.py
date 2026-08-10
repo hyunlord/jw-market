@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
+from decimal import Decimal
 
 import pytest
 
@@ -56,6 +58,23 @@ def test_presenter_sequence_is_byte_identical_to_legacy(monkeypatch, answer: Fin
     )
 
     assert presented == legacy
+
+
+def test_json_event_serializes_datetime_and_decimal_without_changing_plain_bytes() -> None:
+    plain = {"status": "ok", "count": 3}
+    expected_plain = 'event: trace\ndata: {"status":"ok","count":3}\n\n'
+
+    assert sse_presenter.sse_json_event("trace", plain) == expected_plain
+    encoded = sse_presenter.sse_json_event(
+        "trace",
+        {
+            "retrieved_at": datetime(2026, 8, 11, 1, 2, 3, tzinfo=UTC),
+            "exact_value": Decimal("85.8700"),
+        },
+    )
+
+    assert '"retrieved_at":"2026-08-11T01:02:03+00:00"' in encoded
+    assert '"exact_value":"85.8700"' in encoded
 
 
 def test_markdown_table_is_one_atomic_block(monkeypatch) -> None:

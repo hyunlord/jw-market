@@ -84,6 +84,8 @@ class V4Planner:
                         "elapsed_ms": completion.elapsed_ms if completion else (time.monotonic() - started) * 1000,
                         "finish_reason": completion.finish_reason if completion else None,
                         "usage": _normalized_usage(completion.usage if completion else {}),
+                        "serving_id": completion.serving_id if completion else "not_applicable",
+                        "model": completion.model if completion else "not_applicable",
                     },
                 )
             except requests.RequestException as exc:
@@ -98,6 +100,8 @@ class V4Planner:
                 "elapsed_ms": (time.monotonic() - started) * 1000,
                 "finish_reason": completion.finish_reason if completion else None,
                 "usage": _normalized_usage(completion.usage if completion else {}),
+                "serving_id": completion.serving_id if completion else "not_applicable",
+                "model": completion.model if completion else "not_applicable",
                 "error_type": type(error).__name__ if error else "InvalidPlannerOutput",
             },
         )

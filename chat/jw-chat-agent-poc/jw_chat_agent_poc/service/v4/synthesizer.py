@@ -104,7 +104,12 @@ class V4Synthesizer:
         if not usable:
             return SynthesisOutcome(
                 text="이번 조회에서 확인된 근거가 없어 구체적인 답을 구성하지 못했습니다.",
-                trace={"status": "no_usable_evidence", "fallback_reason": "no_evidence"},
+                trace={
+                    "status": "no_usable_evidence",
+                    "fallback_reason": "no_evidence",
+                    "serving_id": "not_applicable",
+                    "model": "not_applicable",
+                },
             )
 
         messages = _synthesis_messages(plan, usable, turns)
@@ -154,6 +159,8 @@ class V4Synthesizer:
                 answer = repaired.text.strip()
                 if repaired.finish_reason == "length":
                     answer = original_answer
+                else:
+                    completion = repaired
             except Exception:  # noqa: BLE001 - deterministic surface replacement follows
                 answer = original_answer
 
@@ -172,6 +179,8 @@ class V4Synthesizer:
                 "prompt_chars": sum(len(message["content"]) for message in messages),
                 "fallback_reason": fallback_reason,
                 "error_type": error_type,
+                "serving_id": completion.serving_id if completion else "not_applicable",
+                "model": completion.model if completion else "not_applicable",
             },
         )
 

@@ -3333,6 +3333,14 @@ def _v4_sse_events(
 
     worker = threading.Thread(target=run_answer, name="chat-v4-sse-worker", daemon=True)
     try:
+        yield _sse_json_event(
+            "step",
+            {
+                "name": "질문 해석 중",
+                "detail": "질문 의도를 확인하고 있습니다",
+                "status": "in_progress",
+            },
+        )
         worker.start()
         while not completed.is_set() or not events.empty():
             try:
