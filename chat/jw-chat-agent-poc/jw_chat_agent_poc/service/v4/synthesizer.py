@@ -161,8 +161,7 @@ class V4Synthesizer:
             answer = _evidence_fallback(usable)
         elif _INTERNAL_SURFACE_RE.search(answer):
             answer = _replace_internal_blocks(answer, usable)
-        answer = _append_automatic_footnotes(answer, usable)
-        answer = _append_coverage_notices(answer, usable)
+        answer = _finalize_answer(answer, usable)
         return SynthesisOutcome(
             text=answer,
             trace={
@@ -480,6 +479,15 @@ def _append_automatic_footnotes(answer: str, results: Sequence[SourceResult]) ->
         return answer
     missing = tuple(note for note in notes if note not in answer)
     return answer if not missing else f"{answer.rstrip()}\n\n" + "\n".join(f"- {note}" for note in missing)
+
+
+def _finalize_answer(answer: str, results: Sequence[SourceResult]) -> str:
+    # The final gate renders citations from typed results. Remove the model-owned
+    # source block first so deterministic footnotes and coverage notices remain.
+    if "## 출처" in answer:
+        answer = answer.split("## 출처", 1)[0].rstrip()
+    answer = _append_automatic_footnotes(answer, results)
+    return _append_coverage_notices(answer, results)
 
 
 def _append_coverage_notices(answer: str, results: Sequence[SourceResult]) -> str:

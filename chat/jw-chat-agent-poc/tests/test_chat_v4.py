@@ -23,7 +23,7 @@ from jw_chat_agent_poc.service.v4.executor import ParallelSourceExecutor
 from jw_chat_agent_poc.service.v4.gates import apply_v4_gates
 from jw_chat_agent_poc.service.v4.llm import planner_client, synthesizer_client
 from jw_chat_agent_poc.service.v4.planner import V4Planner
-from jw_chat_agent_poc.service.v4.runtime import V4Runtime
+from jw_chat_agent_poc.service.v4.runtime import V4Runtime, _preserve_period_in_answer_queries
 from jw_chat_agent_poc.service.v4 import adapters as v4_adapters
 from jw_chat_agent_poc.service.v4 import llm as v4_llm
 from jw_chat_agent_poc.service.v4 import synthesizer as v4_synthesizer
@@ -745,6 +745,61 @@ def test_hira_coverage_notices_distinguish_failure_from_no_data() -> None:
 
     assert "2025년은 조회 실패로 값을 확인하지 못했습니다(환자수 0 이 아님)" in answer
     assert "2026년은 조회 완료됐으나 해당 데이터가 없습니다" in answer
+
+
+def test_hira_coverage_notice_survives_model_sources_block_replacement() -> None:
+    result = SourceResult(
+        source="hira",
+        query="D693 상병 환자수 최근 5년",
+        status="ok",
+        payload={
+            "calls": [],
+            "period_coverage": {
+                "requested_periods": ["2022", "2023", "2024", "2025", "2026"],
+                "periods": [
+                    {"period": "2022", "status": "ok"},
+                    {"period": "2023", "status": "ok"},
+                    {"period": "2024", "status": "ok"},
+                    {"period": "2025", "status": "ok"},
+                    {"period": "2026", "status": "no_data"},
+                ],
+            },
+        },
+        citations=(
+            Citation(
+                source="HIRA",
+                query="D693 상병 환자수 최근 5년",
+                url="https://www.hira.or.kr/",
+                retrieved_at=datetime(2026, 8, 11, tzinfo=UTC),
+            ),
+        ),
+    )
+
+    synthesized = v4_synthesizer._finalize_answer(
+        "확인된 4개년 값입니다.\n\n## 출처\n- 모델이 만든 출처",
+        (result,),
+    )
+    gated = apply_v4_gates("D693 환자수 최근 5년", synthesized, (result,))
+
+    assert "2026년은 조회 완료됐으나 해당 데이터가 없습니다" in gated.text
+    assert "HIRA 환자수는 주상병 기준 청구 실인원" in gated.text
+    assert "모델이 만든 출처" not in gated.text
+
+
+def test_runtime_preserves_recent_period_in_hira_answer_query() -> None:
+    plan = _plan(hira=("D693 보건의료빅데이터개방시스템 환자수 통계",)).model_copy(
+        update={
+            "resolved_question": "최근 3년간 D693 진단 환자 수는 얼마인가요?",
+            "answer_sources": ("hira",),
+        }
+    )
+
+    enriched = _preserve_period_in_answer_queries(plan)
+
+    assert enriched.tool_queries.hira == (
+        "D693 보건의료빅데이터개방시스템 환자수 통계 최근 3년",
+    )
+    assert enriched.tool_queries.web == plan.tool_queries.web
 
 
 def test_parallel_executor_soft_deadline_stops_after_answer_source_arrives() -> None:

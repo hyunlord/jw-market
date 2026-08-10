@@ -4,6 +4,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 import logging
+import re
 import threading
 from types import SimpleNamespace
 from typing import Any
@@ -87,7 +88,7 @@ class V4Runtime:
                     "usage": _empty_usage(),
                 },
             )
-        plan = planner_outcome.plan
+        plan = _preserve_period_in_answer_queries(planner_outcome.plan)
         _emit_progress(
             progress_callback,
             "질문 해석",
@@ -458,6 +459,27 @@ def _emit_progress(callback: ProgressCallback | None, name: str, detail: str) ->
 def _one_line(value: str, limit: int = 120) -> str:
     text = " ".join(value.split())
     return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _preserve_period_in_answer_queries(plan: Any) -> Any:
+    match = re.search(r"최근\s*\d+\s*년", plan.resolved_question)
+    if match is None:
+        return plan
+    period = " ".join(match.group(0).split())
+    queries = plan.tool_queries
+    updates: dict[str, tuple[str, ...]] = {}
+    for source in ("hira", "nedrug"):
+        if source not in plan.answer_sources:
+            continue
+        source_queries = getattr(queries, source)
+        if any(re.search(r"최근\s*\d+\s*년", query) for query in source_queries):
+            continue
+        updates[source] = tuple(f"{query} {period}" for query in source_queries)
+    if not updates:
+        return plan
+    return plan.model_copy(
+        update={"tool_queries": queries.model_copy(update=updates)}
+    )
 
 
 def _gap_fill_request(
