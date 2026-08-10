@@ -1695,6 +1695,16 @@ def test_v4_gate_does_not_substitute_originator_sales_for_generic_subset() -> No
     assert gated.trace["subset_scope_guard"]["blocked"] is True
     assert gated.trace["mart_numeric_copy_only"]["blocked"] is False
 
+    followup_gated = apply_v4_gates(
+        "리바로젯 각 용량별 매출액 중 가장 큰 것은 무엇인가요?",
+        "리바로젯 본품 매출은 124.54억원입니다.",
+        results,
+    )
+
+    assert "제네릭 제품 목록" in followup_gated.text
+    assert "124.54억원" not in followup_gated.text
+    assert followup_gated.trace["subset_scope_guard"]["blocked"] is True
+
 
 @pytest.mark.parametrize(
     ("question", "answer"),

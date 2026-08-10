@@ -300,7 +300,12 @@ def _generic_subset_unresolved(
     results: tuple[SourceResult, ...],
 ) -> bool:
     lowered = question.casefold()
-    if "제네릭" not in lowered or not any(
+    generic_scope = "제네릭" in lowered or any(
+        "제네릭" in result.query.casefold()
+        for result in results
+        if result.source == "nedrug" and result.status == "ok"
+    )
+    if not generic_scope or not any(
         term in lowered for term in ("매출", "순위", "가장 큰", "1위")
     ):
         return False
