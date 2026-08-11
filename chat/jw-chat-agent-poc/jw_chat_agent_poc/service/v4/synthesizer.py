@@ -92,8 +92,14 @@ _SYNTHESIS_SYSTEM_PROMPT = (
     "공식 통계 표나 시계열에 섞지 말고 별도 문단에서 '공식 통계 아님'을 밝혀 서술한다. TIER1 또는 TIER2가 "
     "아닌 웹 정량값은 쓰지 않는다. 제네릭처럼 하위 제품 집합을 묻는 질문에서는 그 집합이 근거에 없을 때 "
     "본품이나 상위 제품의 수치를 대신 답하지 않고 요청 집합의 값을 확인하지 못했다고 먼저 밝힌다."
+    " 내부 데이터마트의 압축 JSON에서 `$columns`와 같은 위치의 `$rows` 값은 열 순서대로 대응하며, "
+    "`$ref`는 앞서 나온 경로의 byte-identical 근거를 그대로 재사용한다는 뜻이다. "
+    "`required_hira_surface`가 있으면 모든 항목을 첫 합성에서 본문에 정확히 포함한다."
 )
 _CAUSE_MARKERS = ("원인", "왜 ", "이유")
+_MART_DEDUP_MIN_CHARS = 256
+
+
 @dataclass(frozen=True)
 class SynthesisOutcome:
     text: str
@@ -369,9 +375,16 @@ def _synthesis_messages(
             "출처는 본문 문장 끝에 [출처: 이름]으로 표시",
         ],
     }
+    required_hira_surface = _required_hira_surface(plan.resolved_question, results)
+    if required_hira_surface:
+        prompt["required_hira_surface"] = required_hira_surface
     if asks_cause:
         prompt["cause_answer_contract"] = {
             "layers": ["관측", "날짜가 확인된 외부 사건", "가설"],
+            "missing_event_rule": (
+                "날짜가 확인된 외부 사건이 없으면 그 층을 생략하지 말고 "
+                "'날짜가 확인된 외부 사건: 확인되지 않았습니다'라고 쓴다"
+            ),
             "period_rule": (
                 "cause_period_anchor의 공통 시작·종료 기간 안에서만 모든 분해 수치를 비교한다"
             ),
@@ -386,6 +399,10 @@ def _synthesis_messages(
                 "가설: ~일 가능성이 있으나 확인되지 않았습니다",
             ],
             "forbidden_without_movement_evidence": ["전환", "잠식", "대체"],
+            "forbidden_causal_phrases": [
+                "기인한 것으로 관측됩니다",
+                "원인으로 확인되었습니다",
+            ],
             "few_shot_shape": (
                 "관측 수치를 먼저 시장 기여와 점유율 기여로 나누고, 날짜가 확인된 외부 사건은 "
                 "시점만 병치하며, 남는 설명은 확인되지 않은 가설로 분리한다. 예시 문장의 수치는 "
@@ -485,8 +502,21 @@ def _clinical_study_classification(payload: Any) -> list[dict[str, Any]]:
 def _mart_block(result: SourceResult) -> str:
     payload = _public_mart_payload(result.payload)
     tables = _markdown_tables(payload)
-    raw = json.dumps(payload, ensure_ascii=False, default=str)
-    body = "\n\n".join((*tables, f"원형 JSON: {raw}"))
+    compacted, stats = _compact_mart_payload(payload)
+    raw = json.dumps(
+        compacted,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        default=str,
+    )
+    body = "\n\n".join(
+        (
+            *tables,
+            "무손실 압축 JSON "
+            f"(exact_refs={stats['reference_count']}, columnar_tables={stats['columnar_table_count']}): "
+            f"{raw}",
+        )
+    )
     return f"<INTERNAL_DATAMART source=\"{_PUBLIC_SOURCE[result.source]}\">\n{body}\n</INTERNAL_DATAMART>"
 
 
@@ -504,6 +534,97 @@ def _public_mart_payload(value: Any) -> Any:
     if isinstance(value, tuple):
         return tuple(_public_mart_payload(item) for item in value)
     return value
+
+
+def _compact_mart_payload(value: Any) -> tuple[Any, dict[str, int]]:
+    """Factor exact duplicate subtrees and scalar row keys without dropping evidence."""
+
+    public = _public_mart_payload(value)
+    original_chars = len(_canonical_json(public))
+    seen: dict[str, str] = {}
+    reference_count = 0
+    columnar_table_count = 0
+
+    def compact(item: Any, path: str) -> Any:
+        nonlocal reference_count, columnar_table_count
+
+        if not isinstance(item, (Mapping, list, tuple)):
+            return item
+
+        canonical = _canonical_json(item)
+        if len(canonical) >= _MART_DEDUP_MIN_CHARS:
+            digest = hashlib.sha256(canonical.encode()).hexdigest()
+            first_path = seen.get(digest)
+            if first_path is not None:
+                reference_count += 1
+                return {"$ref": first_path}
+            seen[digest] = path
+
+        if isinstance(item, Mapping):
+            return {
+                str(key): compact(child, f"{path}.{key}")
+                for key, child in item.items()
+            }
+
+        if _can_encode_columnar(item):
+            columns = list(dict.fromkeys(str(key) for row in item for key in row))
+            columnar_table_count += 1
+            return {
+                "$columns": columns,
+                "$rows": [[row.get(column) for column in columns] for row in item],
+            }
+
+        rows = [compact(child, f"{path}[{index}]") for index, child in enumerate(item)]
+        return rows
+
+    compacted = compact(public, "$")
+    return compacted, {
+        "original_chars": original_chars,
+        "compacted_chars": len(_canonical_json(compacted)),
+        "reference_count": reference_count,
+        "columnar_table_count": columnar_table_count,
+    }
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+
+
+def _can_encode_columnar(rows: Sequence[Any]) -> bool:
+    if len(rows) < 3 or not all(isinstance(row, Mapping) for row in rows):
+        return False
+    first_keys = set(rows[0])
+    return bool(
+        first_keys
+        and "$ref" not in first_keys
+        and all(
+            set(row) == first_keys
+            and all(not isinstance(value, (Mapping, list, tuple)) for value in row.values())
+            for row in rows
+        )
+    )
+
+
+def _required_hira_surface(
+    question: str,
+    results: Sequence[SourceResult],
+) -> list[dict[str, str]]:
+    expected = inspect_requested_hira_surface(question, "", tuple(results))["expected"]
+    return [
+        {
+            "year": fact.year,
+            "care_type": fact.care_type,
+            "metric": fact.label,
+            "value": fact.display,
+        }
+        for fact in expected
+    ]
 
 def _select_usable_results(
     plan: PlannerOutput,
