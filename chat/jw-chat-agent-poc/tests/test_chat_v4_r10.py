@@ -97,6 +97,19 @@ def test_r10_numeric_copy_accepts_payload_value_already_rounded_for_display() ->
     assert gated.trace["mart_numeric_copy_only"]["blocked"] is False
 
 
+def test_r10_numeric_copy_keeps_large_identifiers_fail_open() -> None:
+    result = _mart({"record_identifier": 10**100, "sales_eok": 85.87})
+
+    gated = apply_v4_gates(
+        "리바로 매출 알려줘",
+        "리바로 매출은 85.87억원입니다.",
+        (result,),
+    )
+
+    assert "85.87억원" in gated.text
+    assert gated.trace["mart_numeric_copy_only"]["blocked"] is False
+
+
 def test_r10_numeric_copy_redacts_only_invented_value_without_replacing_answer() -> None:
     result = _mart({"brand": "리바로", "sales_eok": 85.87})
     answer = (

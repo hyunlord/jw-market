@@ -488,12 +488,11 @@ def _numeric_copy_variants(value: str) -> set[str]:
     except InvalidOperation:
         return variants
     variants.add(format(decimal_value.normalize(), "f"))
-    variants.add(
-        format(
-            decimal_value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
-            "f",
-        )
-    )
+    try:
+        rounded = decimal_value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except InvalidOperation:
+        return variants
+    variants.add(format(rounded, "f"))
     return variants
 
 
