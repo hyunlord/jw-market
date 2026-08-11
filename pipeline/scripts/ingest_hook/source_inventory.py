@@ -13,10 +13,11 @@ import re
 import stat
 import tempfile
 import zipfile
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable, Iterable, Literal, Mapping
+from typing import Literal
 
 from pipeline.scripts.ingest_hook.workbook_contracts import (
     WorkbookSummary,
@@ -27,11 +28,12 @@ from pipeline.scripts.ingest_hook.workbook_source_validation import (
     detect_workbook_source,
 )
 
-
 PeriodUnit = Literal["month", "quarter"]
 FileState = Literal["classified", "excluded", "rejected", "removed"]
+ValidationAction = Literal["parsed", "reused", "revalidated"]
 GateStatus = Literal["pass", "fail", "warning"]
 DEFAULT_INVENTORY_ROOT = Path("/market-output/ingest-file-inventory")
+SOURCE_INVENTORY_PARSER_CONTRACT_VERSION = "2026-08-11-v1"
 _CATEGORY_PATTERN = re.compile(r"[a-z0-9_]{1,32}")
 _EPOCH_PATTERN = re.compile(r"[0-9]{4}-(?:[0-9]{2}|Q[1-4])")
 _SHA256_PATTERN = re.compile(r"[a-f0-9]{64}")
@@ -64,6 +66,8 @@ class FileObservation:
     first_observed_at: str | None = None
     last_observed_at: str | None = None
     removed_at: str | None = None
+    parser_contract_version: str | None = None
+    validation_action: ValidationAction | None = None
 
     @classmethod
     def removed(
@@ -76,7 +80,7 @@ class FileObservation:
         first_observed_at: str | None = None,
         last_observed_at: str | None = None,
         removed_at: str | None = None,
-    ) -> "FileObservation":
+    ) -> FileObservation:
         return cls(
             relative_path=relative_path,
             sha256=sha256,
@@ -254,16 +258,30 @@ def scan_source(
             )
             continue
         previous_item = previous_by_path.get(relative_text)
-        if previous_item is not None and previous_item.sha256 == sha256:
+        same_content = previous_item is not None and previous_item.sha256 == sha256
+        reusable_contract = (
+            previous_item is not None
+            and previous_item.parser_contract_version
+            in (None, SOURCE_INVENTORY_PARSER_CONTRACT_VERSION)
+        )
+        if (
+            same_content
+            and previous_item is not None
+            and previous_item.state == "classified"
+            and reusable_contract
+        ):
             observations.append(
                 replace(
                     previous_item,
                     size=size,
                     last_observed_at=observed_at,
                     removed_at=None,
+                    parser_contract_version=SOURCE_INVENTORY_PARSER_CONTRACT_VERSION,
+                    validation_action="reused",
                 )
             )
             continue
+        validation_action: ValidationAction = "revalidated" if same_content else "parsed"
         try:
             detected = classify(path)
         except SourceValidationError as exc:
@@ -274,6 +292,8 @@ def scan_source(
                     size=size,
                     state="rejected",
                     reason=str(exc),
+                    parser_contract_version=SOURCE_INVENTORY_PARSER_CONTRACT_VERSION,
+                    validation_action=validation_action,
                 )
             )
             continue
@@ -286,6 +306,8 @@ def scan_source(
                     state="rejected",
                     category=detected,
                     reason=f"content category {detected!r} does not match {policy.category!r}",
+                    parser_contract_version=SOURCE_INVENTORY_PARSER_CONTRACT_VERSION,
+                    validation_action=validation_action,
                 )
             )
             continue
@@ -300,6 +322,8 @@ def scan_source(
                     state="rejected",
                     category=detected,
                     reason=f"workbook contract failed: {type(exc).__name__}: {exc}",
+                    parser_contract_version=SOURCE_INVENTORY_PARSER_CONTRACT_VERSION,
+                    validation_action=validation_action,
                 )
             )
             continue
@@ -315,6 +339,8 @@ def scan_source(
                 reason=summary.detail,
                 first_observed_at=observed_at,
                 last_observed_at=observed_at,
+                parser_contract_version=SOURCE_INVENTORY_PARSER_CONTRACT_VERSION,
+                validation_action=validation_action,
             )
         )
     return ScanSnapshot(
@@ -690,6 +716,16 @@ def read_scan_snapshot(path: Path) -> ScanSnapshot:
                     else None
                 ),
                 removed_at=str(item["removed_at"]) if item.get("removed_at") else None,
+                parser_contract_version=(
+                    str(item["parser_contract_version"])
+                    if item.get("parser_contract_version")
+                    else None
+                ),
+                validation_action=(
+                    str(item["validation_action"])
+                    if item.get("validation_action")
+                    else None
+                ),
             )
             for item in payload["files"]
         )

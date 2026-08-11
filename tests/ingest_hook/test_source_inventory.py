@@ -1,20 +1,21 @@
 from __future__ import annotations
 
-import json
 import hashlib
-from pathlib import Path
+import json
 import zipfile
+from pathlib import Path
 
 import pytest
 
 from pipeline.scripts.ingest_hook import job_runner
 from pipeline.scripts.ingest_hook.source_inventory import (
+    SOURCE_INVENTORY_PARSER_CONTRACT_VERSION,
     FileObservation,
     ScanSnapshot,
     SourceInventoryError,
     SourceScanPolicy,
-    compare_snapshots,
     classified_source_paths,
+    compare_snapshots,
     enforce_scan_gates,
     evaluate_period_gates,
     mass_deletion_threshold,
@@ -24,8 +25,12 @@ from pipeline.scripts.ingest_hook.source_inventory import (
     write_inventory_snapshot,
 )
 from pipeline.scripts.ingest_hook.workbook_contracts import WorkbookSummary
-from pipeline.scripts.ingest_hook.workbook_source_validation import SourceValidationError
-from pipeline.scripts.ingest_hook.workbook_contracts import summarize as summarize_workbook
+from pipeline.scripts.ingest_hook.workbook_contracts import (
+    summarize as summarize_workbook,
+)
+from pipeline.scripts.ingest_hook.workbook_source_validation import (
+    SourceValidationError,
+)
 
 
 def _write(root: Path, relative: str, content: bytes = b"xlsx") -> Path:
@@ -81,6 +86,159 @@ def test_scan_reuses_unchanged_sha_without_reparsing(tmp_path: Path) -> None:
     assert current.files[0].rows == 123
     assert current.files[0].periods == ("2026-06",)
     assert current.files[0].reason == "previous exact scan"
+    assert current.files[0].parser_contract_version == SOURCE_INVENTORY_PARSER_CONTRACT_VERSION
+    assert current.files[0].validation_action == "reused"
+
+
+def test_scan_revalidates_unchanged_rejected_observation(tmp_path: Path) -> None:
+    source = _write(tmp_path, "source.xlsx", b"unchanged-rejected")
+    previous = ScanSnapshot(
+        "1",
+        "iqvia_csd_keyword",
+        "2024-06",
+        "a" * 64,
+        "previous-run",
+        "2026-08-09T14:29:48+00:00",
+        (
+            FileObservation(
+                "source.xlsx",
+                _file_sha256(source),
+                source.stat().st_size,
+                "rejected",
+                reason="old parser rejected this workbook",
+            ),
+        ),
+    )
+    calls = {"classify": 0, "summarize": 0}
+
+    def classify(_path: Path) -> str:
+        calls["classify"] += 1
+        return "iqvia_csd_keyword"
+
+    def summarize(_category: str, _path: Path, _epoch: str) -> WorkbookSummary:
+        calls["summarize"] += 1
+        return WorkbookSummary(
+            rows=1_683,
+            periods=frozenset({"2024-06"}),
+            detail="ingest_keyword.read_keyword_events",
+        )
+
+    current = scan_source(
+        SourceScanPolicy("iqvia_csd_keyword", tmp_path, "month"),
+        epoch="2024-06",
+        manifest_sha="b" * 64,
+        run_id="current-run",
+        previous=previous,
+        classify=classify,
+        summarize=summarize,
+    )
+
+    assert calls == {"classify": 1, "summarize": 1}
+    assert current.files[0].state == "classified"
+    assert current.files[0].rows == 1_683
+    assert current.files[0].periods == ("2024-06",)
+    assert current.files[0].parser_contract_version == SOURCE_INVENTORY_PARSER_CONTRACT_VERSION
+    assert current.files[0].validation_action == "revalidated"
+    print(
+        "GREEN_REVALIDATED",
+        f"classify_calls={calls['classify']}",
+        f"summarize_calls={calls['summarize']}",
+        f"rows={current.files[0].rows}",
+        f"periods={','.join(current.files[0].periods)}",
+    )
+
+
+def test_scan_keeps_fail_closed_when_revalidation_still_rejects(tmp_path: Path) -> None:
+    source = _write(tmp_path, "invalid.xlsx", b"still-invalid")
+    previous = ScanSnapshot(
+        "1",
+        "iqvia_csd_keyword",
+        "2024-06",
+        "a" * 64,
+        "previous-run",
+        "2026-08-09T14:29:48+00:00",
+        (
+            FileObservation(
+                "invalid.xlsx",
+                _file_sha256(source),
+                source.stat().st_size,
+                "rejected",
+                reason="canonical header count was 0",
+            ),
+        ),
+    )
+    classify_calls = 0
+
+    def reject(_path: Path) -> str:
+        nonlocal classify_calls
+        classify_calls += 1
+        raise SourceValidationError("canonical header count is still 0")
+
+    current = scan_source(
+        SourceScanPolicy("iqvia_csd_keyword", tmp_path, "month"),
+        epoch="2024-06",
+        manifest_sha="b" * 64,
+        run_id="current-run",
+        previous=previous,
+        classify=reject,
+    )
+
+    assert classify_calls == 1
+    assert current.files[0].state == "rejected"
+    assert current.files[0].validation_action == "revalidated"
+    assert current.files[0].reason == "canonical header count is still 0"
+    print(
+        "NEGATIVE_FAIL_CLOSED",
+        f"classify_calls={classify_calls}",
+        f"state={current.files[0].state}",
+        f"reason={current.files[0].reason}",
+    )
+
+
+def test_scan_revalidates_classified_observation_after_contract_change(tmp_path: Path) -> None:
+    source = _write(tmp_path, "source.xlsx", b"unchanged-old-contract")
+    previous = ScanSnapshot(
+        "1",
+        "iqvia_csd_keyword",
+        "2024-06",
+        "a" * 64,
+        "previous-run",
+        "2026-08-09T14:29:48+00:00",
+        (
+            FileObservation(
+                "source.xlsx",
+                _file_sha256(source),
+                source.stat().st_size,
+                "classified",
+                category="iqvia_csd_keyword",
+                rows=100,
+                periods=("2024-06",),
+                parser_contract_version="older-contract",
+            ),
+        ),
+    )
+    calls = {"classify": 0, "summarize": 0}
+
+    def classify(_path: Path) -> str:
+        calls["classify"] += 1
+        return "iqvia_csd_keyword"
+
+    def summarize(_category: str, _path: Path, _epoch: str) -> WorkbookSummary:
+        calls["summarize"] += 1
+        return _summary({"2024-06"})
+
+    current = scan_source(
+        SourceScanPolicy("iqvia_csd_keyword", tmp_path, "month"),
+        epoch="2024-06",
+        manifest_sha="b" * 64,
+        run_id="current-run",
+        previous=previous,
+        classify=classify,
+        summarize=summarize,
+    )
+
+    assert calls == {"classify": 1, "summarize": 1}
+    assert current.files[0].validation_action == "revalidated"
 
 
 def test_full_scan_bootstrap_rebuilds_only_manifest_files(tmp_path: Path) -> None:
@@ -627,7 +785,7 @@ def test_full_scan_does_not_rebuild_or_publish_when_pg4_fails(tmp_path: Path) ->
 
 
 def test_full_scan_applies_crash_floor_to_complete_source_population(tmp_path: Path) -> None:
-    source = _write(tmp_path, "current.xlsx")
+    _write(tmp_path, "current.xlsx")
     previous = ScanSnapshot(
         "1",
         "iqvia_csd_channel",
