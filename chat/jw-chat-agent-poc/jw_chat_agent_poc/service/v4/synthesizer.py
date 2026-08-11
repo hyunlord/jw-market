@@ -4,6 +4,7 @@ import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from jw_chat_agent_poc.service.conversation import ConversationTurn
@@ -44,29 +45,7 @@ _FOOTNOTES = {
     "clinicaltrials": "ClinicalTrials.gov 모집상태는 갱신이 지연될 수 있습니다.",
     "patent": "특허 존속기간 만료가 곧 제네릭 진입 시점을 뜻하지 않습니다.",
 }
-_DROP_KEYS = frozenset(
-    {
-        "tool",
-        "summary_text",
-        "mcp",
-        "totalcount",
-        "elapsed_ms",
-        "sickcd",
-        "ptntcnt",
-        "value",
-        "item_seq",
-        "entp_seq",
-        "prdlst_stdr_code",
-    }
-)
-_PUBLIC_FIELD_ALIASES = {
-    "CHANGE_DATE": "change_date",
-    "ENTP_NAME": "manufacturer",
-    "ITEM_INGR_NAME": "ingredient",
-    "ITEM_NAME": "product_name",
-    "ITEM_PERMIT_DATE": "permit_date",
-    "REEXAM_DATE": "reexamination_period",
-    "REEXAM_TARGET": "reexamination_target",
+_HIRA_FIELD_LABELS = {
     "sickCd": "상병코드",
     "ptntCnt": "환자수(명)",
     "specCnt": "명세서건수(건)",
@@ -74,19 +53,6 @@ _PUBLIC_FIELD_ALIASES = {
     "rvdInsupBrdnAmt": "보험자부담금(원)",
     "rvdRpeTamtAmt": "요양급여비용총액(원)",
 }
-_BOUNDED_PRIORITY_KEYS = (
-    "brand",
-    "period",
-    "source_label",
-    "sales_억원",
-    "market_size_억원",
-    "brand_value_series_10pt",
-    "market_size_series",
-    "level_top5_trend_series",
-    "series_insight",
-    "request",
-    "items",
-)
 @dataclass(frozen=True)
 class SynthesisOutcome:
     text: str
@@ -191,7 +157,10 @@ class V4Synthesizer:
                 answer = original_answer
 
         if not answer:
-            answer = _evidence_fallback(usable)
+            answer = _evidence_fallback(
+                usable,
+                question=plan.resolved_question,
+            )
         elif _INTERNAL_SURFACE_RE.search(answer):
             answer = _replace_internal_blocks(answer, usable)
         answer = _finalize_answer(answer, usable)
@@ -305,7 +274,7 @@ def _synthesis_messages(
 
 def _evidence_packet(result: SourceResult) -> dict[str, Any]:
     evidence = result.evidence
-    return {
+    packet = {
         "source": _PUBLIC_SOURCE[result.source],
         "query": result.query,
         "evidence": evidence.model_dump(mode="json") if evidence else {
@@ -313,104 +282,19 @@ def _evidence_packet(result: SourceResult) -> dict[str, Any]:
             "source_scope": _SOURCE_SCOPE[result.source],
             "time_match": _time_match(result),
         },
-        "detail": _bounded_value(_public_payload(result.payload), query=result.query),
+        "detail": result.payload,
     }
+    if result.source == "hira":
+        packet["field_labels"] = dict(_HIRA_FIELD_LABELS)
+    return packet
 
 
 def _mart_block(result: SourceResult) -> str:
-    payload = _bounded_value(_public_payload(result.payload), query=result.query)
+    payload = result.payload
     tables = _markdown_tables(payload)
     raw = json.dumps(payload, ensure_ascii=False, default=str)
     body = "\n\n".join((*tables, f"원형 JSON: {raw}"))
     return f"<INTERNAL_DATAMART source=\"{_PUBLIC_SOURCE[result.source]}\">\n{body}\n</INTERNAL_DATAMART>"
-
-
-def _public_payload(payload: Any) -> Any:
-    if isinstance(payload, Mapping):
-        if isinstance(payload.get("calls"), list):
-            calls = []
-            for call in payload["calls"]:
-                if not isinstance(call, Mapping):
-                    continue
-                if str(call.get("status") or "").casefold() in {
-                    "error",
-                    "no_data",
-                    "unsupported",
-                }:
-                    continue
-                calls.append(
-                    {
-                        public_key: _public_payload(value)
-                        for key, value in call.items()
-                        if (public_key := _public_field_name(str(key))) is not None
-                        and value not in (None, "", [], {})
-                    }
-                )
-            return {"calls": calls}
-        return {
-            public_key: _public_payload(value)
-            for key, value in payload.items()
-            if (public_key := _public_field_name(str(key))) is not None
-        }
-    if isinstance(payload, (list, tuple)):
-        return [_public_payload(value) for value in payload]
-    return payload
-
-
-def _bounded_value(value: Any, *, query: str, depth: int = 0) -> Any:
-    if depth >= 8:
-        return "[nested detail omitted]"
-    if isinstance(value, Mapping):
-        items = list(value.items())
-        priority = [
-            (key, value[key])
-            for key in _BOUNDED_PRIORITY_KEYS
-            if key in value
-        ]
-        selected_keys = {key for key, _item in priority}
-        selected = (
-            priority
-            + [(key, item) for key, item in items if key not in selected_keys]
-        )[:16]
-        return {
-            str(key): _bounded_value(item, query=query, depth=depth + 1)
-            for key, item in selected
-        }
-    if isinstance(value, list):
-        period_records = [item for item in value if _period_record(item)]
-        if period_records:
-            context_records = [item for item in value if not _period_record(item)][:1]
-            return [
-                _bounded_value(item, query=query, depth=depth + 1)
-                for item in (*context_records, *period_records)
-            ]
-        matching = [item for item in value if _matches_requested_anchor(item, query)]
-        selected = matching + [item for item in value if item not in matching]
-        return [_bounded_value(item, query=query, depth=depth + 1) for item in selected[:4]]
-    return value
-
-
-def _period_record(value: Any) -> bool:
-    if not isinstance(value, Mapping):
-        return False
-    if any(value.get(key) not in (None, "") for key in ("period", "year", "yyyymm")):
-        return True
-    render_data = value.get("render_data")
-    if not isinstance(render_data, Mapping):
-        return False
-    request = render_data.get("request")
-    return isinstance(request, Mapping) and bool(request.get("year"))
-
-
-def _public_key(key: str) -> bool:
-    return key.casefold() not in _DROP_KEYS and re.fullmatch(r"[A-Z][A-Z0-9_]{2,}", key) is None
-
-
-def _public_field_name(key: str) -> str | None:
-    if key in _PUBLIC_FIELD_ALIASES:
-        return _PUBLIC_FIELD_ALIASES[key]
-    return key if _public_key(key) else None
-
 
 def _select_usable_results(
     plan: PlannerOutput,
@@ -439,14 +323,6 @@ SOURCE_ORDER = {
     "web": 5,
     "patent": 6,
 }
-
-
-def _matches_requested_anchor(value: Any, query: str) -> bool:
-    anchors = set(re.findall(r"NCT\d{8}|(?:19|20)\d{2}|[A-Z]\d{2,3}", query, re.IGNORECASE))
-    if not anchors:
-        return False
-    serialized = json.dumps(value, ensure_ascii=False, default=str).casefold()
-    return any(anchor.casefold() in serialized for anchor in anchors)
 
 
 def _markdown_tables(value: Any) -> tuple[str, ...]:
@@ -586,9 +462,21 @@ def _coverage_notices(results: Sequence[SourceResult]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(notices))
 
 
-def _evidence_fallback(results: Sequence[SourceResult]) -> str:
+def _evidence_fallback(
+    results: Sequence[SourceResult],
+    *,
+    question: str = "",
+) -> str:
     paragraphs: list[str] = []
     for result in results:
+        if result.source == "mart":
+            history = _mart_history_fallback(
+                result.payload,
+                question=question or result.query,
+            )
+            if history:
+                paragraphs.append(history)
+                continue
         if result.source == "hira":
             patient_facts = _hira_patient_facts(result.payload)
             if patient_facts:
@@ -607,6 +495,88 @@ def _evidence_fallback(results: Sequence[SourceResult]) -> str:
     if not paragraphs:
         return "조회는 완료됐지만 답변 본문에 제시할 수 있는 상세 근거를 확인하지 못했습니다."
     return "\n\n".join(paragraphs)
+
+
+def _mart_history_fallback(payload: Any, *, question: str) -> str:
+    if not isinstance(payload, Mapping) or not isinstance(payload.get("calls"), list):
+        return ""
+    market_requested = "시장 규모" in question.casefold() or "시장규모" in question.casefold()
+    series_key = "market_size_series" if market_requested else "brand_value_series_10pt"
+    for call in payload["calls"]:
+        if not isinstance(call, Mapping):
+            continue
+        render = call.get("render_data")
+        if not isinstance(render, Mapping):
+            continue
+        series = render.get(series_key)
+        if not isinstance(series, list):
+            continue
+        points = [
+            item
+            for item in series
+            if isinstance(item, Mapping)
+            and item.get("period") not in (None, "")
+            and item.get("value_억원") not in (None, "")
+        ]
+        if len(points) < 2:
+            continue
+        selected = [
+            item
+            for index, item in enumerate(points)
+            if index == 0
+            or str(item["period"]).endswith("-12")
+            or index == len(points) - 1
+        ]
+        if len(selected) < 2:
+            continue
+        first = selected[0]
+        last = selected[-1]
+        first_period = str(first["period"])
+        last_period = str(last["period"])
+        first_value = str(first["value_억원"])
+        last_value = str(last["value_억원"])
+        brand = str(render.get("brand") or "브랜드")
+        metric = f"{brand} 전략 시장 규모" if market_requested else f"{brand} 매출"
+        particle = "는" if market_requested else "은"
+        direction = _mart_history_direction(first_value, last_value)
+        duration = _mart_history_year_span(first_period, last_period)
+        prose = (
+            f"{metric}{particle} {_mart_history_period(first_period)} {first_value}억원에서 "
+            f"{_mart_history_period(last_period)} {last_value}억원으로 "
+            f"{duration}년간 {direction}했습니다. [출처: 내부 데이터마트]"
+        )
+        yearly = "연도별: " + " · ".join(
+            f"{_mart_history_period(str(item['period']))} {item['value_억원']}억원"
+            for item in selected
+        )
+        return f"{prose}\n{yearly}"
+    return ""
+
+
+def _mart_history_period(period: str) -> str:
+    match = re.fullmatch(r"(\d{4})-(\d{2})", period)
+    if match is None:
+        return period
+    return f"{match.group(1)}년 {int(match.group(2))}월"
+
+
+def _mart_history_year_span(first_period: str, last_period: str) -> int:
+    first_year = int(first_period[:4]) if first_period[:4].isdigit() else 0
+    last_year = int(last_period[:4]) if last_period[:4].isdigit() else first_year
+    return max(0, last_year - first_year)
+
+
+def _mart_history_direction(first_value: str, last_value: str) -> str:
+    try:
+        first = Decimal(first_value.replace(",", ""))
+        last = Decimal(last_value.replace(",", ""))
+    except InvalidOperation:
+        return "변화"
+    if last > first:
+        return "증가"
+    if last < first:
+        return "감소"
+    return "유지"
 
 
 def _hira_patient_facts(payload: Any) -> tuple[str, ...]:

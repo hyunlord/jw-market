@@ -314,6 +314,54 @@ def test_v4_fallback_uses_mart_display_summary_not_raw_won_value() -> None:
     assert "8587458961.25" not in answer
 
 
+def test_v4_synthesis_failure_prefers_mart_history_over_snapshot_summary() -> None:
+    class Client:
+        def complete_detailed(self, _messages, *, budget_s=None, max_tokens=None):
+            raise TimeoutError("synthesis deadline")
+
+    plan = _plan().model_copy(
+        update={"resolved_question": "리바로젯 매출은 어떻게 변해왔어?"}
+    )
+    result = SourceResult(
+        source="mart",
+        query="리바로젯 매출 추이",
+        status="ok",
+        payload={
+            "calls": [
+                {
+                    "summary_text": "리바로젯 2026-06 매출은 124.54억원입니다.",
+                    "render_data": {
+                        "brand": "리바로젯",
+                        "brand_value_series_10pt": [
+                            {"period": "2022-12", "value_억원": "91.20"},
+                            {"period": "2023-12", "value_억원": "101.35"},
+                            {"period": "2024-12", "value_억원": "110.08"},
+                            {"period": "2025-12", "value_억원": "119.77"},
+                            {"period": "2026-06", "value_억원": "124.54"},
+                        ],
+                    },
+                }
+            ]
+        },
+    )
+
+    outcome = V4Synthesizer(Client()).synthesize_with_trace(
+        plan, (result,), (), budget_s=24.0
+    )
+
+    assert (
+        "리바로젯 매출은 2022년 12월 91.20억원에서 "
+        "2026년 6월 124.54억원으로 4년간 증가했습니다."
+    ) in outcome.text
+    assert (
+        "연도별: 2022년 12월 91.20억원 · 2023년 12월 101.35억원 · "
+        "2024년 12월 110.08억원 · 2025년 12월 119.77억원 · "
+        "2026년 6월 124.54억원"
+    ) in outcome.text
+    assert "리바로젯 2026-06 매출은" not in outcome.text
+    assert outcome.trace["fallback_reason"] == "empty_or_transport_error"
+
+
 def test_v4_synthesizer_sends_detail_rows_in_question_first_layout() -> None:
     class Client:
         def __init__(self) -> None:
@@ -413,7 +461,7 @@ def test_v4_surface_detects_broad_log_field_and_raw_won_patterns(leak: str) -> N
     assert _INTERNAL_SURFACE_RE.search(leak)
 
 
-def test_v4_synthesis_prompt_preserves_source_body_but_omits_record_fields() -> None:
+def test_v4_synthesis_prompt_preserves_source_payload_verbatim() -> None:
     result = SourceResult(
         source="nedrug",
         query="아일리아 급여기준",
@@ -439,18 +487,18 @@ def test_v4_synthesis_prompt_preserves_source_body_but_omits_record_fields() -> 
     serialized = messages[-1]["content"]
     system = messages[0]["content"]
 
-    assert "ITEM_SEQ" not in serialized
-    assert "ENTP_SEQ" not in serialized
-    assert "PRDLST_STDR_CODE" not in serialized
-    assert "sickCd" not in serialized
-    assert "ptntCnt" not in serialized
+    assert '"ITEM_SEQ": "200101234"' in serialized
+    assert '"ENTP_SEQ": "vendor-record"' in serialized
+    assert '"PRDLST_STDR_CODE": "raw-code"' in serialized
+    assert '"sickCd": "D693"' in serialized
+    assert '"ptntCnt": "9231"' in serialized
     assert "다운로드 후 담당부서로 연락주시기 바랍니다." in serialized
     assert "## 핵심 답" in system
     assert "한 문단은 최대 4문장" in system
     assert "다운로드 안내문" in system
 
 
-def test_v4_synthesis_projects_reexamination_fields_with_public_names() -> None:
+def test_v4_synthesis_preserves_reexamination_source_fields_verbatim() -> None:
     result = SourceResult(
         source="nedrug",
         query="리바로젯 재심사 종료일",
@@ -475,10 +523,9 @@ def test_v4_synthesis_projects_reexamination_fields_with_public_names() -> None:
 
     serialized = v4_synthesizer._synthesis_messages(_plan(), (result,), ())[-1]["content"]
 
-    assert '"product_name": "리바로젯정2/10밀리그램"' in serialized
-    assert '"reexamination_period": "2021-07-28~2027-07-27"' in serialized
-    assert '"reexamination_target": "재심사대상(6년)"' in serialized
-    assert "REEXAM_DATE" not in serialized
+    assert '"ITEM_NAME": "리바로젯정2/10밀리그램"' in serialized
+    assert '"REEXAM_DATE": "2021-07-28~2027-07-27"' in serialized
+    assert '"REEXAM_TARGET": "재심사대상(6년)"' in serialized
 
 
 def test_v4_synthesis_labels_hira_patient_fields_and_units_in_korean() -> None:
@@ -509,12 +556,15 @@ def test_v4_synthesis_labels_hira_patient_fields_and_units_in_korean() -> None:
     serialized = messages[-1]["content"]
     system = messages[0]["content"]
 
-    assert '"상병코드": "D693"' in serialized
-    assert '"환자수(명)": "1606"' in serialized
-    assert '"명세서건수(건)": "3301"' in serialized
-    assert '"방문일수(일)": "12152"' in serialized
-    assert '"요양급여비용총액(원)": "9986518000"' in serialized
-    assert all(field not in serialized for field in ("sickCd", "ptntCnt", "specCnt", "vstDdcnt"))
+    assert '"sickCd": "D693"' in serialized
+    assert '"ptntCnt": "1606"' in serialized
+    assert '"specCnt": "3301"' in serialized
+    assert '"vstDdcnt": "12152"' in serialized
+    assert '"rvdRpeTamtAmt": "9986518000"' in serialized
+    assert '"ptntCnt": "환자수(명)"' in serialized
+    assert '"specCnt": "명세서건수(건)"' in serialized
+    assert '"vstDdcnt": "방문일수(일)"' in serialized
+    assert '"rvdRpeTamtAmt": "요양급여비용총액(원)"' in serialized
     assert "환자수는 `환자수(명)` 값만 사용" in system
 
 
@@ -891,11 +941,46 @@ def test_exact_nct_link_uses_only_first_result_canonical_entity() -> None:
     assert any("Vamikibart" in query for query in queries)
 
 
+def test_exact_product_code_lock_removes_planner_invented_entities() -> None:
+    contaminated = _plan().model_copy(
+        update={
+            "resolved_question": "품목기준코드 201306324 허가사항",
+            "tool_queries": ToolQueries(
+                **{source: ("가짜약품 가짜회사 당뇨",) for source in SOURCE_NAMES}
+            ),
+            "needs_second_hop": False,
+        }
+    )
+
+    class Client:
+        serving_id = "190"
+
+        def complete(self, _messages, *, budget_s=None) -> str:
+            return contaminated.model_dump_json()
+
+    plan = V4Planner(Client()).plan("품목기준코드 201306324 허가사항", ())
+    queries = tuple(query for _, values in plan.tool_queries.items() for query in values)
+
+    assert plan.answer_sources == ("nedrug",)
+    assert plan.needs_second_hop is True
+    assert all("201306324" in query for query in queries)
+    assert all("가짜약품" not in query and "가짜회사" not in query for query in queries)
+
+
 def test_v4_evidence_envelope_is_typed_and_source_specific() -> None:
     hira = v4_adapters._evidence_envelope(
         "hira",
         "D693 환자수 2024",
-        {"calls": [{"render_data": {"request": {"year": "2024"}}}]},
+        {
+            "calls": [
+                {
+                    "render_data": {
+                        "request": {"year": "2024"},
+                        "items": [{"ptntCnt": "9231"}],
+                    }
+                }
+            ]
+        },
     )
     clinical = v4_adapters._evidence_envelope(
         "clinicaltrials",
@@ -917,12 +1002,144 @@ def test_v4_evidence_envelope_is_typed_and_source_specific() -> None:
     assert hira.kind == "hira"
     assert hira.metric_type == "patient_count"
     assert hira.period == ("2024",)
+    assert hira.eligible_claims == ("patient_count",)
     assert hira.causal is False
     assert clinical.kind == "clinical"
     assert clinical.phase == ("PHASE2",)
     assert clinical.recruitment_status == "COMPLETED"
     assert nedrug.kind == "nedrug"
     assert nedrug.product == ("리바로정",)
+    assert nedrug.eligible_claims == ("approval",)
+
+
+def test_v4_evidence_envelope_grants_claims_only_from_matching_payload_fields() -> None:
+    reimbursement = v4_adapters._evidence_envelope(
+        "hira",
+        "아일리아 급여기준",
+        {
+            "calls": [
+                {
+                    "tool": "hira_reimbursement_criteria",
+                    "render_data": {"criteria": "투여 기준 본문"},
+                }
+            ]
+        },
+    )
+    patent = v4_adapters._evidence_envelope(
+        "nedrug",
+        "리바로 특허",
+        {
+            "calls": [
+                {
+                    "tool": "nedrug_patent_search",
+                    "render_data": {"patent_expiry": "2030-01-01"},
+                }
+            ]
+        },
+    )
+
+    assert reimbursement.eligible_claims == ("reimbursement",)
+    assert patent.eligible_claims == ("patent",)
+
+
+def test_v4_claim_eligibility_guard_blocks_source_tag_without_matching_claim() -> None:
+    result = SourceResult(
+        source="nedrug",
+        query="리바로 특허",
+        status="ok",
+        payload={"calls": [{"render_data": {"ITEM_NAME": "리바로정"}}]},
+        evidence=EvidenceEnvelope(
+            kind="nedrug",
+            entity_match="EXACT",
+            source_scope="KR",
+            time_match="NOT_REQUESTED",
+            eligible_claims=("approval", "label"),
+            causal=False,
+        ),
+    )
+
+    gated = apply_v4_gates(
+        "리바로 특허 언제 만료돼?",
+        "## 핵심 답\n리바로 특허는 2030년에 만료됩니다. [출처: 식품의약품안전처]",
+        (result,),
+    )
+
+    assert "2030년에 만료" not in gated.text
+    assert "현재 근거 자격으로 확인되지 않았습니다" in gated.text
+    assert gated.trace["claim_eligibility_guard"]["blocked"] is True
+    assert gated.trace["claim_eligibility_guard"]["unsupported_claims"] == ["patent"]
+
+
+def test_v4_claim_eligibility_guard_keeps_matching_source_claim() -> None:
+    result = SourceResult(
+        source="nedrug",
+        query="리바로 특허",
+        status="ok",
+        payload={"calls": [{"render_data": {"patent_expiry": "2030-01-01"}}]},
+        evidence=EvidenceEnvelope(
+            kind="nedrug",
+            entity_match="EXACT",
+            source_scope="KR",
+            time_match="NOT_REQUESTED",
+            eligible_claims=("patent",),
+            causal=False,
+        ),
+    )
+
+    gated = apply_v4_gates(
+        "리바로 특허 언제 만료돼?",
+        "## 핵심 답\n리바로 특허는 2030년에 만료됩니다. [출처: 식품의약품안전처]",
+        (result,),
+    )
+
+    assert "2030년에 만료" in gated.text
+    assert gated.trace["claim_eligibility_guard"]["blocked"] is False
+
+
+def test_v4_claim_eligibility_guard_blocks_untagged_claim_without_typed_support() -> None:
+    payload = {"calls": [{"render_data": {"ITEM_NAME": "리바로정"}}]}
+    result = SourceResult(
+        source="nedrug",
+        query="리바로 허가",
+        status="ok",
+        payload=payload,
+        evidence=v4_adapters._evidence_envelope("nedrug", "리바로 허가", payload),
+    )
+
+    gated = apply_v4_gates(
+        "리바로 특허 언제 만료돼?",
+        "## 핵심 답\n리바로 특허는 2030년에 만료됩니다.",
+        (result,),
+    )
+
+    assert "2030년에 만료" not in gated.text
+    assert "현재 근거 자격으로 확인되지 않았습니다" in gated.text
+    assert gated.trace["claim_eligibility_guard"]["blocked"] is True
+    assert gated.trace["claim_eligibility_guard"]["unsupported_claims"] == ["patent"]
+
+
+def test_v4_claim_eligibility_guard_does_not_let_notice_mask_unsupported_claim() -> None:
+    payload = {"calls": [{"render_data": {"items": [{"ptntCnt": "9231"}]}}]}
+    result = SourceResult(
+        source="hira",
+        query="D693 환자수",
+        status="ok",
+        payload=payload,
+        evidence=v4_adapters._evidence_envelope("hira", "D693 환자수", payload),
+    )
+
+    gated = apply_v4_gates(
+        "리바로 특허 언제 만료돼?",
+        (
+            "## 핵심 답\n리바로 특허는 2030년에 만료됩니다.\n"
+            "- HIRA 환자수는 주상병 기준 청구 실인원이며 유병률과 다릅니다."
+        ),
+        (result,),
+    )
+
+    assert "2030년에 만료" not in gated.text
+    assert gated.trace["claim_eligibility_guard"]["blocked"] is True
+    assert gated.trace["claim_eligibility_guard"]["unsupported_claims"] == ["patent"]
 
 
 def test_v4_trend_query_requests_history_from_query_layer() -> None:
@@ -1181,6 +1398,40 @@ def test_mart_synthesis_input_keeps_long_history_fields_after_scalar_metadata() 
     assert '"brand_value_series_10pt"' in mart_block
     assert '"2025-12"' in mart_block
     assert '"series_insight"' in mart_block
+
+
+def test_synthesis_input_keeps_every_raw_payload_key_and_row() -> None:
+    late_rows = [
+        {"ordinal": index, "body": f"고시 본문 원문 {index}"}
+        for index in range(12)
+    ]
+    payload = {
+        "calls": [
+            {
+                "status": "live",
+                "render_data": {
+                    **{f"metadata_{index}": f"value-{index}" for index in range(24)},
+                    "items": late_rows,
+                    "notice": "첨부파일 다운로드 안내도 원문 일부입니다.",
+                },
+            }
+        ],
+        "tail_sentinel": "payload-tail-preserved",
+    }
+    result = SourceResult(
+        source="hira",
+        query="아일리아 급여기준",
+        status="ok",
+        payload=payload,
+    )
+
+    messages = v4_synthesizer._synthesis_messages(_plan(), (result,), ())
+    prompt = json.loads(messages[-1]["content"])
+    packet = prompt["external_evidence"][0]
+
+    assert packet["detail"] == payload
+    assert packet["detail"]["calls"][0]["render_data"]["items"][-1] == late_rows[-1]
+    assert packet["detail"]["tail_sentinel"] == "payload-tail-preserved"
 
 
 def test_hira_coverage_notices_are_trace_metadata_not_answer_body() -> None:
@@ -2250,6 +2501,54 @@ def test_v4_gates_render_existing_mart_history_points_when_synthesis_is_blocked(
     assert "| 2021-07 | 69.24억원 | 1446.74억원 |" in gated.text
     assert "| 2026-06 | 85.87억원 | 2308.33억원 |" in gated.text
     assert "99.99" not in gated.text
+
+
+def test_v4_gates_use_market_series_for_market_size_trend_fallback() -> None:
+    results = (
+        SourceResult(
+            source="mart",
+            query="리바로 시장 규모 추이",
+            status="ok",
+            payload={
+                "calls": [
+                    {
+                        "render_data": {
+                            "brand": "리바로",
+                            "brand_value_series_10pt": [
+                                {"period": "2022-12", "value_억원": 77.73},
+                                {"period": "2026-06", "value_억원": 85.87},
+                            ],
+                            "market_size_series": [
+                                {"period": "2022-12", "value_억원": 1743.44},
+                                {"period": "2023-12", "value_억원": 1901.22},
+                                {"period": "2024-12", "value_억원": 2077.31},
+                                {"period": "2025-12", "value_억원": 2244.08},
+                                {"period": "2026-06", "value_억원": 2308.33},
+                            ],
+                        }
+                    }
+                ]
+            },
+        ),
+    )
+
+    gated = apply_v4_gates(
+        "리바로 시장 규모가 지금 얼마고 어떻게 변해왔어?",
+        "리바로 시장 규모는 9999억원입니다.",
+        results,
+    )
+
+    assert (
+        "리바로 전략 시장 규모는 2022년 12월 1743.44억원에서 "
+        "2026년 6월 2308.33억원으로 4년간 증가했습니다."
+    ) in gated.text
+    assert (
+        "연도별: 2022년 12월 1743.44억원 · 2023년 12월 1901.22억원 · "
+        "2024년 12월 2077.31억원 · 2025년 12월 2244.08억원 · "
+        "2026년 6월 2308.33억원"
+    ) in gated.text
+    assert "리바로 매출은" not in gated.text
+    assert "9999" not in gated.text
 
 
 def test_v4_base_query_removes_patent_planner_suffix() -> None:

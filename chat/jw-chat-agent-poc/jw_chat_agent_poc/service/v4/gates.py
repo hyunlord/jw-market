@@ -25,20 +25,53 @@ _MART_VALUE_PATTERNS: dict[str, re.Pattern[str]] = {
         rf"(?:성장률\s*(?:은|는|이|가|:)?\s*(?:약\s*)?(?P<after>{_VALUE})|"
         rf"(?P<before>{_VALUE})\s*(?:%|퍼센트))"
     ),
+    "시장 규모": re.compile(
+        rf"시장\s*규모\s*(?:은|는|이|가|:)?\s*(?:약\s*)?(?P<after>{_VALUE})\s*(?:억원?|원|KRW)?",
+        re.IGNORECASE,
+    ),
     "순위": re.compile(r"(?P<value>\d[\d,]*)\s*위"),
     "hhi": re.compile(r"(?:HHI\D{0,12}(?P<after>\d[\d,]*(?:\.\d+)?)|(?P<before>\d[\d,]*(?:\.\d+)?)\D{0,4}HHI)", re.IGNORECASE),
 }
-_MART_TERMS = ("매출", "점유율", "순위", "hhi", "성장률")
+_MART_TERMS = ("매출", "점유율", "순위", "hhi", "성장률", "시장 규모", "시장규모")
 _METRIC_FIELDS: dict[str, tuple[str, ...]] = {
     "매출": ("sales", "amount", "value"),
     "점유율": ("share", "percentage", "percent", "pct"),
     "순위": ("rank",),
     "hhi": ("hhi",),
     "성장률": ("growth", "yoy", "cagr", "delta"),
+    "시장 규모": ("market_size", "market_value", "value"),
 }
 _CONTEXT_FIELDS = ("period", "year", "month", "yyyymm")
 _CONFIRMED_CAUSE_RE = re.compile(
     r"[^.\n]*(?:원인으로\s*확인|때문인\s*것으로\s*확인|원인은)[^.\n]*(?:\.|$)"
+)
+_CLAIM_PATTERNS: dict[str, re.Pattern[str]] = {
+    "patient_count": re.compile(r"환자\s*수|청구\s*실인원"),
+    "cost": re.compile(r"진료비|요양급여비용|보험자부담금"),
+    "reimbursement": re.compile(r"급여\s*기준|투여\s*기준|고시"),
+    "approval": re.compile(r"(?:허가|승인)(?:일|현황|되|받|됨)"),
+    "label": re.compile(r"효능\s*효과|적응증|용법|용량|주의사항"),
+    "patent": re.compile(r"특허|재심사|만료"),
+    "study_design": re.compile(r"시험\s*디자인|무작위|눈가림|맹검"),
+    "phase": re.compile(r"(?:1|2|3|4)상|PHASE", re.IGNORECASE),
+    "recruitment_status": re.compile(r"모집\s*상태|진행\s*중|완료|철회"),
+    "enrollment": re.compile(r"등록\s*(?:수|인원)|피험자\s*수"),
+    "eligibility": re.compile(r"선정\s*기준|제외\s*기준|선정제외기준"),
+}
+_SOURCE_TAG_ALIASES: dict[str, tuple[str, ...]] = {
+    "mart": ("내부 데이터마트", "mart"),
+    "nedrug": ("식품의약품안전처", "식약처", "nedrug"),
+    "hira": ("hira", "건강보험심사평가원"),
+    "openfda": ("fda", "openfda"),
+    "clinicaltrials": ("clinicaltrials.gov", "clinicaltrials"),
+    "web": ("웹 자료", "web"),
+    "patent": ("특허 자료", "patent"),
+}
+_AUTOMATIC_SAFETY_NOTICES = (
+    "HIRA 환자수는 주상병 기준 청구 실인원이며 유병률과 다릅니다.",
+    "FAERS/OpenFDA는 자발적 보고 자료로 인과관계나 발생률 산출에 쓸 수 없습니다.",
+    "ClinicalTrials.gov 모집상태는 갱신이 지연될 수 있습니다.",
+    "특허 존속기간 만료가 곧 제네릭 진입 시점을 뜻하지 않습니다.",
 )
 
 
@@ -76,7 +109,11 @@ def apply_v4_gates(
     answer_numbers = _answer_mart_metric_numbers(text, question)
     invented = sorted(token for token in answer_numbers if _normalize_number(token) not in allowed)
     if invented and mart_results and mart_numeric_question:
-        text = _render_mart_facts(mart_results, allowed_fields=metric_fields)
+        text = _render_mart_facts(
+            mart_results,
+            question=question,
+            allowed_fields=metric_fields,
+        )
         trace["mart_numeric_copy_only"] = {"blocked": True, "tokens": invented}
     else:
         trace["mart_numeric_copy_only"] = {"blocked": False, "tokens": []}
@@ -94,7 +131,11 @@ def apply_v4_gates(
         "cross_source_sum"
     ]["blocked"]
     if metric_missing and can_repair:
-        verified_summary = _render_mart_facts(mart_results, allowed_fields=metric_fields)
+        verified_summary = _render_mart_facts(
+            mart_results,
+            question=question,
+            allowed_fields=metric_fields,
+        )
         text = f"{verified_summary}\n\n{text}".strip()
     trace["requested_metric_surface"] = {
         "repaired": metric_missing and can_repair,
@@ -134,7 +175,11 @@ def apply_v4_gates(
             for block in re.split(r"\n\s*\n", text)
             if block.strip() and not _RAW_WON_RE.search(block)
         ]
-        verified_summary = _render_mart_facts(mart_results, allowed_fields=metric_fields)
+        verified_summary = _render_mart_facts(
+            mart_results,
+            question=question,
+            allowed_fields=metric_fields,
+        )
         text = "\n\n".join(dict.fromkeys((verified_summary, *retained)))
     trace["surface_raw_won"] = {"blocked": raw_won_blocked}
 
@@ -155,7 +200,11 @@ def apply_v4_gates(
                 for match in _PERCENT_RE.finditer(block)
             )
         ]
-        verified_summary = _render_mart_facts(mart_results, allowed_fields=metric_fields)
+        verified_summary = _render_mart_facts(
+            mart_results,
+            question=question,
+            allowed_fields=metric_fields,
+        )
         text = "\n\n".join(dict.fromkeys((verified_summary, *retained)))
     trace["surface_mart_percentage"] = {
         "blocked": bool(exposed_raw_percentages),
@@ -172,6 +221,9 @@ def apply_v4_gates(
         "blocked": subset_scope_blocked,
         "reason": "generic_product_set_unresolved" if subset_scope_blocked else None,
     }
+
+    text, claim_trace = _enforce_claim_eligibility(text, results)
+    trace["claim_eligibility_guard"] = claim_trace
 
     text = _append_sources(text, results)
     trace["sources_block"] = {"present": "## 출처" in text}
@@ -356,9 +408,10 @@ def _without_numbers(text: str) -> str:
 def _render_mart_facts(
     results: tuple[SourceResult, ...],
     *,
+    question: str,
     allowed_fields: tuple[str, ...],
 ) -> str:
-    history = _render_mart_history(results)
+    history = _render_mart_history(results, question)
     if history:
         return history
 
@@ -398,9 +451,14 @@ def _render_mart_facts(
     return "확인된 내부 데이터마트 지표는 " + ", ".join(dict.fromkeys(facts[:20])) + "입니다."
 
 
-def _render_mart_history(results: tuple[SourceResult, ...]) -> str:
+def _render_mart_history(results: tuple[SourceResult, ...], question: str) -> str:
+    trend_requested = any(
+        token in question.casefold()
+        for token in ("추이", "시계열", "최근 5년", "최근5년", "변해", "변화", "변동")
+    )
+    market_requested = "시장 규모" in question.casefold() or "시장규모" in question.casefold()
     for result in results:
-        if not any(
+        if not trend_requested and not any(
             token in result.query.casefold()
             for token in ("추이", "시계열", "최근 5년", "최근5년", "변해", "변화", "변동")
         ):
@@ -413,9 +471,21 @@ def _render_mart_history(results: tuple[SourceResult, ...]) -> str:
             if not isinstance(render_data, dict):
                 continue
             brand_series = render_data.get("brand_value_series_10pt")
-            if not isinstance(brand_series, list) or len(brand_series) < 2:
-                continue
             market_series = render_data.get("market_size_series")
+            if not isinstance(brand_series, list):
+                brand_series = []
+            if not isinstance(market_series, list):
+                market_series = []
+            main_series = market_series if market_requested else brand_series
+            if len(main_series) < 2:
+                continue
+            brand_by_period = {
+                str(item.get("period")): item.get("value_억원")
+                for item in brand_series
+                if isinstance(item, dict)
+                and item.get("period")
+                and item.get("value_억원") is not None
+            }
             market_by_period = (
                 {
                     str(item.get("period")): item.get("value_억원")
@@ -424,24 +494,26 @@ def _render_mart_history(results: tuple[SourceResult, ...]) -> str:
                     and item.get("period")
                     and item.get("value_억원") is not None
                 }
-                if isinstance(market_series, list)
+                if market_series
                 else {}
             )
             selected = [
                 item
-                for index, item in enumerate(brand_series)
+                for index, item in enumerate(main_series)
                 if isinstance(item, dict)
                 and item.get("period")
                 and item.get("value_억원") is not None
                 and (
                     index == 0
                     or str(item.get("period")).endswith("-12")
-                    or index == len(brand_series) - 1
+                    or index == len(main_series) - 1
                 )
             ]
             if len(selected) < 2:
                 continue
             brand = str(render_data.get("brand") or "브랜드")
+            metric_label = f"{brand} 전략 시장 규모" if market_requested else f"{brand} 매출"
+            subject_particle = "는" if market_requested else "은"
             first = selected[0]
             last = selected[-1]
             first_period = str(first["period"])
@@ -451,7 +523,7 @@ def _render_mart_history(results: tuple[SourceResult, ...]) -> str:
             duration = _history_year_span(first_period, last_period)
             direction = _history_direction(first_value, last_value)
             prose = (
-                f"{brand} 매출은 {_display_history_period(first_period)} {first_value}억원에서 "
+                f"{metric_label}{subject_particle} {_display_history_period(first_period)} {first_value}억원에서 "
                 f"{_display_history_period(last_period)} {last_value}억원으로 "
                 f"{duration}년간 {direction}했습니다. [출처: 내부 데이터마트]"
             )
@@ -462,12 +534,75 @@ def _render_mart_history(results: tuple[SourceResult, ...]) -> str:
             lines = [f"| 기간 | {brand} 매출 | 시장 규모 |", "| --- | ---: | ---: |"]
             for item in selected:
                 period = str(item["period"])
-                brand_value = item["value_억원"]
+                brand_value = brand_by_period.get(period)
                 market_value = market_by_period.get(period)
+                brand_display = f"{brand_value}억원" if brand_value is not None else "확인되지 않음"
                 market_display = f"{market_value}억원" if market_value is not None else "확인되지 않음"
-                lines.append(f"| {period} | {brand_value}억원 | {market_display} |")
+                lines.append(f"| {period} | {brand_display} | {market_display} |")
             return prose + "\n\n" + yearly + "\n\n" + "\n".join(lines)
     return ""
+
+
+def _enforce_claim_eligibility(
+    text: str,
+    results: tuple[SourceResult, ...],
+) -> tuple[str, dict[str, Any]]:
+    source_claims: list[tuple[tuple[str, ...], set[str]]] = []
+    for result in results:
+        if result.status != "ok" or result.evidence is None:
+            continue
+        source_claims.append(
+            (
+                tuple(alias.casefold() for alias in _SOURCE_TAG_ALIASES[result.source]),
+                set(result.evidence.eligible_claims),
+            )
+        )
+    available_claims = set().union(*(claims for _, claims in source_claims))
+
+    unsupported: set[str] = set()
+    blocked_blocks = 0
+    output: list[str] = []
+    for block in re.split(r"(\n\s*\n)", text):
+        if not block.strip() or re.fullmatch(r"\n\s*\n", block):
+            output.append(block)
+            continue
+        tags = tuple(
+            match.group(1).casefold()
+            for match in re.finditer(r"\[출처:\s*([^\]]+)\]", block)
+        )
+        required = {
+            claim
+            for claim, pattern in _CLAIM_PATTERNS.items()
+            if pattern.search(block)
+        }
+        notice_lines = tuple(line.strip() for line in block.splitlines() if line.strip())
+        if notice_lines and all(
+            line.startswith("- ") and line[2:].strip() in _AUTOMATIC_SAFETY_NOTICES
+            for line in notice_lines
+        ):
+            required.clear()
+        supported: set[str] = set()
+        if tags:
+            for aliases, claims in source_claims:
+                if any(alias in tag for alias in aliases for tag in tags):
+                    supported.update(claims)
+        else:
+            supported.update(available_claims)
+        missing = required - supported
+        if not missing:
+            output.append(block)
+            continue
+        unsupported.update(missing)
+        blocked_blocks += 1
+        headings = [line for line in block.splitlines() if line.strip().startswith("## ")]
+        replacement = "\n".join((*headings, "해당 주장은 현재 근거 자격으로 확인되지 않았습니다."))
+        output.append(replacement)
+
+    return "".join(output).strip(), {
+        "blocked": blocked_blocks > 0,
+        "blocked_blocks": blocked_blocks,
+        "unsupported_claims": sorted(unsupported),
+    }
 
 
 def _display_history_period(period: str) -> str:

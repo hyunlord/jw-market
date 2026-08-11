@@ -22,6 +22,10 @@ from jw_chat_agent_poc.service.v4.llm import CompletionResult, GenOSV4Client
 
 _JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
 _NCT_ANCHOR_RE = re.compile(r"\bNCT\d{8}\b", re.IGNORECASE)
+_PRODUCT_CODE_ANCHOR_RE = re.compile(
+    r"(?:품목기준코드|품목일련번호|ITEM_SEQ|PRDLST_STDR_CODE)\s*[:#]?\s*([A-Za-z0-9-]{6,32})",
+    re.IGNORECASE,
+)
 _KCD_ANCHOR_RE = re.compile(r"(?<![A-Za-z0-9])([A-Za-z]\d{2}(?:\.?\d)?)(?![A-Za-z0-9])")
 
 
@@ -163,6 +167,9 @@ def _exact_anchor(question: str) -> str | None:
     nct = _NCT_ANCHOR_RE.search(question)
     if nct:
         return nct.group(0).upper()
+    product_code = _PRODUCT_CODE_ANCHOR_RE.search(question)
+    if product_code:
+        return product_code.group(1).upper()
     kcd = _KCD_ANCHOR_RE.search(question)
     if kcd:
         return kcd.group(1).replace(".", "").upper()
@@ -173,6 +180,8 @@ def _lock_exact_anchor(question: str, plan: PlannerOutput) -> PlannerOutput:
     anchor = _exact_anchor(question)
     if not anchor:
         return plan
+    is_nct = anchor.startswith("NCT")
+    is_product_code = _PRODUCT_CODE_ANCHOR_RE.search(question) is not None
     suffixes = {
         "mart": "내부 시장 데이터",
         "nedrug": "국내 허가 정보",
@@ -183,7 +192,11 @@ def _lock_exact_anchor(question: str, plan: PlannerOutput) -> PlannerOutput:
         "patent": "특허 공식 자료",
     }
     answer_sources: tuple[SourceName, ...] = (
-        ("clinicaltrials",) if anchor.startswith("NCT") else plan.answer_sources
+        ("clinicaltrials",)
+        if is_nct
+        else ("nedrug",)
+        if is_product_code
+        else plan.answer_sources
     )
     return plan.model_copy(
         update={
@@ -191,7 +204,7 @@ def _lock_exact_anchor(question: str, plan: PlannerOutput) -> PlannerOutput:
             "tool_queries": ToolQueries(
                 **{source: (f"{anchor} {suffixes[source]}",) for source in SOURCE_NAMES}
             ),
-            "needs_second_hop": anchor.startswith("NCT"),
+            "needs_second_hop": is_nct or is_product_code,
         }
     )
 
@@ -201,7 +214,10 @@ def _lock_linked_anchor(
     linked: PlannerOutput,
     first_results: Sequence[SourceResult],
 ) -> PlannerOutput:
-    entities = _canonical_anchor_entities(first_results)
+    entities = _canonical_anchor_entities(
+        first_results,
+        source="clinicaltrials" if anchor.startswith("NCT") else "nedrug",
+    )
     subject = " ".join((anchor, *entities[:3]))
     suffixes = {
         "mart": "내부 시장 데이터",
@@ -221,20 +237,32 @@ def _lock_linked_anchor(
     )
 
 
-def _canonical_anchor_entities(results: Sequence[SourceResult]) -> tuple[str, ...]:
+def _canonical_anchor_entities(
+    results: Sequence[SourceResult],
+    *,
+    source: SourceName = "clinicaltrials",
+) -> tuple[str, ...]:
     found: list[str] = []
 
     def walk(value: Any, path: tuple[str, ...] = ()) -> None:
         if isinstance(value, dict):
             for key, item in value.items():
                 current = (*path, str(key).casefold())
-                if (
-                    isinstance(item, str)
-                    and item.strip()
-                    and (
-                        str(key).casefold() == "interventionname"
-                        or ("interventions" in current and str(key).casefold() == "name")
-                    )
+                leaf = str(key).casefold()
+                clinical_entity = leaf == "interventionname" or (
+                    "interventions" in current and leaf == "name"
+                )
+                product_entity = leaf in {
+                    "item_name",
+                    "product_name",
+                    "item_ingr_name",
+                    "ingredient",
+                    "entp_name",
+                    "manufacturer",
+                    "company",
+                }
+                if isinstance(item, str) and item.strip() and (
+                    clinical_entity if source == "clinicaltrials" else product_entity
                 ):
                     found.append(item.strip())
                 walk(item, current)
@@ -243,7 +271,7 @@ def _canonical_anchor_entities(results: Sequence[SourceResult]) -> tuple[str, ..
                 walk(item, path)
 
     for result in results:
-        if result.source == "clinicaltrials" and result.status == "ok":
+        if result.source == source and result.status == "ok":
             walk(result.payload)
     return tuple(dict.fromkeys(found))
 

@@ -192,6 +192,18 @@ def _walk_named_values(value: Any, names: set[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(found))
 
 
+def _payload_keys(value: Any) -> frozenset[str]:
+    keys: set[str] = set()
+    if isinstance(value, dict):
+        for key, item in value.items():
+            keys.add(str(key).casefold())
+            keys.update(_payload_keys(item))
+    if isinstance(value, list):
+        for item in value:
+            keys.update(_payload_keys(item))
+    return frozenset(keys)
+
+
 def _evidence_envelope(
     source: SourceName,
     query: str,
@@ -220,14 +232,26 @@ def _evidence_envelope(
         "time_match": time_match,
     }
     if source == "hira":
-        reimbursement = "급여" in query
+        keys = _payload_keys(payload)
+        markers = tuple(
+            value.casefold()
+            for value in _walk_named_values(payload, {"tool", "source"})
+        )
+        eligible_claims: list[str] = []
+        if "ptntcnt" in keys:
+            eligible_claims.append("patient_count")
+        if keys & {"rvdinsupbrdnamt", "rvdrpetamtamt"}:
+            eligible_claims.append("cost")
+        if any("reimbursement" in marker for marker in markers):
+            eligible_claims.append("reimbursement")
+        reimbursement = "reimbursement" in eligible_claims
         return EvidenceEnvelope(
             kind="hira",
             **common,
             metric_type="reimbursement_criteria" if reimbursement else "patient_count",
             period=years or payload_years,
             unit={} if reimbursement else dict(_HIRA_ADDITIVE_UNITS),
-            eligible_claims=("reimbursement_criteria",) if reimbursement else ("patient_count", "association"),
+            eligible_claims=tuple(eligible_claims),
             causal=False,
         )
     if source == "clinicaltrials":
@@ -244,6 +268,47 @@ def _evidence_envelope(
             causal=False,
         )
     if source == "nedrug":
+        keys = _payload_keys(payload)
+        markers = tuple(
+            value.casefold()
+            for value in _walk_named_values(payload, {"tool", "source"})
+        )
+        eligible_claims: list[str] = []
+        if keys & {
+            "item_name",
+            "product_name",
+            "item_permit_date",
+            "permit_date",
+            "approval_date",
+            "entp_name",
+            "manufacturer",
+            "company",
+        }:
+            eligible_claims.append("approval")
+        if keys & {
+            "ee_doc_data",
+            "ud_doc_data",
+            "nb_doc_data",
+            "efcy_qesitm",
+            "use_method_qesitm",
+            "atpn_warn_qesitm",
+            "atpn_qesitm",
+            "intrc_qesitm",
+            "se_qesitm",
+            "efficacy",
+            "indication",
+            "dosage",
+            "warnings",
+        }:
+            eligible_claims.append("label")
+        if (
+            any("patent" in key or "reexam" in key for key in keys)
+            or any(
+                "patent" in marker or "orangebook" in marker
+                for marker in markers
+            )
+        ):
+            eligible_claims.append("patent")
         return EvidenceEnvelope(
             kind="nedrug",
             **common,
@@ -251,7 +316,7 @@ def _evidence_envelope(
             ingredient=_walk_named_values(payload, {"item_ingr_name", "ingredient"}),
             company=_walk_named_values(payload, {"entp_name", "manufacturer", "company"}),
             approval_date=_walk_named_values(payload, {"item_permit_date", "permit_date", "approval_date"}),
-            eligible_claims=("approval", "efficacy", "ingredient", "company"),
+            eligible_claims=tuple(eligible_claims),
             causal=False,
         )
     kind = "clinical" if source == "clinicaltrials" else source
