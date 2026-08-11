@@ -68,6 +68,13 @@ _TRANSPORT_ERROR_RE = re.compile(
     r"\b(?:502|503|504) server error\b",
     re.IGNORECASE,
 )
+_PRODUCT_STRENGTH_RE = re.compile(
+    r"\d+(?:[.,]\d+)?\s*(?:마이크로그램|밀리그램|그램|mg|mcg|g|mL|ml).*$",
+    re.IGNORECASE,
+)
+_PRODUCT_FORM_RE = re.compile(
+    r"(?:연질캡슐|경질캡슐|캡슐|시럽|크림|연고|패치|과립|정|주|액|산)$"
+)
 
 
 @dataclass(frozen=True)
@@ -453,6 +460,28 @@ def _ingredient_query(query: str) -> str:
     return _base_query(query)
 
 
+def _ingredient_search_term(query: str) -> str | None:
+    lowered = query.casefold()
+    aliases = [alias for alias in _INGREDIENT_ALIASES if alias.casefold() in lowered]
+    if not aliases:
+        return None
+    alias = max(aliases, key=len)
+    return alias if alias == "피타바스타틴" else _INGREDIENT_ALIASES[alias]
+
+
+def _nedrug_product_brand_hints(product_name: str) -> tuple[str, ...]:
+    base = re.sub(r"\([^)]*\)", "", product_name).strip()
+    without_strength = _PRODUCT_STRENGTH_RE.sub("", base).strip()
+    without_form = _PRODUCT_FORM_RE.sub("", without_strength).strip()
+    return tuple(
+        dict.fromkeys(
+            value
+            for value in (base, without_strength, without_form)
+            if value
+        )
+    )
+
+
 def _reimbursement_subject(query: str) -> str:
     value = _REIMBURSEMENT_TERMS.sub(" ", _base_query(query))
     value = re.sub(r"\([^)]*\)", " ", value)
@@ -486,7 +515,9 @@ def _base_query(query: str) -> str:
         "재심사 종료일",
         "재심사 기간",
         "재심사 대상",
+        "재심사 정보",
         "재심사",
+        "허가 현황 및 최근 변경 사항",
     )
     changed = True
     while changed:
@@ -544,9 +575,39 @@ def build_source_adapters() -> dict[SourceName, Any]:
         except LookupError:
             return None
 
+    def ingredient_brand_resolutions(query: str) -> tuple[Any, ...]:
+        search_term = _ingredient_search_term(query)
+        if search_term is None:
+            return ()
+        search = external.mfds_permission_search(search_term)
+        names = _walk_named_values(search.render_data, {"item_name", "product_name"})
+        found: list[Any] = []
+        seen: set[str] = set()
+        for name in names:
+            for hint in _nedrug_product_brand_hints(name):
+                try:
+                    resolution = dependencies.resolver.resolve(hint, allow_default=False)
+                except LookupError:
+                    continue
+                canonical = str(resolution.canonical_brand)
+                if canonical not in seen:
+                    seen.add(canonical)
+                    found.append(resolution)
+                break
+        return tuple(found)
+
+    def general_mart(brand: str) -> dict[str, Any] | None:
+        result = general_view.answer(
+            f"{brand} 일반뷰 매출 점유율 순위 추이",
+            compact=False,
+            dual=False,
+        )
+        return result if _mart_payload_ok(result) else None
+
     def mart(query: str) -> SourceResult:
         started_at = datetime.now(UTC)
         payloads: list[dict[str, Any]] = []
+        has_general_payload = False
         route = general_view.route(query)
         if route in {GeneralRoute.GENERAL_ONLY, GeneralRoute.DUAL}:
             result = general_view.answer(
@@ -556,12 +617,34 @@ def build_source_adapters() -> dict[SourceName, Any]:
             )
             if _mart_payload_ok(result):
                 payloads.append(result)
+                has_general_payload = True
 
+        resolution = resolved(query)
+        resolutions = (
+            (resolution,)
+            if resolution is not None
+            else ingredient_brand_resolutions(query)
+        )
         layer = dependencies.query_layer
-        if layer is not None:
-            resolution = resolved(query)
-            if resolution is not None:
-                payloads.extend(_strategic_mart_calls(layer, resolution.canonical_brand, query))
+        for item in resolutions:
+            market_ids = getattr(item, "market_ids", None)
+            if market_ids == ():
+                if not has_general_payload:
+                    general = general_mart(str(item.canonical_brand))
+                    if general is not None:
+                        payloads.append(general)
+                        has_general_payload = True
+                continue
+            strategic = (
+                _strategic_mart_calls(layer, str(item.canonical_brand), query)
+                if layer is not None
+                else []
+            )
+            payloads.extend(strategic)
+            if not strategic:
+                general = general_mart(str(item.canonical_brand))
+                if general is not None:
+                    payloads.append(general)
 
         source_labels = tuple(
             dict.fromkeys(
@@ -970,7 +1053,15 @@ def _v4_tavily_mcp_request(
 def _mart_payload_ok(payload: dict[str, Any]) -> bool:
     status = str(payload.get("status") or "ok").casefold()
     render_data = payload.get("render_data")
-    return status not in {"error", "no_data", "unsupported"} and isinstance(render_data, dict) and bool(render_data)
+    if status in {"error", "no_data", "unsupported"}:
+        return False
+    if isinstance(render_data, dict) and bool(render_data):
+        return True
+    tool_calls = payload.get("tool_calls")
+    return isinstance(tool_calls, list) and any(
+        isinstance(call, dict) and _mart_payload_ok(call)
+        for call in tool_calls
+    )
 
 
 def _has_payload(payload: dict[str, Any]) -> bool:

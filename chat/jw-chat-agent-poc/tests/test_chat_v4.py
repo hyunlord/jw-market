@@ -34,6 +34,7 @@ from jw_chat_agent_poc.service.v4.runtime import (
 from jw_chat_agent_poc.service.v4 import adapters as v4_adapters
 from jw_chat_agent_poc.service.v4 import llm as v4_llm
 from jw_chat_agent_poc.service.v4 import planner as v4_planner
+from jw_chat_agent_poc.service.v4 import runtime as v4_runtime
 from jw_chat_agent_poc.service.v4 import synthesizer as v4_synthesizer
 from jw_chat_agent_poc.service.v4.synthesizer import (
     V4Synthesizer,
@@ -270,6 +271,174 @@ def test_v4_mart_adapter_keeps_strategic_package_for_general_only_route(monkeypa
         if isinstance(call, dict) and "metric" in call
     }
     assert metrics == {"sales", "share", "rank", "prescription_volume"}
+
+
+def test_v4_runtime_binds_always_on_mart_to_user_question() -> None:
+    plan = _plan(mart=("리바로젯정 재심사 정보",))
+
+    bound = v4_runtime._bind_always_on_mart_query(
+        plan,
+        "리바로젯 재심사 언제 끝나?",
+    )
+
+    assert bound.tool_queries.mart == ("리바로젯 재심사 언제 끝나?",)
+    assert bound.tool_queries.nedrug == plan.tool_queries.nedrug
+
+
+def test_v4_runtime_binds_referential_mart_to_resolved_question() -> None:
+    plan = _plan(mart=("경쟁사는?",))
+
+    bound = v4_runtime._bind_always_on_mart_query(plan, "그 중 경쟁사는?")
+
+    assert bound.tool_queries.mart == (plan.resolved_question,)
+
+
+def test_v4_mart_adapter_uses_general_view_when_brand_has_no_strategic_market(
+    monkeypatch,
+) -> None:
+    from jw_chat_agent_poc.agent_loop import factory
+    from jw_chat_agent_poc.service import general_view_routing
+
+    class Resolver:
+        def resolve(self, _query, *, allow_default):
+            assert allow_default is False
+            return SimpleNamespace(
+                canonical_brand="아일리아",
+                molecule_en=("AFLIBERCEPT",),
+                market_ids=(),
+            )
+
+    class QueryLayer:
+        def market_scope(self, _brand):
+            raise AssertionError("a brand outside the strategic catalog must use general view")
+
+    class GeneralView:
+        def route(self, _query):
+            return general_view_routing.GeneralRoute.EXISTING
+
+        def answer(self, query, *, compact, dual):
+            assert query == "아일리아 일반뷰 매출 점유율 순위 추이"
+            assert compact is False
+            assert dual is False
+            return {
+                "tool_calls": [
+                    {
+                        "source": "jw-market-direct-mart",
+                        "tool": "general_view_dynamic_market",
+                        "render_data": {"anchor_brand": "아일리아", "period": "2026-Q1"},
+                    }
+                ],
+                "general_view_ready": True,
+            }
+
+    dependencies = SimpleNamespace(
+        external=SimpleNamespace(),
+        resolver=Resolver(),
+        query_layer=QueryLayer(),
+    )
+    monkeypatch.setattr(factory, "build_chat_agent_dependencies", lambda **_kwargs: dependencies)
+    monkeypatch.setattr(
+        general_view_routing.GeneralViewService,
+        "from_env",
+        lambda _resolver: GeneralView(),
+    )
+
+    result = v4_adapters.build_source_adapters()["mart"]("아일리아 급여기준")
+
+    assert result.status == "ok"
+    assert result.payload["calls"][0]["general_view_ready"] is True
+
+
+def test_v4_mart_adapter_bridges_ingredient_through_nedrug_product_brand(
+    monkeypatch,
+) -> None:
+    from jw_chat_agent_poc.agent_loop import factory
+    from jw_chat_agent_poc.service import general_view_routing
+
+    class Resolver:
+        def resolve(self, query, *, allow_default):
+            assert allow_default is False
+            if query == "리바로":
+                return SimpleNamespace(
+                    canonical_brand="리바로",
+                    molecule_en=("Pitavastatin",),
+                    market_ids=("ml_006",),
+                )
+            raise LookupError("ingredient is not a brand")
+
+    class External:
+        def mfds_permission_search(self, query):
+            assert query == "피타바스타틴"
+            return ExternalCall(
+                tool="search_drug_permission_list",
+                source="nedrug",
+                status="ok",
+                summary_text="피타바스타틴 허가 품목을 확인했습니다.",
+                render_data={
+                    "items": [
+                        {
+                            "ITEM_NAME": "리바로정2밀리그램(피타바스타틴칼슘수화물)",
+                        }
+                    ]
+                },
+            )
+
+    class QueryLayer:
+        def market_scope(self, brand):
+            assert brand == "리바로"
+            return {
+                "source": "UBIST",
+                "tool": "get_market_landscape",
+                "render_data": {"market_id": "ml_006", "anchor_brand": brand},
+            }
+
+        def brand_metric(self, brand, metric, period, *, market=None, history_points=10):
+            return {
+                "source": "UBIST",
+                "tool": "get_brand_metric",
+                "render_data": {
+                    "brand": brand,
+                    "metric": metric,
+                    "period": period,
+                    "market": market,
+                    "history_points": history_points,
+                },
+            }
+
+        def top_brands(self, brand, *, limit, metric, market=None):
+            return {
+                "source": "UBIST",
+                "tool": "get_top_brands",
+                "render_data": {"brand": brand, "metric": metric, "market": market},
+            }
+
+        def cause_card_data(self, brand, market):
+            return {"brand": brand, "market": market, "ei_ms": {}}
+
+    class GeneralView:
+        def route(self, _query):
+            return general_view_routing.GeneralRoute.EXISTING
+
+    dependencies = SimpleNamespace(
+        external=External(),
+        resolver=Resolver(),
+        query_layer=QueryLayer(),
+    )
+    monkeypatch.setattr(factory, "build_chat_agent_dependencies", lambda **_kwargs: dependencies)
+    monkeypatch.setattr(
+        general_view_routing.GeneralViewService,
+        "from_env",
+        lambda _resolver: GeneralView(),
+    )
+
+    result = v4_adapters.build_source_adapters()["mart"]("피타바스타틴 요즘 어때")
+
+    assert result.status == "ok"
+    assert {
+        call.get("render_data", {}).get("brand")
+        for call in result.payload["calls"]
+        if isinstance(call, dict)
+    } >= {"리바로"}
 
 
 def test_v4_mart_dimension_trend_uses_query_catalog_supported_sort() -> None:
@@ -3428,6 +3597,13 @@ def test_v4_base_query_removes_patent_planner_suffix() -> None:
 
 def test_v4_base_query_removes_reexamination_suffix() -> None:
     assert v4_adapters._base_query("리바로젯정 재심사 종료일") == "리바로젯정"
+
+
+def test_v4_base_query_removes_approval_status_suffix() -> None:
+    assert (
+        v4_adapters._base_query("피타바스타틴 허가 현황 및 최근 변경 사항")
+        == "피타바스타틴"
+    )
 
 
 def test_v4_nedrug_patent_query_calls_mfds_without_brand_resolution(monkeypatch) -> None:

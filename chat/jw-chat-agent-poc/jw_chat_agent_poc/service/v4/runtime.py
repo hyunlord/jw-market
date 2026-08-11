@@ -88,7 +88,8 @@ class V4Runtime:
                     "usage": _empty_usage(),
                 },
             )
-        plan = _preserve_period_in_answer_queries(planner_outcome.plan)
+        plan = _bind_always_on_mart_query(planner_outcome.plan, question)
+        plan = _preserve_period_in_answer_queries(plan)
         _emit_progress(
             progress_callback,
             "질문 해석",
@@ -509,6 +510,16 @@ def _source_progress_detail(completed_sources: Sequence[str]) -> str:
 def _one_line(value: str, limit: int = 120) -> str:
     text = " ".join(value.split())
     return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _bind_always_on_mart_query(plan: Any, question: str) -> Any:
+    """Keep the always-on mart package bound to the user's requested entity."""
+
+    mart_query = question.strip() or plan.resolved_question
+    if _is_prior_result_reference(question):
+        mart_query = plan.resolved_question
+    queries = plan.tool_queries.model_copy(update={"mart": (mart_query,)})
+    return plan.model_copy(update={"tool_queries": queries})
 
 
 def _preserve_period_in_answer_queries(plan: Any) -> Any:
