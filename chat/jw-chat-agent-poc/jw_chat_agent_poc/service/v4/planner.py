@@ -10,11 +10,19 @@ from typing import Any
 import requests
 
 from jw_chat_agent_poc.service.conversation import ConversationTurn
-from jw_chat_agent_poc.service.v4.contracts import PlannerOutput, SourceName, SourceResult, ToolQueries
+from jw_chat_agent_poc.service.v4.contracts import (
+    SOURCE_NAMES,
+    PlannerOutput,
+    SourceName,
+    SourceResult,
+    ToolQueries,
+)
 from jw_chat_agent_poc.service.v4.llm import CompletionResult, GenOSV4Client
 
 
 _JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
+_NCT_ANCHOR_RE = re.compile(r"\bNCT\d{8}\b", re.IGNORECASE)
+_KCD_ANCHOR_RE = re.compile(r"(?<![A-Za-z0-9])([A-Za-z]\d{2}(?:\.?\d)?)(?![A-Za-z0-9])")
 
 
 @dataclass(frozen=True)
@@ -77,6 +85,7 @@ class V4Planner:
                 direct_sources = _direct_answer_sources(question)
                 if direct_sources:
                     plan = plan.model_copy(update={"answer_sources": direct_sources})
+                plan = _lock_exact_anchor(question, plan)
                 return PlannerOutcome(
                     plan=plan,
                     trace={
@@ -94,7 +103,10 @@ class V4Planner:
             except (ValueError, json.JSONDecodeError) as exc:
                 error = exc
         return PlannerOutcome(
-            plan=_fallback_plan(question, turns, reason=str(error or "planner returned no JSON")),
+            plan=_lock_exact_anchor(
+                question,
+                _fallback_plan(question, turns, reason=str(error or "planner returned no JSON")),
+            ),
             trace={
                 "status": "fallback",
                 "elapsed_ms": (time.monotonic() - started) * 1000,
@@ -141,7 +153,99 @@ class V4Planner:
             linked = _parse_plan(self._client.complete(messages, budget_s=budget_s))
         except (ValueError, json.JSONDecodeError, requests.RequestException):
             return None
+        anchor = _exact_anchor(first_plan.resolved_question)
+        if anchor:
+            linked = _lock_linked_anchor(anchor, linked, first_results)
         return linked.model_copy(update={"needs_second_hop": False})
+
+
+def _exact_anchor(question: str) -> str | None:
+    nct = _NCT_ANCHOR_RE.search(question)
+    if nct:
+        return nct.group(0).upper()
+    kcd = _KCD_ANCHOR_RE.search(question)
+    if kcd:
+        return kcd.group(1).replace(".", "").upper()
+    return None
+
+
+def _lock_exact_anchor(question: str, plan: PlannerOutput) -> PlannerOutput:
+    anchor = _exact_anchor(question)
+    if not anchor:
+        return plan
+    suffixes = {
+        "mart": "내부 시장 데이터",
+        "nedrug": "국내 허가 정보",
+        "hira": "국내 급여 및 환자 통계",
+        "openfda": "미국 허가 및 안전성",
+        "clinicaltrials": "임상시험 상세",
+        "web": "공식 최신 자료",
+        "patent": "특허 공식 자료",
+    }
+    answer_sources: tuple[SourceName, ...] = (
+        ("clinicaltrials",) if anchor.startswith("NCT") else plan.answer_sources
+    )
+    return plan.model_copy(
+        update={
+            "answer_sources": answer_sources,
+            "tool_queries": ToolQueries(
+                **{source: (f"{anchor} {suffixes[source]}",) for source in SOURCE_NAMES}
+            ),
+            "needs_second_hop": anchor.startswith("NCT"),
+        }
+    )
+
+
+def _lock_linked_anchor(
+    anchor: str,
+    linked: PlannerOutput,
+    first_results: Sequence[SourceResult],
+) -> PlannerOutput:
+    entities = _canonical_anchor_entities(first_results)
+    subject = " ".join((anchor, *entities[:3]))
+    suffixes = {
+        "mart": "내부 시장 데이터",
+        "nedrug": "국내 허가 정보",
+        "hira": "국내 급여 정보",
+        "openfda": "미국 허가 안전성",
+        "clinicaltrials": "임상시험 상세",
+        "web": "공식 최신 자료",
+        "patent": "특허 공식 자료",
+    }
+    return linked.model_copy(
+        update={
+            "tool_queries": ToolQueries(
+                **{source: (f"{subject} {suffixes[source]}",) for source in SOURCE_NAMES}
+            )
+        }
+    )
+
+
+def _canonical_anchor_entities(results: Sequence[SourceResult]) -> tuple[str, ...]:
+    found: list[str] = []
+
+    def walk(value: Any, path: tuple[str, ...] = ()) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                current = (*path, str(key).casefold())
+                if (
+                    isinstance(item, str)
+                    and item.strip()
+                    and (
+                        str(key).casefold() == "interventionname"
+                        or ("interventions" in current and str(key).casefold() == "name")
+                    )
+                ):
+                    found.append(item.strip())
+                walk(item, current)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item, path)
+
+    for result in results:
+        if result.source == "clinicaltrials" and result.status == "ok":
+            walk(result.payload)
+    return tuple(dict.fromkeys(found))
 
 
 def _planner_messages(question: str, turns: Sequence[ConversationTurn]) -> list[dict[str, str]]:

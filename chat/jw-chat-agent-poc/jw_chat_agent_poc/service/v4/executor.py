@@ -27,7 +27,7 @@ class ParallelSourceExecutor:
         self,
         *,
         adapters: Mapping[SourceName, SourceAdapter],
-        per_tool_timeout_s: float = 10.0,
+        per_tool_timeout_s: float = 30.0,
         total_timeout_s: float = 45.0,
         max_cache_entries: int = 2048,
     ) -> None:

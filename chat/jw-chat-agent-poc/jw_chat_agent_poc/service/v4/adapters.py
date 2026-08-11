@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from collections.abc import Callable, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
+from decimal import Decimal, InvalidOperation
 from datetime import UTC, datetime
 from typing import Any
 
-from jw_chat_agent_poc.service.v4.contracts import Citation, SourceName, SourceResult
+from jw_chat_agent_poc.service.v4.contracts import (
+    Citation,
+    EvidenceEnvelope,
+    SourceName,
+    SourceResult,
+)
 
 
 _NCT_RE = re.compile(r"\bNCT\d{8}\b", re.IGNORECASE)
@@ -47,6 +54,22 @@ _REIMBURSEMENT_TERMS = re.compile(
     r"(?:요양)?급여\s*(?:적용)?기준(?:\s*및\s*방법)?|건강보험|약제|고시",
     re.IGNORECASE,
 )
+_HIRA_ADDITIVE_UNITS = {
+    "ptntCnt": "명",
+    "rvdInsupBrdnAmt": "천원",
+    "rvdRpeTamtAmt": "천원",
+    "specCnt": "건",
+    "vstDdcnt": "일",
+}
+_SOURCE_SCOPE = {
+    "mart": "KR",
+    "nedrug": "KR",
+    "hira": "KR",
+    "openfda": "US",
+    "clinicaltrials": "GLOBAL",
+    "web": "GLOBAL",
+    "patent": "GLOBAL",
+}
 
 
 @dataclass(frozen=True)
@@ -58,6 +81,169 @@ class _FailedHiraYearCall:
     render_data: dict[str, Any]
     safe_url: str | None = None
     elapsed_ms: float | None = None
+
+
+def _decimal_value(value: Any) -> Decimal | None:
+    if value in (None, ""):
+        return None
+    try:
+        return Decimal(str(value).replace(",", ""))
+    except InvalidOperation:
+        return None
+
+
+def _decimal_text(value: Decimal) -> str:
+    if value == value.to_integral_value():
+        return str(int(value))
+    return format(value.normalize(), "f")
+
+
+def _aggregate_hira_items(items: Sequence[Any]) -> list[dict[str, Any]]:
+    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        key = (
+            str(item.get("inpatOpat") or ""),
+            str(item.get("sickCd") or ""),
+            str(item.get("sickNm") or ""),
+        )
+        groups.setdefault(key, []).append(item)
+
+    aggregated: list[dict[str, Any]] = []
+    for (patient_type, code, name), rows in groups.items():
+        output: dict[str, Any] = {
+            "inpatOpat": patient_type,
+            "sex": rows[0].get("sex") if len(rows) == 1 else None,
+        }
+        if code:
+            output["sickCd"] = code
+        if name:
+            output["sickNm"] = name
+        for field in _HIRA_ADDITIVE_UNITS:
+            values = [_decimal_value(row.get(field)) for row in rows]
+            numeric = [value for value in values if value is not None]
+            if numeric:
+                output[field] = _decimal_text(sum(numeric, Decimal(0)))
+        output["units"] = dict(_HIRA_ADDITIVE_UNITS)
+        output["sexBreakdown"] = [
+            {
+                key: value
+                for key, value in row.items()
+                if key in {"sex", *_HIRA_ADDITIVE_UNITS}
+            }
+            for row in rows
+        ]
+        aggregated.append(output)
+    return aggregated
+
+
+def _normalize_hira_render_data(render_data: Any) -> Any:
+    if not isinstance(render_data, dict):
+        return render_data
+    raw_items: Any = None
+    mcp = render_data.get("mcp")
+    if isinstance(mcp, dict) and isinstance(mcp.get("content_text"), str):
+        try:
+            decoded = json.loads(mcp["content_text"])
+        except (json.JSONDecodeError, TypeError):
+            decoded = None
+        if isinstance(decoded, list):
+            raw_items = decoded
+        elif isinstance(decoded, dict) and isinstance(decoded.get("items"), list):
+            raw_items = decoded["items"]
+    if raw_items is None:
+        raw_items = render_data.get("items")
+    if not isinstance(raw_items, list):
+        return render_data
+    return {**render_data, "items": _aggregate_hira_items(raw_items)}
+
+
+def _walk_named_values(value: Any, names: set[str]) -> tuple[str, ...]:
+    found: list[str] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key.casefold() in names:
+                candidates = item if isinstance(item, list) else [item]
+                for candidate in candidates:
+                    if isinstance(candidate, (str, int, float)) and str(candidate).strip():
+                        found.append(str(candidate).strip())
+            found.extend(_walk_named_values(item, names))
+    elif isinstance(value, list):
+        for item in value:
+            found.extend(_walk_named_values(item, names))
+    return tuple(dict.fromkeys(found))
+
+
+def _evidence_envelope(
+    source: SourceName,
+    query: str,
+    payload: Any,
+) -> EvidenceEnvelope:
+    years = tuple(dict.fromkeys(re.findall(r"(?:19|20)\d{2}", query)))
+    payload_years = _walk_named_values(payload, {"year", "period", "yyyymm"})
+    time_match = (
+        "NOT_REQUESTED"
+        if not years
+        else "MATCH"
+        if any(any(year in value for value in payload_years) for year in years)
+        else "MISMATCH"
+    )
+    matches = tuple(value.casefold() for value in _walk_named_values(payload, {"match_scope", "entity_match"}))
+    entity_match = (
+        "MISMATCH"
+        if any("mismatch" in value for value in matches)
+        else "PARTIAL"
+        if any("partial" in value or "component" in value for value in matches)
+        else "EXACT"
+    )
+    common = {
+        "entity_match": entity_match,
+        "source_scope": _SOURCE_SCOPE[source],
+        "time_match": time_match,
+    }
+    if source == "hira":
+        reimbursement = "급여" in query
+        return EvidenceEnvelope(
+            kind="hira",
+            **common,
+            metric_type="reimbursement_criteria" if reimbursement else "patient_count",
+            period=years or payload_years,
+            unit={} if reimbursement else dict(_HIRA_ADDITIVE_UNITS),
+            eligible_claims=("reimbursement_criteria",) if reimbursement else ("patient_count", "association"),
+            causal=False,
+        )
+    if source == "clinicaltrials":
+        return EvidenceEnvelope(
+            kind="clinical",
+            **common,
+            study_type=next(iter(_walk_named_values(payload, {"studytype"})), None),
+            intervention_type=_walk_named_values(payload, {"type", "interventiontype"}),
+            phase=_walk_named_values(payload, {"phases", "phase"}),
+            recruitment_status=next(iter(_walk_named_values(payload, {"overallstatus", "status"})), None),
+            country=_walk_named_values(payload, {"country"}),
+            disease=_walk_named_values(payload, {"conditions", "condition"}),
+            eligible_claims=("study_design", "phase", "recruitment_status", "enrollment", "eligibility"),
+            causal=False,
+        )
+    if source == "nedrug":
+        return EvidenceEnvelope(
+            kind="nedrug",
+            **common,
+            product=_walk_named_values(payload, {"item_name", "product_name"}),
+            ingredient=_walk_named_values(payload, {"item_ingr_name", "ingredient"}),
+            company=_walk_named_values(payload, {"entp_name", "manufacturer", "company"}),
+            approval_date=_walk_named_values(payload, {"item_permit_date", "permit_date", "approval_date"}),
+            eligible_claims=("approval", "efficacy", "ingredient", "company"),
+            causal=False,
+        )
+    kind = "clinical" if source == "clinicaltrials" else source
+    return EvidenceEnvelope(
+        kind=kind,
+        **common,
+        eligible_claims=("observed_fact",),
+        causal=False if source in {"openfda", "web"} else None,
+    )
 
 
 def _parallel_hira_year_calls(
@@ -224,6 +410,7 @@ def build_source_adapters() -> dict[SourceName, Any]:
             query=query,
             status=status,
             payload={"calls": payloads},
+            evidence=_evidence_envelope(source, query, {"calls": payloads}),
             citations=tuple(
                 Citation(
                     source=call.source or source,
@@ -284,6 +471,7 @@ def build_source_adapters() -> dict[SourceName, Any]:
             query=query,
             status="ok" if payloads else "empty",
             payload={"calls": payloads},
+            evidence=_evidence_envelope("mart", query, {"calls": payloads}),
             citations=tuple(
                 Citation(
                     source=label,
@@ -355,9 +543,20 @@ def build_source_adapters() -> dict[SourceName, Any]:
         if code:
             calls = [external.hira_disease_name_code(code)]
             years = _requested_hira_years(base) or ("2024",)
+
+            def fetch_hira_year(disease_code: str, year: str) -> ExternalCall:
+                call = external.hira_disease_hospitalization_outpatient_stats(
+                    disease_code,
+                    year,
+                )
+                return replace(
+                    call,
+                    render_data=_normalize_hira_render_data(call.render_data),
+                )
+
             calls.extend(
                 _parallel_hira_year_calls(
-                    external.hira_disease_hospitalization_outpatient_stats,
+                    fetch_hira_year,
                     code,
                     years,
                 )
@@ -429,9 +628,20 @@ def _strategic_mart_calls(layer, brand: str, query: str) -> list[dict[str, Any]]
         metrics.append("sales")
 
     calls: list[dict[str, Any]] = []
+    history_points = 60 if any(
+        token in lowered
+        for token in ("추이", "시계열", "최근 5년", "최근5년", "변해", "변화", "변동")
+    ) else 10
     for metric in dict.fromkeys(metrics):
         try:
-            calls.append(layer.brand_metric(brand, metric, "latest"))
+            calls.append(
+                layer.brand_metric(
+                    brand,
+                    metric,
+                    "latest",
+                    history_points=history_points,
+                )
+            )
         except LookupError:
             continue
     if any(token in lowered for token in ("경쟁", "경쟁사", "시장", "요즘")):

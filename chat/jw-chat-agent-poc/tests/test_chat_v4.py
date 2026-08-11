@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 import time
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -14,6 +15,7 @@ from jw_chat_agent_poc.service import app as service_app
 from jw_chat_agent_poc.service.v4.contracts import (
     SOURCE_NAMES,
     Citation,
+    EvidenceEnvelope,
     PlannerOutput,
     SourceResult,
     ToolQueries,
@@ -98,7 +100,7 @@ def test_v4_mart_adapter_always_returns_source_result(monkeypatch) -> None:
             return SimpleNamespace(canonical_brand="리바로", molecule_en=("Pitavastatin",))
 
     class QueryLayer:
-        def brand_metric(self, brand, metric, period):
+        def brand_metric(self, brand, metric, period, *, history_points=10):
             return {"source": "UBIST", "brand": brand, "metric": metric, "period": period}
 
         def top_brands(self, brand, *, limit, metric):
@@ -362,7 +364,7 @@ def test_v4_surface_detects_broad_log_field_and_raw_won_patterns(leak: str) -> N
     assert _INTERNAL_SURFACE_RE.search(leak)
 
 
-def test_v4_synthesis_prompt_requires_structured_markdown_and_omits_record_fields() -> None:
+def test_v4_synthesis_prompt_preserves_source_body_but_omits_record_fields() -> None:
     result = SourceResult(
         source="nedrug",
         query="아일리아 급여기준",
@@ -393,9 +395,10 @@ def test_v4_synthesis_prompt_requires_structured_markdown_and_omits_record_field
     assert "PRDLST_STDR_CODE" not in serialized
     assert "sickCd" not in serialized
     assert "ptntCnt" not in serialized
-    assert "담당부서로 연락" not in serialized
+    assert "다운로드 후 담당부서로 연락주시기 바랍니다." in serialized
     assert "## 핵심 답" in system
     assert "한 문단은 최대 4문장" in system
+    assert "다운로드 안내문" in system
 
 
 def test_v4_synthesis_projects_reexamination_fields_with_public_names() -> None:
@@ -429,18 +432,130 @@ def test_v4_synthesis_projects_reexamination_fields_with_public_names() -> None:
     assert "REEXAM_DATE" not in serialized
 
 
-def test_v4_synthesis_payload_has_a_bounded_character_budget() -> None:
-    huge = "허가사항 본문 " * 20_000
+def test_v4_synthesis_does_not_truncate_source_text() -> None:
+    source_text = "허가사항 본문 " * 200
     result = SourceResult(
         source="nedrug",
         query="아일리아 효능효과",
         status="ok",
-        payload={"calls": [{"render_data": {"efficacy": huge}} for _ in range(30)]},
+        payload={"calls": [{"render_data": {"efficacy": source_text}}]},
     )
 
     messages = v4_synthesizer._synthesis_messages(_plan(), (result,), ())
+    serialized = messages[-1]["content"]
 
-    assert len(messages[-1]["content"]) <= 30_000
+    assert source_text in serialized
+    assert "[excerpt]" not in serialized
+
+
+def test_v4_synthesizer_traces_raw_payload_character_count() -> None:
+    class Client:
+        def complete(self, _messages, *, budget_s=None, max_tokens=None) -> str:
+            return "## 핵심 답\n확인했습니다."
+
+    payload = {"calls": [{"render_data": {"notice": "다운로드 안내문 원문"}}]}
+    result = SourceResult(source="nedrug", query="아일리아 급여기준", status="ok", payload=payload)
+
+    outcome = V4Synthesizer(Client()).synthesize_with_trace(_plan(), (result,), ())
+
+    assert outcome.trace["raw_payload_chars"] == len(
+        json.dumps(payload, ensure_ascii=False, default=str)
+    )
+
+
+def test_v4_hira_aggregates_every_additive_field_by_patient_type() -> None:
+    raw_items = [
+        {
+            "inpatOpat": "입원",
+            "sex": "남",
+            "sickCd": "D693",
+            "sickNm": "특발성 혈소판감소성 자반",
+            "ptntCnt": "600",
+            "rvdInsupBrdnAmt": "1000",
+            "rvdRpeTamtAmt": "2000",
+            "specCnt": "30",
+            "vstDdcnt": "40",
+        },
+        {
+            "inpatOpat": "입원",
+            "sex": "여",
+            "sickCd": "D693",
+            "sickNm": "특발성 혈소판감소성 자반",
+            "ptntCnt": "1006",
+            "rvdInsupBrdnAmt": "3000",
+            "rvdRpeTamtAmt": "4000",
+            "specCnt": "50",
+            "vstDdcnt": "60",
+        },
+        {
+            "inpatOpat": "외래",
+            "sex": "남",
+            "sickCd": "D693",
+            "sickNm": "특발성 혈소판감소성 자반",
+            "ptntCnt": "4000",
+            "rvdInsupBrdnAmt": "5000",
+            "rvdRpeTamtAmt": "6000",
+            "specCnt": "70",
+            "vstDdcnt": "80",
+        },
+        {
+            "inpatOpat": "외래",
+            "sex": "여",
+            "sickCd": "D693",
+            "sickNm": "특발성 혈소판감소성 자반",
+            "ptntCnt": "5231",
+            "rvdInsupBrdnAmt": "7000",
+            "rvdRpeTamtAmt": "8000",
+            "specCnt": "90",
+            "vstDdcnt": "100",
+        },
+    ]
+
+    aggregated = v4_adapters._aggregate_hira_items(raw_items)
+
+    assert [item["inpatOpat"] for item in aggregated] == ["입원", "외래"]
+    assert aggregated[0] | {"sexBreakdown": None} == {
+        "inpatOpat": "입원",
+        "sex": None,
+        "sickCd": "D693",
+        "sickNm": "특발성 혈소판감소성 자반",
+        "ptntCnt": "1606",
+        "rvdInsupBrdnAmt": "4000",
+        "rvdRpeTamtAmt": "6000",
+        "specCnt": "80",
+        "vstDdcnt": "100",
+        "units": {
+            "ptntCnt": "명",
+            "rvdInsupBrdnAmt": "천원",
+            "rvdRpeTamtAmt": "천원",
+            "specCnt": "건",
+            "vstDdcnt": "일",
+        },
+        "sexBreakdown": None,
+    }
+    assert aggregated[1]["ptntCnt"] == "9231"
+    assert aggregated[1]["rvdInsupBrdnAmt"] == "12000"
+    assert aggregated[1]["rvdRpeTamtAmt"] == "14000"
+    assert aggregated[1]["specCnt"] == "160"
+    assert aggregated[1]["vstDdcnt"] == "180"
+    assert all(item["sex"] is None for item in aggregated)
+    assert not any("total" in key.casefold() for item in aggregated for key in item)
+
+
+def test_v4_hira_prefers_embedded_raw_rows_over_lossy_public_aggregation() -> None:
+    raw_items = [
+        {"inpatOpat": "입원", "sex": "남", "ptntCnt": "2", "specCnt": "3"},
+        {"inpatOpat": "입원", "sex": "여", "ptntCnt": "5", "specCnt": "7"},
+    ]
+    render_data = {
+        "items": [{"inpatOpat": "입원", "ptntCnt": "7", "specCnt": "3"}],
+        "mcp": {"content_text": json.dumps(raw_items, ensure_ascii=False)},
+    }
+
+    normalized = v4_adapters._normalize_hira_render_data(render_data)
+
+    assert normalized["items"][0]["ptntCnt"] == "7"
+    assert normalized["items"][0]["specCnt"] == "10"
 
 
 def test_v4_synthesizer_labels_scope_and_excludes_web_without_body() -> None:
@@ -596,7 +711,8 @@ def test_parallel_executor_marks_timeout_without_blocking_other_sources() -> Non
     assert sum(item.status == "ok" for item in results) == 6
 
     gated = apply_v4_gates("질문", "확인된 답변", results)
-    assert "응답 지연으로 미포함: hira" in gated.text
+    assert "응답 지연으로 미포함" not in gated.text
+    assert gated.trace["delayed_sources"] == ["hira"]
 
 
 def test_invalid_planner_json_falls_back_to_all_seven_sources() -> None:
@@ -614,6 +730,161 @@ def test_invalid_planner_json_falls_back_to_all_seven_sources() -> None:
     assert client.calls == 2
     assert {name for name, _queries in output.tool_queries.items()} == set(SOURCE_NAMES)
     assert all(queries for _name, queries in output.tool_queries.items())
+
+
+def test_exact_nct_anchor_removes_invented_first_wave_entities() -> None:
+    contaminated = _plan().model_copy(
+        update={
+            "resolved_question": "NCT05151731 시험 디자인",
+            "tool_queries": ToolQueries(
+                **{
+                    source: ("ABBV-123 리바로 NCT05151731",)
+                    for source in SOURCE_NAMES
+                }
+            ),
+            "needs_second_hop": False,
+        }
+    )
+
+    class Client:
+        serving_id = "190"
+
+        def complete(self, _messages, *, budget_s=None) -> str:
+            return contaminated.model_dump_json()
+
+    plan = V4Planner(Client()).plan("NCT05151731 시험 디자인", ())
+    queries = tuple(query for _, values in plan.tool_queries.items() for query in values)
+
+    assert plan.answer_sources == ("clinicaltrials",)
+    assert plan.needs_second_hop is True
+    assert all("NCT05151731" in query for query in queries)
+    assert all("ABBV-123" not in query and "리바로" not in query for query in queries)
+
+
+def test_exact_nct_link_uses_only_first_result_canonical_entity() -> None:
+    contaminated = _plan().model_copy(
+        update={
+            "resolved_question": "NCT05151731 선정제외기준",
+            "tool_queries": ToolQueries(
+                **{source: ("ABBV-123 invented disease",) for source in SOURCE_NAMES}
+            ),
+            "needs_second_hop": False,
+        }
+    )
+
+    class Client:
+        serving_id = "190"
+
+        def complete(self, _messages, *, budget_s=None) -> str:
+            return contaminated.model_dump_json()
+
+    planner = V4Planner(Client())
+    first = planner.plan("NCT05151731 선정제외기준", ())
+    linked = planner.link(
+        first,
+        (
+            SourceResult(
+                source="clinicaltrials",
+                query="NCT05151731",
+                status="ok",
+                payload={
+                    "protocolSection": {
+                        "armsInterventionsModule": {
+                            "interventions": [{"name": "Vamikibart"}]
+                        }
+                    }
+                },
+            ),
+        ),
+        (),
+    )
+
+    assert linked is not None
+    queries = tuple(query for _, values in linked.tool_queries.items() for query in values)
+    assert all("ABBV-123" not in query and "invented disease" not in query for query in queries)
+    assert any("Vamikibart" in query for query in queries)
+
+
+def test_v4_evidence_envelope_is_typed_and_source_specific() -> None:
+    hira = v4_adapters._evidence_envelope(
+        "hira",
+        "D693 환자수 2024",
+        {"calls": [{"render_data": {"request": {"year": "2024"}}}]},
+    )
+    clinical = v4_adapters._evidence_envelope(
+        "clinicaltrials",
+        "NCT05151731",
+        {
+            "protocolSection": {
+                "designModule": {"phases": ["PHASE2"]},
+                "statusModule": {"overallStatus": "COMPLETED"},
+            }
+        },
+    )
+    nedrug = v4_adapters._evidence_envelope(
+        "nedrug",
+        "리바로 허가",
+        {"calls": [{"render_data": {"ITEM_NAME": "리바로정"}}]},
+    )
+
+    assert isinstance(hira, EvidenceEnvelope)
+    assert hira.kind == "hira"
+    assert hira.metric_type == "patient_count"
+    assert hira.period == ("2024",)
+    assert hira.causal is False
+    assert clinical.kind == "clinical"
+    assert clinical.phase == ("PHASE2",)
+    assert clinical.recruitment_status == "COMPLETED"
+    assert nedrug.kind == "nedrug"
+    assert nedrug.product == ("리바로정",)
+
+
+def test_v4_trend_query_requests_history_from_query_layer() -> None:
+    calls: list[tuple[str, str, str, int]] = []
+
+    class Layer:
+        def brand_metric(self, brand, metric, period, *, history_points=10):
+            calls.append((brand, metric, period, history_points))
+            return {"metric": metric, "display": "85.87억원"}
+
+        def top_brands(self, brand, *, limit, metric):
+            return {"brand": brand, "limit": limit, "metric": metric}
+
+    payloads = v4_adapters._strategic_mart_calls(
+        Layer(),
+        "리바로",
+        "리바로 시장 규모가 지금 얼마고 어떻게 변해왔어",
+    )
+
+    assert payloads
+    assert calls == [("리바로", "sales", "latest", 60)]
+
+
+def test_v4_observational_evidence_cannot_confirm_cause() -> None:
+    result = SourceResult(
+        source="hira",
+        query="환자수 감소 원인",
+        status="ok",
+        payload={"value": "감소"},
+        evidence=EvidenceEnvelope(
+            kind="hira",
+            entity_match="EXACT",
+            source_scope="KR",
+            time_match="NOT_REQUESTED",
+            eligible_claims=("patient_count", "association"),
+            causal=False,
+        ),
+    )
+
+    gated = apply_v4_gates(
+        "환자수 감소 원인이 뭐야",
+        "환자수 감소 원인으로 확인되었습니다.",
+        (result,),
+    )
+
+    assert "원인으로 확인되었습니다" not in gated.text
+    assert "구체적 원인은 확인되지 않았습니다" in gated.text
+    assert gated.trace["causal_claim_guard"]["blocked"] is True
 
 
 def test_v4_clients_use_their_scoped_genos_endpoints_and_tokens(monkeypatch) -> None:
@@ -793,7 +1064,7 @@ def test_hira_synthesis_input_keeps_all_requested_year_calls() -> None:
         assert f'"year": "{year}"' in messages[-1]["content"]
 
 
-def test_hira_coverage_notices_distinguish_failure_from_no_data() -> None:
+def test_hira_coverage_notices_are_trace_metadata_not_answer_body() -> None:
     result = SourceResult(
         source="hira",
         query="D693 상병 환자수 최근 5년",
@@ -813,13 +1084,13 @@ def test_hira_coverage_notices_distinguish_failure_from_no_data() -> None:
         },
     )
 
-    answer = v4_synthesizer._append_coverage_notices("확인된 3개년 값입니다.", (result,))
+    notices = v4_synthesizer._coverage_notices((result,))
 
-    assert "2025년은 조회 실패로 값을 확인하지 못했습니다(환자수 0 이 아님)" in answer
-    assert "2026년은 조회 완료됐으나 해당 데이터가 없습니다" in answer
+    assert "2025년은 조회 실패로 값을 확인하지 못했습니다(환자수 0 이 아님)." in notices
+    assert "2026년은 조회 완료됐으나 해당 데이터가 없습니다." in notices
 
 
-def test_hira_coverage_notice_survives_model_sources_block_replacement() -> None:
+def test_hira_coverage_notice_is_not_appended_to_answer() -> None:
     result = SourceResult(
         source="hira",
         query="D693 상병 환자수 최근 5년",
@@ -853,7 +1124,7 @@ def test_hira_coverage_notice_survives_model_sources_block_replacement() -> None
     )
     gated = apply_v4_gates("D693 환자수 최근 5년", synthesized, (result,))
 
-    assert "2026년은 조회 완료됐으나 해당 데이터가 없습니다" in gated.text
+    assert "2026년은 조회 완료됐으나 해당 데이터가 없습니다" not in gated.text
     assert "HIRA 환자수는 주상병 기준 청구 실인원" in gated.text
     assert "모델이 만든 출처" not in gated.text
 

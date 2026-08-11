@@ -69,7 +69,6 @@ _PUBLIC_FIELD_ALIASES = {
     "REEXAM_DATE": "reexamination_period",
     "REEXAM_TARGET": "reexamination_target",
 }
-_BOILERPLATE_RE = re.compile(r"다운로드|담당부서.{0,20}연락|로그인|구독", re.IGNORECASE)
 @dataclass(frozen=True)
 class SynthesisOutcome:
     text: str
@@ -186,6 +185,11 @@ class V4Synthesizer:
                 "usage": completion.usage if completion else {},
                 "elapsed_ms": completion.elapsed_ms if completion else None,
                 "prompt_chars": sum(len(message["content"]) for message in messages),
+                "raw_payload_chars": sum(
+                    len(json.dumps(result.payload, ensure_ascii=False, default=str))
+                    for result in usable
+                ),
+                "coverage_notices": list(_coverage_notices(usable)),
                 "fallback_reason": fallback_reason,
                 "error_type": error_type,
                 "serving_id": completion.serving_id if completion else "not_applicable",
@@ -258,14 +262,18 @@ def _synthesis_messages(
                 "만들지 않는다. 못 찾은 부분만 마지막 한 줄에 적는다. 내부 도구명, MCP 상태 문구, totalCount, slot id, "
                 "식별자 목록과 대문자 레코드 필드명을 노출하지 않는다. <INTERNAL_DATAMART> 안의 숫자와 표기는 한 글자도 바꾸지 않는다. "
                 "단위 환산, 반올림, 계산, 합산을 금지하며 UBIST와 IQVIA를 합산하지 않는다. MISMATCH 근거는 이미 "
-                "제외됐고 PARTIAL, US, 기간 불일치는 한계를 본문에 명시한다. 반드시 `## 핵심 답`, `## 근거와 맥락`, "
+                "제외됐고 PARTIAL, US, 기간 불일치는 한계를 본문에 명시한다. evidence.eligible_claims에 없는 주장에는 "
+                "그 근거를 사용하지 않는다. 관찰연구, 기기 연구, 인접 질환, 질문과 다른 모집상태의 연구는 핵심 답이 "
+                "아니라 `참고: 인접 연구` 구획에만 둔다. causal=false 근거만으로 원인을 확인했다고 쓰지 말고 관찰 사실과 "
+                "가설을 분리한다. HIRA 입원과 외래 환자수는 중복 가능하므로 합산하거나 비율을 계산하지 않는다. "
+                "반드시 `## 핵심 답`, `## 근거와 맥락`, "
                 "`## 종합 인사이트`, `## 미확인 요소`, `## 출처`의 마크다운 소제목으로 구성한다. 한 문단은 최대 4문장으로 "
                 "쓰고, 고시·허가사항은 투여대상·제외기준·투여방법·투여횟수처럼 의미 단위 불릿으로 요약한다. "
-                "웹페이지 안내문이나 원문 레코드를 통째로 복사하지 않는다."
+                "근거 본문은 활용하되 다운로드 안내문이나 담당부서 연락 안내는 답변에 복사하지 않는다."
                 " gap_fill로 표시된 웹 근거는 공식 통계 표나 시계열에 섞지 말고 별도 문단에서 "
                 "'공식 통계 아님'을 밝혀 서술한다. TIER1 또는 TIER2가 아닌 웹 정량값은 쓰지 않는다. "
                 "제네릭처럼 하위 제품 집합을 묻는 질문에서는 그 집합이 근거에 없을 때 본품이나 상위 제품의 "
-                "수치를 대신 답하지 않는다."
+                "수치를 대신 답하지 않고, 요청 집합의 값을 확인하지 못했다고 먼저 밝힌다."
             ),
         },
         {
@@ -276,12 +284,15 @@ def _synthesis_messages(
 
 
 def _evidence_packet(result: SourceResult) -> dict[str, Any]:
+    evidence = result.evidence
     return {
         "source": _PUBLIC_SOURCE[result.source],
         "query": result.query,
-        "entity_match": _entity_match(result),
-        "source_scope": _SOURCE_SCOPE[result.source],
-        "time_match": _time_match(result),
+        "evidence": evidence.model_dump(mode="json") if evidence else {
+            "entity_match": _entity_match(result),
+            "source_scope": _SOURCE_SCOPE[result.source],
+            "time_match": _time_match(result),
+        },
         "detail": _bounded_value(_public_payload(result.payload), query=result.query),
     }
 
@@ -345,10 +356,6 @@ def _bounded_value(value: Any, *, query: str, depth: int = 0) -> Any:
         matching = [item for item in value if _matches_requested_anchor(item, query)]
         selected = matching + [item for item in value if item not in matching]
         return [_bounded_value(item, query=query, depth=depth + 1) for item in selected[:4]]
-    if isinstance(value, str) and _BOILERPLATE_RE.search(value):
-        return "[안내문 제외]"
-    if isinstance(value, str) and len(value) > 1200:
-        return value[:1200] + " [excerpt]"
     return value
 
 
@@ -448,6 +455,8 @@ def _cell(value: Any) -> str:
 
 
 def _entity_match(result: SourceResult) -> str:
+    if result.evidence is not None:
+        return result.evidence.entity_match
     values = [
         str(value).casefold()
         for path, value in _walk_scalars(result.payload)
@@ -461,6 +470,8 @@ def _entity_match(result: SourceResult) -> str:
 
 
 def _time_match(result: SourceResult) -> str:
+    if result.evidence is not None:
+        return result.evidence.time_match
     requested = set(re.findall(r"(?:19|20)\d{2}", result.query))
     if not requested:
         return "NOT_REQUESTED"
@@ -510,14 +521,14 @@ def _append_automatic_footnotes(answer: str, results: Sequence[SourceResult]) ->
 
 def _finalize_answer(answer: str, results: Sequence[SourceResult]) -> str:
     # The final gate renders citations from typed results. Remove the model-owned
-    # source block first so deterministic footnotes and coverage notices remain.
+    # source block first so deterministic footnotes remain.
     if "## 출처" in answer:
         answer = answer.split("## 출처", 1)[0].rstrip()
     answer = _append_automatic_footnotes(answer, results)
-    return _append_coverage_notices(answer, results)
+    return answer
 
 
-def _append_coverage_notices(answer: str, results: Sequence[SourceResult]) -> str:
+def _coverage_notices(results: Sequence[SourceResult]) -> tuple[str, ...]:
     notices: list[str] = []
     for result in results:
         if result.source not in {"hira", "nedrug"} or not isinstance(result.payload, Mapping):
@@ -539,10 +550,7 @@ def _append_coverage_notices(answer: str, results: Sequence[SourceResult]) -> st
                 notices.append(f"{period}년은 조회 실패로 값을 확인하지 못했습니다(환자수 0 이 아님).")
             elif status == "no_data":
                 notices.append(f"{period}년은 조회 완료됐으나 해당 데이터가 없습니다.")
-    missing = tuple(dict.fromkeys(notice for notice in notices if notice not in answer))
-    if not missing:
-        return answer
-    return f"{answer.rstrip()}\n\n" + "\n".join(f"- {notice}" for notice in missing)
+    return tuple(dict.fromkeys(notices))
 
 
 def _evidence_fallback(results: Sequence[SourceResult]) -> str:

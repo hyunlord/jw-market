@@ -37,6 +37,9 @@ _METRIC_FIELDS: dict[str, tuple[str, ...]] = {
     "성장률": ("growth", "yoy", "cagr", "delta"),
 }
 _CONTEXT_FIELDS = ("period", "year", "month", "yyyymm")
+_CONFIRMED_CAUSE_RE = re.compile(
+    r"[^.\n]*(?:원인으로\s*확인|때문인\s*것으로\s*확인|원인은)[^.\n]*(?:\.|$)"
+)
 
 
 def apply_v4_gates(
@@ -99,9 +102,30 @@ def apply_v4_gates(
     }
 
     timed_out = tuple(item for item in results if item.status == "timeout")
-    if timed_out:
-        delayed = ", ".join(dict.fromkeys(item.source for item in timed_out))
-        text = _append_sentence(text, f"응답 지연으로 미포함: {delayed}")
+    trace["delayed_sources"] = list(
+        dict.fromkeys(item.source for item in timed_out)
+    )
+
+    asks_cause = any(marker in question.casefold() for marker in ("원인", "왜 ", "이유"))
+    usable_evidence = tuple(
+        item.evidence for item in results if item.status == "ok" and item.evidence is not None
+    )
+    causal_unsupported = asks_cause and bool(usable_evidence) and not any(
+        evidence.causal is True for evidence in usable_evidence
+    )
+    confirmed_cause = bool(_CONFIRMED_CAUSE_RE.search(text))
+    if causal_unsupported and confirmed_cause:
+        text = _CONFIRMED_CAUSE_RE.sub("", text).strip()
+        text = _append_sentence(
+            text,
+            "확인된 자료는 관찰 근거이므로 구체적 원인은 확인되지 않았습니다. 현재 근거로는 관련 가능성만 해석할 수 있습니다.",
+        )
+    trace["causal_claim_guard"] = {
+        "blocked": causal_unsupported and confirmed_cause,
+        "causal_evidence_available": any(
+            evidence.causal is True for evidence in usable_evidence
+        ),
+    }
 
     raw_won_blocked = bool(_RAW_WON_RE.search(text))
     if raw_won_blocked:

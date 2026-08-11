@@ -78,6 +78,28 @@ class Citation(_StrictModel):
     used: bool = False
 
 
+class EvidenceEnvelope(_StrictModel):
+    kind: Literal["mart", "hira", "clinical", "nedrug", "openfda", "web", "patent"]
+    entity_match: Literal["EXACT", "PARTIAL", "MISMATCH"]
+    source_scope: Literal["KR", "US", "GLOBAL"]
+    time_match: Literal["MATCH", "MISMATCH", "NOT_REQUESTED"]
+    eligible_claims: tuple[str, ...] = ()
+    causal: bool | None = None
+    metric_type: str | None = None
+    period: tuple[str, ...] = ()
+    unit: dict[str, str] = Field(default_factory=dict)
+    study_type: str | None = None
+    intervention_type: tuple[str, ...] = ()
+    phase: tuple[str, ...] = ()
+    recruitment_status: str | None = None
+    country: tuple[str, ...] = ()
+    disease: tuple[str, ...] = ()
+    product: tuple[str, ...] = ()
+    ingredient: tuple[str, ...] = ()
+    company: tuple[str, ...] = ()
+    approval_date: tuple[str, ...] = ()
+
+
 class SourceResult(_StrictModel):
     source: SourceName
     query: str
@@ -87,6 +109,7 @@ class SourceResult(_StrictModel):
     elapsed_ms: float = 0.0
     notice: str | None = None
     cache_hit: bool = False
+    evidence: EvidenceEnvelope | None = None
 
 
 class GatedAnswer(_StrictModel):

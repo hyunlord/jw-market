@@ -50,7 +50,7 @@ class V4Runtime:
         self._planner = planner
         self._executor = executor
         self._synthesizer = synthesizer
-        self._total_timeout_s = 54.0
+        self._total_timeout_s = 96.0
         self._session_results: OrderedDict[str, tuple[SourceResult, ...]] = OrderedDict()
         self._session_results_lock = threading.Lock()
         self._max_session_results = 1024
@@ -144,7 +144,7 @@ class V4Runtime:
                 self._executor,
                 plan,
                 session_id=session_id,
-                total_timeout_s=min(20.0, _remaining(deadline)),
+                total_timeout_s=min(45.0, _remaining(deadline)),
                 answer_sources=plan.answer_sources,
                 soft_deadline_s=6.0,
                 progress_callback=source_completed,
@@ -176,7 +176,7 @@ class V4Runtime:
                 self._executor,
                 linked_plan,
                 session_id=session_id,
-                total_timeout_s=min(10.0, _remaining(deadline)),
+                total_timeout_s=min(30.0, _remaining(deadline)),
                 answer_sources=linked_plan.answer_sources,
                 soft_deadline_s=6.0,
                 progress_callback=source_completed,
@@ -198,7 +198,7 @@ class V4Runtime:
                 self._executor,
                 gap_plan,
                 session_id=session_id,
-                total_timeout_s=min(6.0, _remaining(deadline)),
+                total_timeout_s=min(30.0, _remaining(deadline)),
                 answer_sources=("web",),
                 soft_deadline_s=4.0,
                 source_filter=("web",),
@@ -338,8 +338,8 @@ def build_default_runtime() -> V4Runtime:
         planner=V4Planner(planner_client()),
         executor=ParallelSourceExecutor(
             adapters=build_source_adapters(),
-            per_tool_timeout_s=20.0,
-            total_timeout_s=20.0,
+            per_tool_timeout_s=30.0,
+            total_timeout_s=45.0,
         ),
         synthesizer=V4Synthesizer(synthesizer_client()),
     )
