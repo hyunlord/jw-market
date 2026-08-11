@@ -224,6 +224,63 @@ def test_r10_absence_context_requires_confirmed_empty_official_result(status: st
     assert _absence_context_request(plan, (result,)) is None
 
 
+def test_r10_absence_context_does_not_fire_when_search_found_official_document() -> None:
+    from jw_chat_agent_poc.service.v4.runtime import _absence_context_request
+
+    plan = _plan("리바로 급여기준").model_copy(update={"answer_sources": ("hira",)})
+    results = (
+        SourceResult(source="hira", query="리바로 급여기준", status="empty"),
+        SourceResult(
+            source="web",
+            query="리바로 급여기준 최신 고시",
+            status="ok",
+            payload={
+                "items": [
+                    {
+                        "url": "https://www.hira.or.kr/rc/drug/insuadtcrtr/bbsView.do?id=1",
+                        "title": "보험인정기준",
+                    }
+                ]
+            },
+        ),
+    )
+
+    assert _absence_context_request(plan, results) is None
+
+
+def test_r10_absence_context_surface_keeps_official_absence_and_reported_event() -> None:
+    from jw_chat_agent_poc.service.v4.runtime import _tag_absence_context
+    from jw_chat_agent_poc.service.v4.synthesizer import _append_absence_context_surface
+
+    request = {
+        "source": "hira",
+        "document": "reimbursement",
+        "query": "마운자로 급여기준",
+    }
+    result = _tag_absence_context(
+        SourceResult(
+            source="web",
+            query="마운자로 급여기준 부재 경과",
+            status="ok",
+            payload={
+                "items": [
+                    {
+                        "url": "https://www.yna.co.kr/view/example",
+                        "title": "마운자로 급여 협상 결렬 뒤 재신청",
+                    }
+                ]
+            },
+        ),
+        request,
+    )
+
+    answer = _append_absence_context_surface("## 핵심 답\n허가사항은 확인됐습니다.", (result,))
+
+    assert "HIRA 공식 급여기준 조회" in answer
+    assert "협상 결렬" in answer
+    assert "보도되고 있습니다" in answer
+
+
 def test_r10_shadow_treats_year_as_period_not_ungrounded_number() -> None:
     result = _mart({"period": "2026-06", "sales_억원": 85.87})
 
@@ -676,3 +733,51 @@ def test_r10_runtime_runs_one_web_wave_after_confirmed_official_absence() -> Non
 
     assert executor.filters == [None, ("web",)]
     assert answer.trace["absence_context"]["triggered"] is True
+
+
+def test_r10_runtime_reuses_first_wave_web_when_absence_wave_is_empty() -> None:
+    from jw_chat_agent_poc.service.v4.synthesizer import SynthesisOutcome
+
+    plan = _plan("마운자로 급여기준").model_copy(update={"answer_sources": ("hira",)})
+
+    class Planner:
+        def plan_with_trace(self, question, turns, *, budget_s):
+            return SimpleNamespace(plan=plan, trace={"elapsed_ms": 1.0, "usage": {}})
+
+        def link(self, *_args, **_kwargs):
+            return None
+
+    class Executor:
+        def execute_with_trace(self, _plan, **kwargs):
+            if kwargs.get("source_filter") == ("web",):
+                results = (SourceResult(source="web", query="부재 경과", status="empty"),)
+            else:
+                results = (
+                    SourceResult(source="hira", query="마운자로 급여기준", status="empty"),
+                    SourceResult(
+                        source="web",
+                        query="마운자로 급여기준 최신",
+                        status="ok",
+                        payload={
+                            "items": [
+                                {
+                                    "url": "https://www.yna.co.kr/view/example",
+                                    "title": "마운자로 급여 협상 결렬 뒤 재신청",
+                                }
+                            ]
+                        },
+                    ),
+                )
+            return SimpleNamespace(results=results, trace={"elapsed_ms": 1.0, "tools": []})
+
+    class Synthesizer:
+        def synthesize_with_trace(self, _plan, results, _turns, *, budget_s):
+            tagged = next(result for result in results if result.source == "web" and result.status == "ok")
+            assert tagged.payload["absence_context"]["official_absence"] is True
+            return SynthesisOutcome(text="협상 결렬 경과가 보도되고 있습니다.", trace={"elapsed_ms": 1.0})
+
+    answer = V4Runtime(
+        planner=Planner(), executor=Executor(), synthesizer=Synthesizer()
+    ).answer("마운자로 급여기준", conversation_id="absence-fallback", turns=())
+
+    assert "협상 결렬" in answer.text

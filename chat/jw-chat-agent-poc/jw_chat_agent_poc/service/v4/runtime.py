@@ -322,6 +322,13 @@ class V4Runtime:
                 ),
                 trace=absence_execution.trace,
             )
+            if not any(result.status == "ok" for result in absence_execution.results):
+                first_results = tuple(
+                    _tag_absence_context(result, absence_request)
+                    if result.source == "web" and result.status == "ok"
+                    else result
+                    for result in first_results
+                )
         current_results = (
             *first_results,
             *linked_results,
@@ -1015,11 +1022,35 @@ def _absence_context_request(
         return None
     if not all(result.status == "empty" for result in official):
         return None
+    if _has_official_document_reference(results, requested[0]):
+        return None
     return {
         "source": requested[0],
         "document": requested[1],
         "query": plan.resolved_question,
     }
+
+
+def _has_official_document_reference(
+    results: Sequence[SourceResult],
+    source: str,
+) -> bool:
+    official_hosts = {
+        "hira": ("hira.or.kr",),
+        "nedrug": ("nedrug.mfds.go.kr", "mfds.go.kr"),
+    }.get(source, ())
+    if not official_hosts:
+        return False
+    for result in results:
+        if result.source == source or not isinstance(result.payload, Mapping):
+            continue
+        for path, value in _walk_state_values(result.payload):
+            if path.rsplit(".", 1)[-1].casefold() not in {"url", "href", "link"}:
+                continue
+            host = (urlparse(str(value)).hostname or "").casefold()
+            if any(host == expected or host.endswith(f".{expected}") for expected in official_hosts):
+                return True
+    return False
 
 
 def _tag_absence_context(

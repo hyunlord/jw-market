@@ -270,6 +270,7 @@ class V4Synthesizer:
             tuple(usable),
         )
         answer = _append_required_adverse_signal(answer, usable)
+        answer = _append_absence_context_surface(answer, usable)
         answer = _finalize_answer(answer, usable)
         return SynthesisOutcome(
             text=answer,
@@ -449,6 +450,58 @@ def _is_absence_context_result(result: SourceResult) -> bool:
         and context.get("official_absence") is True
         and context.get("reported_context_only") is True
     )
+
+
+def _append_absence_context_surface(
+    answer: str,
+    results: Sequence[SourceResult],
+) -> str:
+    context_result = next(
+        (
+            result
+            for result in results
+            if result.status == "ok" and _is_absence_context_result(result)
+        ),
+        None,
+    )
+    if context_result is None or not isinstance(context_result.payload, Mapping):
+        return answer
+    if "급여 협상" in answer and "보도" in answer:
+        return answer
+    context = context_result.payload.get("absence_context")
+    if not isinstance(context, Mapping):
+        return answer
+    items = context_result.payload.get("items")
+    if not isinstance(items, list):
+        return answer
+    event = next(
+        (
+            item
+            for item in items
+            if isinstance(item, Mapping)
+            and any(marker in str(item.get("title") or "") for marker in ("협상", "급여"))
+        ),
+        None,
+    )
+    if event is None:
+        return answer
+    title = " ".join(str(event.get("title") or "").split())
+    if not title:
+        return answer
+    source = str(context.get("source") or "")
+    document = str(context.get("document") or "")
+    official_label = "HIRA" if source == "hira" else "식품의약품안전처"
+    document_label = "급여기준" if document == "reimbursement" else "허가 문서"
+    section = (
+        f"## {document_label} 경과\n"
+        f"{official_label} 공식 {document_label} 조회에서 해당 문서를 확인하지 못했습니다 "
+        f"[출처: {official_label}]. 웹 자료에서는 \"{title}\"로 보도되고 있습니다 "
+        "[출처: 웹 자료]."
+    )
+    marker = "\n## 미확인 요소"
+    if marker in answer:
+        return answer.replace(marker, f"\n\n{section}{marker}", 1)
+    return f"{answer.rstrip()}\n\n{section}"
 
 
 def _evidence_packet(result: SourceResult) -> dict[str, Any]:
