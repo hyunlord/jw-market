@@ -83,6 +83,13 @@ def test_v4_adapter_extracts_identifiers_and_source_specific_queries() -> None:
     )
 
 
+def test_v4_hira_patient_query_wins_over_planner_reimbursement_wording() -> None:
+    assert v4_adapters._hira_query_kind(
+        "H360 국내 급여 및 환자 통계 최근 5년"
+    ) == "patient"
+    assert v4_adapters._hira_query_kind("아일리아 급여기준") == "reimbursement"
+
+
 def test_v4_mart_relevance_rejects_external_only_questions() -> None:
     assert v4_adapters._mart_relevant("리바로 요즘 어때") is True
     assert v4_adapters._mart_relevant("리바로 매출 알려줘") is True
@@ -1062,6 +1069,37 @@ def test_hira_synthesis_input_keeps_all_requested_year_calls() -> None:
 
     for year in range(2022, 2027):
         assert f'"year": "{year}"' in messages[-1]["content"]
+
+
+def test_mart_synthesis_input_keeps_long_history_fields_after_scalar_metadata() -> None:
+    history = [
+        {"period": f"2025-{month:02d}", "sales_억원": float(month)}
+        for month in range(1, 13)
+    ]
+    result = SourceResult(
+        source="mart",
+        query="리바로 연도별 매출액 추이",
+        status="ok",
+        payload={
+            "calls": [
+                {
+                    "render_data": {
+                        **{f"metadata_{index}": index for index in range(20)},
+                        "brand_value_series_10pt": history,
+                        "series_insight": {"trend_direction": "down"},
+                    }
+                }
+            ]
+        },
+    )
+
+    messages = v4_synthesizer._synthesis_messages(_plan(), (result,), ())
+    prompt = json.loads(messages[-1]["content"])
+    mart_block = prompt["internal_datamart"][0]
+
+    assert '"brand_value_series_10pt"' in mart_block
+    assert '"2025-12"' in mart_block
+    assert '"series_insight"' in mart_block
 
 
 def test_hira_coverage_notices_are_trace_metadata_not_answer_body() -> None:

@@ -69,6 +69,19 @@ _PUBLIC_FIELD_ALIASES = {
     "REEXAM_DATE": "reexamination_period",
     "REEXAM_TARGET": "reexamination_target",
 }
+_BOUNDED_PRIORITY_KEYS = (
+    "brand",
+    "period",
+    "source_label",
+    "sales_억원",
+    "market_size_억원",
+    "brand_value_series_10pt",
+    "market_size_series",
+    "level_top5_trend_series",
+    "series_insight",
+    "request",
+    "items",
+)
 @dataclass(frozen=True)
 class SynthesisOutcome:
     text: str
@@ -341,9 +354,20 @@ def _bounded_value(value: Any, *, query: str, depth: int = 0) -> Any:
     if depth >= 8:
         return "[nested detail omitted]"
     if isinstance(value, Mapping):
+        items = list(value.items())
+        priority = [
+            (key, value[key])
+            for key in _BOUNDED_PRIORITY_KEYS
+            if key in value
+        ]
+        selected_keys = {key for key, _item in priority}
+        selected = (
+            priority
+            + [(key, item) for key, item in items if key not in selected_keys]
+        )[:16]
         return {
             str(key): _bounded_value(item, query=query, depth=depth + 1)
-            for key, item in tuple(value.items())[:16]
+            for key, item in selected
         }
     if isinstance(value, list):
         period_records = [item for item in value if _period_record(item)]
@@ -362,6 +386,8 @@ def _bounded_value(value: Any, *, query: str, depth: int = 0) -> Any:
 def _period_record(value: Any) -> bool:
     if not isinstance(value, Mapping):
         return False
+    if any(value.get(key) not in (None, "") for key in ("period", "year", "yyyymm")):
+        return True
     render_data = value.get("render_data")
     if not isinstance(render_data, Mapping):
         return False

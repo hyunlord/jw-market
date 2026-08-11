@@ -309,6 +309,18 @@ def _hira_code(query: str) -> str | None:
     return None
 
 
+def _hira_query_kind(query: str) -> str:
+    code = _hira_code(query)
+    if code and any(
+        token in query
+        for token in ("환자", "통계", "추이", "시계열", "연도별", "연도 별")
+    ):
+        return "patient"
+    if "급여" in query:
+        return "reimbursement"
+    return "patient" if code else "lookup"
+
+
 def _requested_hira_years(
     query: str,
     *,
@@ -516,31 +528,9 @@ def build_source_adapters() -> dict[SourceName, Any]:
     def hira(query: str) -> SourceResult:
         base = _base_query(query)
         resolution = resolved(query)
-        if "급여" in base:
-            subject = _reimbursement_subject(base)
-            subject_resolution = resolved(subject)
-            brand = (
-                subject_resolution.canonical_brand
-                if subject_resolution is not None
-                else subject
-            )
-            criterion = HiraReimbursementHttpClient(timeout_s=7).fetch(
-                brand
-            )
-            if criterion is None:
-                return external_calls("hira", query, [])
-            call = ExternalCall(
-                tool="hira_reimbursement_detail",
-                source="hira_reimbursement",
-                status="ok",
-                summary_text=criterion.raw_text,
-                render_data=asdict(criterion),
-                safe_url=criterion.source_url,
-            )
-            return external_calls("hira", query, [call])
-
+        query_kind = _hira_query_kind(base)
         code = _hira_code(base)
-        if code:
+        if query_kind == "patient" and code:
             calls = [external.hira_disease_name_code(code)]
             years = _requested_hira_years(base) or ("2024",)
 
@@ -572,6 +562,30 @@ def build_source_adapters() -> dict[SourceName, Any]:
             return result.model_copy(
                 update={"payload": {**result.payload, "period_coverage": coverage}}
             )
+
+        if query_kind == "reimbursement":
+            subject = _reimbursement_subject(base)
+            subject_resolution = resolved(subject)
+            brand = (
+                subject_resolution.canonical_brand
+                if subject_resolution is not None
+                else subject
+            )
+            criterion = HiraReimbursementHttpClient(timeout_s=7).fetch(
+                brand
+            )
+            if criterion is None:
+                return external_calls("hira", query, [])
+            call = ExternalCall(
+                tool="hira_reimbursement_detail",
+                source="hira_reimbursement",
+                status="ok",
+                summary_text=criterion.raw_text,
+                render_data=asdict(criterion),
+                safe_url=criterion.source_url,
+            )
+            return external_calls("hira", query, [call])
+
         return external_calls("hira", query, [external.hira_disease_name_code(base)])
 
     def openfda(query: str) -> SourceResult:
