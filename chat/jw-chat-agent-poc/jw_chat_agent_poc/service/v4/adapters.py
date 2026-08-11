@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
+import threading
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, replace
 from decimal import Decimal, InvalidOperation
@@ -21,21 +24,6 @@ _NCT_RE = re.compile(r"\bNCT\d{8}\b", re.IGNORECASE)
 _HIRA_CODE_RE = re.compile(r"(?<![A-Za-z0-9])([A-Za-z]\d{2}(?:\.?\d)?)(?![A-Za-z0-9])")
 _RECENT_YEAR_RE = re.compile(r"최근\s*(\d{1,2})\s*년")
 _YEAR_RE = re.compile(r"20\d{2}")
-_MART_TERMS = (
-    "매출",
-    "점유율",
-    "순위",
-    "hhi",
-    "집중도",
-    "성장",
-    "증감",
-    "yoy",
-    "cagr",
-    "경쟁",
-    "시장 규모",
-    "원인분석",
-    "요즘",
-)
 _DISEASE_ALIASES = {
     "당뇨망막병증": ("H360", "diabetic retinopathy"),
     "당뇨병성 망막병증": ("H360", "diabetic retinopathy"),
@@ -71,6 +59,15 @@ _SOURCE_SCOPE = {
     "web": "GLOBAL",
     "patent": "GLOBAL",
 }
+_V4_GATE_WEB_CACHE: dict[tuple[str, str, str], Any] = {}
+_V4_GATE_WEB_CACHE_LOCK = threading.Lock()
+_TRANSPORT_ERROR_RE = re.compile(
+    r"timed out|read timeout|connect timeout|connection (?:aborted|refused|reset)|"
+    r"max retries exceeded|temporary failure in name resolution|name or service not known|"
+    r"network is unreachable|remote end closed connection|proxyerror|"
+    r"\b(?:502|503|504) server error\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -477,11 +474,6 @@ def _clinical_query(query: str) -> tuple[str, str]:
     return _ingredient_query(query), "intervention"
 
 
-def _mart_relevant(query: str) -> bool:
-    lowered = query.casefold()
-    return any(term in lowered for term in _MART_TERMS)
-
-
 def _base_query(query: str) -> str:
     value = " ".join(query.split())
     suffixes = (
@@ -555,14 +547,6 @@ def build_source_adapters() -> dict[SourceName, Any]:
     def mart(query: str) -> SourceResult:
         started_at = datetime.now(UTC)
         payloads: list[dict[str, Any]] = []
-        if not _mart_relevant(query):
-            return SourceResult(
-                source="mart",
-                query=query,
-                status="empty",
-                payload={"calls": []},
-                notice="question does not request a mart-backed metric",
-            )
         route = general_view.route(query)
         if route in {GeneralRoute.GENERAL_ONLY, GeneralRoute.DUAL}:
             result = general_view.answer(
@@ -574,11 +558,8 @@ def build_source_adapters() -> dict[SourceName, Any]:
                 payloads.append(result)
 
         layer = dependencies.query_layer
-        if route is not GeneralRoute.GENERAL_ONLY and layer is not None:
-            try:
-                resolution = dependencies.resolver.resolve(query, allow_default=False)
-            except LookupError:
-                resolution = None
+        if layer is not None:
+            resolution = resolved(query)
             if resolution is not None:
                 payloads.extend(_strategic_mart_calls(layer, resolution.canonical_brand, query))
 
@@ -735,50 +716,255 @@ def build_source_adapters() -> dict[SourceName, Any]:
         "hira": hira,
         "openfda": openfda,
         "clinicaltrials": clinicaltrials,
-        "web": lambda query: external_calls("web", query, [external.web_search(_base_query(query))]),
+        "web": lambda query: external_calls(
+            "web",
+            query,
+            [_v4_web_search(external, _base_query(query), search_depth="advanced")],
+        ),
         "patent": lambda query: external_calls(
-            "patent", query, [external.web_search(f"{_base_query(query)} 특허 만료 공식")]
+            "patent",
+            query,
+            [
+                _v4_web_search(
+                    external,
+                    f"{_base_query(query)} 특허 만료 공식",
+                    search_depth="basic",
+                )
+            ],
         ),
     }
 
 
 def _strategic_mart_calls(layer, brand: str, query: str) -> list[dict[str, Any]]:
     lowered = query.casefold()
-    metrics: list[str] = []
-    if "점유율" in lowered:
-        metrics.append("share")
-    if "순위" in lowered:
-        metrics.append("rank")
-    if "hhi" in lowered or "집중도" in lowered:
-        metrics.append("hhi")
-    if any(token in lowered for token in ("성장", "증감", "yoy", "cagr")):
-        metrics.append("growth")
-    if "매출" in lowered or not metrics:
-        metrics.append("sales")
-
     calls: list[dict[str, Any]] = []
-    history_points = 60 if any(
-        token in lowered
-        for token in ("추이", "시계열", "최근 5년", "최근5년", "변해", "변화", "변동")
-    ) else 10
-    for metric in dict.fromkeys(metrics):
+    try:
+        scope = layer.market_scope(brand)
+    except (LookupError, ValueError):
+        return calls
+    if _mart_payload_ok(scope):
+        calls.append(scope)
+    market = _mart_market_id(scope)
+
+    metric_package = (
+        ("sales", 60),
+        ("share", 10),
+        ("rank", 10),
+        ("prescription_volume", 60),
+    )
+    for metric, history_points in metric_package:
         try:
             calls.append(
                 layer.brand_metric(
                     brand,
                     metric,
                     "latest",
+                    market=market,
                     history_points=history_points,
                 )
             )
-        except LookupError:
+        except (LookupError, ValueError):
             continue
-    if any(token in lowered for token in ("경쟁", "경쟁사", "시장", "요즘")):
+
+    try:
+        calls.append(layer.top_brands(brand, limit=5, metric="sales", market=market))
+    except (LookupError, ValueError):
+        pass
+
+    try:
+        cause = layer.cause_card_data(brand, market)
+    except (LookupError, ValueError):
+        cause = {}
+    if cause:
+        calls.append(
+            {
+                "source": str(scope.get("source") or "내부 데이터마트"),
+                "tool": "cause_card_data",
+                "summary_text": f"{brand} 시장의 원인분석 분해 데이터를 직접 조회했습니다.",
+                "render_data": cause,
+            }
+        )
+
+    dimensions: list[str] = []
+    if "진료과" in lowered:
+        dimensions.append("specialty")
+    if any(token in lowered for token in ("유통채널", "채널별", "채널")):
+        dimensions.append("channel")
+    breakdown_metric = (
+        "prescription_volume"
+        if any(token in lowered for token in ("처방", "판매량", "수량"))
+        else "sales"
+    )
+    trend_requested = any(
+        token in lowered
+        for token in ("추이", "시계열", "최근 5년", "최근5년", "변해", "변화", "변동")
+    )
+    for dimension in dimensions:
         try:
-            calls.append(layer.top_brands(brand, limit=5, metric="sales"))
-        except LookupError:
+            calls.append(
+                layer.dimension_breakdown(
+                    brand,
+                    dimension,
+                    market=market,
+                    metric=breakdown_metric,
+                )
+            )
+        except (LookupError, ValueError):
+            pass
+        if not trend_requested:
+            continue
+        try:
+            calls.append(
+                layer.query(
+                    {
+                        "market": market,
+                        "metrics": [breakdown_metric],
+                        "group_by": [dimension, "period"],
+                        "derive": ["trend"],
+                        "filters": {"brand": brand},
+                        "sort": "period_asc",
+                        "limit": 10,
+                    },
+                    fallback_brand=brand,
+                )
+            )
+        except (LookupError, ValueError):
             pass
     return calls
+
+
+def _mart_market_id(scope: dict[str, Any]) -> str | None:
+    render_data = scope.get("render_data")
+    if not isinstance(render_data, dict):
+        return None
+    value = render_data.get("market_id") or render_data.get("market")
+    return str(value).strip() if value not in (None, "") else None
+
+
+def _clear_v4_gate_web_cache() -> None:
+    with _V4_GATE_WEB_CACHE_LOCK:
+        _V4_GATE_WEB_CACHE.clear()
+
+
+def _v4_web_search(
+    external: Any,
+    query: str,
+    *,
+    search_depth: str,
+    topic: str = "general",
+):
+    provider = os.environ.get("WEB_SEARCH_PROVIDER", "tavily").strip().casefold()
+    if provider != "tavily_mcp":
+        return external.web_search(query, topic=topic)
+
+    cache_enabled = all(
+        os.environ.get(name, "").strip().casefold() in {"1", "true", "yes", "on"}
+        for name in ("CHAT_V4_GATE_WEB_CACHE_ENABLED", "CHAT_V4_GATE_RUNNER")
+    )
+    cache_key = (" ".join(query.split()), search_depth, topic)
+    if cache_enabled:
+        with _V4_GATE_WEB_CACHE_LOCK:
+            cached = _V4_GATE_WEB_CACHE.get(cache_key)
+        if cached is not None:
+            return replace(
+                cached,
+                render_data={
+                    **cached.render_data,
+                    "v4_tavily_policy": {
+                        **cached.render_data.get("v4_tavily_policy", {}),
+                        "gate_cache_hit": True,
+                    },
+                },
+            )
+
+    attempts = 1
+    call = _v4_tavily_mcp_request(
+        external,
+        query,
+        search_depth=search_depth,
+        topic=topic,
+    )
+    if _v4_transport_retryable(call):
+        attempts = 2
+        call = _v4_tavily_mcp_request(
+            external,
+            query,
+            search_depth=search_depth,
+            topic=topic,
+        )
+    call = replace(
+        call,
+        render_data={
+            **call.render_data,
+            "v4_tavily_policy": {
+                "attempts": attempts,
+                "search_depth": search_depth,
+                "gate_cache_hit": False,
+                "retry_scope": "transport_only",
+            },
+        },
+    )
+    if cache_enabled and call.status in {"live", "no_data"}:
+        with _V4_GATE_WEB_CACHE_LOCK:
+            _V4_GATE_WEB_CACHE[cache_key] = call
+    return call
+
+
+def _v4_transport_retryable(call: Any) -> bool:
+    if str(getattr(call, "status", "")).casefold() != "error":
+        return False
+    render_data = getattr(call, "render_data", {})
+    if not isinstance(render_data, dict):
+        return False
+    if str(render_data.get("error_type") or "").casefold() == "parse_failure":
+        return False
+    detail = " ".join(
+        str(value)
+        for value in (
+            render_data.get("error"),
+            render_data.get("message"),
+            getattr(call, "summary_text", ""),
+        )
+        if value
+    )
+    return bool(_TRANSPORT_ERROR_RE.search(detail))
+
+
+def _v4_tavily_mcp_request(
+    external: Any,
+    query: str,
+    *,
+    search_depth: str,
+    topic: str,
+):
+    from jw_chat_agent_poc.tools.external.client import (
+        TAVILY_MCP_SOURCE,
+        _mcp_tool_spec,
+        _tavily_mcp_web_call,
+        _web_error,
+    )
+    from jw_chat_agent_poc.tools.external.mcp_client import (
+        McpClientError,
+        McpJsonClient,
+        mcp_attempt_limit,
+    )
+
+    params = {"query": query, "max_results": "5", "topic": topic}
+    spec = _mcp_tool_spec("tavily_mcp_search", params)
+    spec["arguments"]["search_depth"] = search_depth
+    url = external._mcp_url(spec["resource_id"], spec["source"])
+    started = time.monotonic()
+    try:
+        with mcp_attempt_limit(1):
+            result = McpJsonClient(
+                url,
+                timeout_s=int(getattr(external, "timeout_s", 12)),
+            ).call_tool(spec["mcp_tool"], spec["arguments"])
+    except McpClientError as exc:
+        elapsed = round((time.monotonic() - started) * 1000, 1)
+        return _web_error(TAVILY_MCP_SOURCE, query, exc, elapsed)
+    elapsed = round((time.monotonic() - started) * 1000, 1)
+    return _tavily_mcp_web_call(params, result, elapsed)
 
 
 def _mart_payload_ok(payload: dict[str, Any]) -> bool:

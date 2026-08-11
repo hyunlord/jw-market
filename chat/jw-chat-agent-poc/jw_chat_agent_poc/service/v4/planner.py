@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from collections.abc import Sequence
@@ -317,11 +318,16 @@ def _parse_plan(raw: str) -> PlannerOutput:
 
 
 def _limit_first_wave_queries(plan: PlannerOutput) -> PlannerOutput:
+    try:
+        limit = int(os.environ.get("CHAT_V4_MAX_SOURCE_QUERIES", "1"))
+    except ValueError:
+        limit = 1
+    limit = max(1, min(limit, 2))
     return plan.model_copy(
         update={
             "tool_queries": ToolQueries(
                 **{
-                    source: (queries[0],)
+                    source: queries[:limit]
                     for source, queries in plan.tool_queries.items()
                 }
             )
@@ -359,7 +365,7 @@ def _fallback_answer_sources(question: str) -> tuple[SourceName, ...]:
     lowered = question.casefold()
     if any(token in lowered for token in ("환자", "상병", "급여")):
         return ("hira",)
-    if any(token in lowered for token in ("효능", "효과", "허가", "성분")):
+    if any(token in lowered for token in ("효능", "효과", "허가", "성분", "재심사")):
         return ("nedrug",)
     if "nct" in lowered or "임상" in lowered:
         return ("clinicaltrials",)
@@ -372,7 +378,10 @@ def _direct_answer_sources(question: str) -> tuple[SourceName, ...]:
     lowered = question.casefold()
     if any(token in lowered for token in ("환자", "상병", "급여")):
         return ("hira",)
-    if any(token in lowered for token in ("효능", "효과", "허가", "성분", "제네릭", "바이오시밀러")):
+    if any(
+        token in lowered
+        for token in ("효능", "효과", "허가", "성분", "제네릭", "바이오시밀러", "재심사")
+    ):
         return ("nedrug",)
     if any(token in lowered for token in ("nct", "임상", "신약 개발", "시험 디자인", "선정", "제외기준")):
         return ("clinicaltrials",)

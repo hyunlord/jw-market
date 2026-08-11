@@ -27,17 +27,20 @@ from jw_chat_agent_poc.service.v4.llm import planner_client, synthesizer_client
 from jw_chat_agent_poc.service.v4.planner import V4Planner
 from jw_chat_agent_poc.service.v4.runtime import (
     V4Runtime,
+    _expanded_intents_detail,
     _is_prior_result_reference,
     _preserve_period_in_answer_queries,
 )
 from jw_chat_agent_poc.service.v4 import adapters as v4_adapters
 from jw_chat_agent_poc.service.v4 import llm as v4_llm
+from jw_chat_agent_poc.service.v4 import planner as v4_planner
 from jw_chat_agent_poc.service.v4 import synthesizer as v4_synthesizer
 from jw_chat_agent_poc.service.v4.synthesizer import (
     V4Synthesizer,
     _INTERNAL_SURFACE_RE,
     _evidence_fallback,
 )
+from jw_chat_agent_poc.tools.external.client import ExternalCall
 
 
 def _plan(**queries: tuple[str, ...]) -> PlannerOutput:
@@ -90,14 +93,22 @@ def test_v4_hira_patient_query_wins_over_planner_reimbursement_wording() -> None
     assert v4_adapters._hira_query_kind("아일리아 급여기준") == "reimbursement"
 
 
-def test_v4_mart_relevance_rejects_external_only_questions() -> None:
-    assert v4_adapters._mart_relevant("리바로 요즘 어때") is True
-    assert v4_adapters._mart_relevant("리바로 매출 알려줘") is True
-    assert v4_adapters._mart_relevant("리바로 효능효과") is False
-    assert v4_adapters._mart_relevant("리바로 특허 언제 만료돼") is False
-
-
-def test_v4_mart_adapter_always_returns_source_result(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "question",
+    (
+        "리바로젯 제품의 진료과별·유통채널별 처방 추이를 알려줘",
+        "리바로젯 최근 3~5개년 매출·판매량 동향을 알려줘",
+        "리바로젯 재심사 언제 끝나?",
+        "아일리아 급여기준",
+        "리바로 요즘 어때",
+        "리바로가 최근에 매출이 왜 올랐을까?",
+        "피타바스타틴 요즘 어때",
+    ),
+)
+def test_v4_mart_adapter_always_returns_source_result(
+    monkeypatch,
+    question: str,
+) -> None:
     from jw_chat_agent_poc.agent_loop import factory
     from jw_chat_agent_poc.service import general_view_routing
 
@@ -107,11 +118,56 @@ def test_v4_mart_adapter_always_returns_source_result(monkeypatch) -> None:
             return SimpleNamespace(canonical_brand="리바로", molecule_en=("Pitavastatin",))
 
     class QueryLayer:
-        def brand_metric(self, brand, metric, period, *, history_points=10):
-            return {"source": "UBIST", "brand": brand, "metric": metric, "period": period}
+        def market_scope(self, brand):
+            return {
+                "source": "UBIST",
+                "render_data": {"market_id": "ml_livalo", "anchor_brand": brand},
+            }
 
-        def top_brands(self, brand, *, limit, metric):
-            return {"source": "UBIST", "brand": brand, "limit": limit, "metric": metric}
+        def brand_metric(
+            self,
+            brand,
+            metric,
+            period,
+            *,
+            market=None,
+            history_points=10,
+        ):
+            return {
+                "source": "UBIST",
+                "brand": brand,
+                "metric": metric,
+                "period": period,
+                "market": market,
+                "history_points": history_points,
+            }
+
+        def top_brands(self, brand, *, limit, metric, market=None):
+            return {
+                "source": "UBIST",
+                "brand": brand,
+                "limit": limit,
+                "metric": metric,
+                "market": market,
+            }
+
+        def cause_card_data(self, brand, market):
+            return {"source": "UBIST", "brand": brand, "market": market, "ei_ms": {}}
+
+        def dimension_breakdown(self, brand, dimension, *, market, metric):
+            return {
+                "source": "UBIST",
+                "brand": brand,
+                "dimension": dimension,
+                "market": market,
+                "metric": metric,
+            }
+
+        def query(self, spec, *, fallback_brand):
+            return {
+                "source": "UBIST",
+                "render_data": {"spec": spec, "brand": fallback_brand},
+            }
 
     class GeneralView:
         def route(self, _query):
@@ -129,11 +185,135 @@ def test_v4_mart_adapter_always_returns_source_result(monkeypatch) -> None:
         lambda _resolver: GeneralView(),
     )
 
-    result = v4_adapters.build_source_adapters()["mart"]("리바로 매출 알려줘")
+    result = v4_adapters.build_source_adapters()["mart"](question)
 
     assert isinstance(result, SourceResult)
+    assert result.query == question
     assert result.status == "ok"
-    assert result.payload["calls"][0]["metric"] == "sales"
+    metrics = {
+        call["metric"]
+        for call in result.payload["calls"]
+        if isinstance(call, dict) and "metric" in call
+    }
+    assert metrics == {"sales", "share", "rank", "prescription_volume"}
+    assert any(
+        "ei_ms" in call.get("render_data", {})
+        for call in result.payload["calls"]
+        if isinstance(call, dict)
+    )
+    if "진료과" in question:
+        assert {
+            call.get("dimension")
+            for call in result.payload["calls"]
+            if isinstance(call, dict)
+        } >= {"specialty", "channel"}
+
+
+def test_v4_mart_adapter_keeps_strategic_package_for_general_only_route(monkeypatch) -> None:
+    from jw_chat_agent_poc.agent_loop import factory
+    from jw_chat_agent_poc.service import general_view_routing
+
+    class Resolver:
+        def resolve(self, _query, *, allow_default):
+            assert allow_default is False
+            return SimpleNamespace(canonical_brand="리바로", molecule_en=("Pitavastatin",))
+
+    class QueryLayer:
+        def market_scope(self, brand):
+            return {
+                "source": "UBIST",
+                "render_data": {"market_id": "ml_livalo", "anchor_brand": brand},
+            }
+
+        def brand_metric(self, brand, metric, period, *, market=None, history_points=10):
+            return {
+                "source": "UBIST",
+                "brand": brand,
+                "metric": metric,
+                "period": period,
+                "market": market,
+                "history_points": history_points,
+            }
+
+        def top_brands(self, brand, *, limit, metric, market=None):
+            return {"source": "UBIST", "brand": brand, "metric": metric, "market": market}
+
+        def cause_card_data(self, brand, market):
+            return {"source": "UBIST", "brand": brand, "market": market, "ei_ms": {}}
+
+    class GeneralView:
+        def route(self, _query):
+            return general_view_routing.GeneralRoute.GENERAL_ONLY
+
+        def answer(self, _query, *, compact, dual):
+            assert compact is False
+            assert dual is False
+            return {"source": "UBIST", "render_data": {"view": "general"}}
+
+    dependencies = SimpleNamespace(
+        external=SimpleNamespace(),
+        resolver=Resolver(),
+        query_layer=QueryLayer(),
+    )
+    monkeypatch.setattr(factory, "build_chat_agent_dependencies", lambda **_kwargs: dependencies)
+    monkeypatch.setattr(
+        general_view_routing.GeneralViewService,
+        "from_env",
+        lambda _resolver: GeneralView(),
+    )
+
+    result = v4_adapters.build_source_adapters()["mart"]("피타바스타틴 요즘 어때")
+
+    metrics = {
+        call["metric"]
+        for call in result.payload["calls"]
+        if isinstance(call, dict) and "metric" in call
+    }
+    assert metrics == {"sales", "share", "rank", "prescription_volume"}
+
+
+def test_v4_mart_dimension_trend_uses_query_catalog_supported_sort() -> None:
+    from jw_chat_agent_poc.tools.query_layer.catalog import default_catalog
+    from jw_chat_agent_poc.tools.query_layer.spec import validate_spec
+
+    trend_specs: list[dict] = []
+
+    class QueryLayer:
+        def market_scope(self, brand):
+            return {
+                "source": "UBIST",
+                "render_data": {"market_id": "ml_livalo", "anchor_brand": brand},
+            }
+
+        def brand_metric(self, brand, metric, period, *, market=None, history_points=10):
+            return {"source": "UBIST", "render_data": {"metric": metric}}
+
+        def top_brands(self, brand, *, limit, metric, market=None):
+            return {"source": "UBIST", "render_data": {"metric": metric}}
+
+        def cause_card_data(self, brand, market):
+            return {}
+
+        def dimension_breakdown(self, brand, dimension, *, market, metric):
+            return {"source": "UBIST", "render_data": {"dimension": dimension}}
+
+        def query(self, spec, *, fallback_brand):
+            validate_spec(spec, default_catalog())
+            trend_specs.append(spec)
+            return {"source": "UBIST", "render_data": {"brand": fallback_brand}}
+
+    calls = v4_adapters._strategic_mart_calls(
+        QueryLayer(),
+        "리바로젯",
+        "리바로젯 제품의 진료과별·유통채널별 처방 추이를 알려줘",
+    )
+
+    assert calls
+    assert {tuple(spec["group_by"]) for spec in trend_specs} == {
+        ("specialty", "period"),
+        ("channel", "period"),
+    }
+    assert {spec["sort"] for spec in trend_specs} == {"period_asc"}
 
 
 @pytest.mark.parametrize(
@@ -594,6 +774,22 @@ def test_v4_synthesis_prompt_preserves_source_payload_verbatim() -> None:
     assert "## 핵심 답" in system
     assert "한 문단은 최대 4문장" in system
     assert "다운로드 안내문" in system
+
+
+def test_v4_synthesis_prompt_keeps_external_topic_ahead_of_always_on_mart() -> None:
+    result = SourceResult(
+        source="mart",
+        query="아일리아 급여기준",
+        status="ok",
+        payload={"calls": [{"tool": "cause_card_data", "render_data": {"ei_ms": {}}}]},
+    )
+
+    system = v4_synthesizer._synthesis_messages(_plan(), (result,), ())[0]["content"]
+
+    assert "외부 근거가 핵심 답" in system
+    assert "내부 데이터마트는 종합 인사이트나 참고에만" in system
+    assert "요청 주제를 대체하거나 첫 문단을 빼앗지 않는다" in system
+    assert "도구로 확인된 원인 후보" in system
 
 
 def test_v4_synthesis_preserves_reexamination_source_fields_verbatim() -> None:
@@ -1486,25 +1682,117 @@ def test_v4_clinical_studies_are_classified_per_study_without_mutating_detail() 
     assert "인접 연구를 종합 인사이트에서 다시 요약하거나 해석하지 않는다" in messages[0]["content"]
 
 
-def test_v4_trend_query_requests_history_from_query_layer() -> None:
-    calls: list[tuple[str, str, str, int]] = []
+def test_v4_mart_package_always_requests_snapshot_history_context_and_cause() -> None:
+    metric_calls: list[tuple[str, str, str, str | None, int]] = []
 
     class Layer:
-        def brand_metric(self, brand, metric, period, *, history_points=10):
-            calls.append((brand, metric, period, history_points))
-            return {"metric": metric, "display": "85.87억원"}
+        def market_scope(self, brand):
+            return {
+                "source": "UBIST",
+                "render_data": {"market_id": "ml_livalo", "anchor_brand": brand},
+            }
 
-        def top_brands(self, brand, *, limit, metric):
-            return {"brand": brand, "limit": limit, "metric": metric}
+        def brand_metric(
+            self,
+            brand,
+            metric,
+            period,
+            *,
+            market=None,
+            history_points=10,
+        ):
+            metric_calls.append((brand, metric, period, market, history_points))
+            return {
+                "source": "UBIST",
+                "metric": metric,
+                "render_data": {"display": "85.87억원"},
+            }
+
+        def top_brands(self, brand, *, limit, metric, market=None):
+            return {
+                "source": "UBIST",
+                "brand": brand,
+                "limit": limit,
+                "metric": metric,
+                "market": market,
+            }
+
+        def cause_card_data(self, brand, market):
+            return {
+                "ei_ms": {"display": "EI/MS"},
+                "growth_contribution": {"display": "성장 기여"},
+                "customer_competition": ({"channel": "종합병원"},),
+            }
 
     payloads = v4_adapters._strategic_mart_calls(
         Layer(),
         "리바로",
-        "리바로 시장 규모가 지금 얼마고 어떻게 변해왔어",
+        "리바로 특허 언제 만료돼",
     )
 
     assert payloads
-    assert calls == [("리바로", "sales", "latest", 60)]
+    assert metric_calls == [
+        ("리바로", "sales", "latest", "ml_livalo", 60),
+        ("리바로", "share", "latest", "ml_livalo", 10),
+        ("리바로", "rank", "latest", "ml_livalo", 10),
+        ("리바로", "prescription_volume", "latest", "ml_livalo", 60),
+    ]
+    assert any(call.get("market") == "ml_livalo" for call in payloads)
+    cause = next(call for call in payloads if call.get("tool") == "cause_card_data")
+    assert set(cause["render_data"]) >= {
+        "ei_ms",
+        "growth_contribution",
+        "customer_competition",
+    }
+
+
+def test_v4_mart_intent_adds_volume_breakdowns_and_dimension_trends() -> None:
+    breakdowns: list[tuple[str, str, str, str | None]] = []
+    trend_specs: list[dict[str, object]] = []
+
+    class Layer:
+        def market_scope(self, brand):
+            return {"source": "UBIST", "render_data": {"market_id": "ml_livalo"}}
+
+        def brand_metric(self, brand, metric, period, *, market=None, history_points=10):
+            return {"source": "UBIST", "metric": metric, "render_data": {}}
+
+        def top_brands(self, brand, *, limit, metric, market=None):
+            return {"source": "UBIST", "metric": metric, "market": market}
+
+        def cause_card_data(self, brand, market):
+            return {}
+
+        def dimension_breakdown(self, brand, dimension, *, market=None, metric="sales"):
+            breakdowns.append((brand, dimension, metric, market))
+            return {
+                "source": "UBIST",
+                "render_data": {"requested_dimension": dimension},
+            }
+
+        def query(self, spec, *, fallback_brand):
+            trend_specs.append(dict(spec))
+            return {
+                "source": "UBIST",
+                "render_data": {"requested_dimension": spec["group_by"][0]},
+            }
+
+    payloads = v4_adapters._strategic_mart_calls(
+        Layer(),
+        "리바로젯",
+        "리바로젯 제품의 진료과별·유통채널별 처방 추이를 알려줘",
+    )
+
+    assert payloads
+    assert breakdowns == [
+        ("리바로젯", "specialty", "prescription_volume", "ml_livalo"),
+        ("리바로젯", "channel", "prescription_volume", "ml_livalo"),
+    ]
+    assert {tuple(spec["group_by"]) for spec in trend_specs} == {
+        ("specialty", "period"),
+        ("channel", "period"),
+    }
+    assert all(spec["metrics"] == ["prescription_volume"] for spec in trend_specs)
 
 
 def test_v4_observational_evidence_cannot_confirm_cause() -> None:
@@ -1937,7 +2225,7 @@ def test_planner_detailed_trace_keeps_usage_and_corrects_obvious_answer_source()
     assert outcome.trace["model"] == "gemini-3-flash-preview"
 
 
-def test_planner_limits_first_wave_to_one_query_per_source() -> None:
+def test_planner_limits_first_wave_queries_with_env_defaulting_to_one(monkeypatch) -> None:
     class Client:
         serving_id = "190"
 
@@ -1962,6 +2250,52 @@ def test_planner_limits_first_wave_to_one_query_per_source() -> None:
     outcome = V4Planner(Client()).plan_with_trace("리바로 요즘 어때", ())
 
     assert all(len(queries) == 1 for _, queries in outcome.plan.tool_queries.items())
+
+    monkeypatch.setenv("CHAT_V4_MAX_SOURCE_QUERIES", "2")
+    expanded = V4Planner(Client()).plan_with_trace("리바로 요즘 어때", ())
+
+    assert all(len(queries) == 2 for _, queries in expanded.plan.tool_queries.items())
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    (("0", 1), ("-1", 1), ("bogus", 1), ("99", 2)),
+)
+def test_planner_clamps_source_query_limit_to_supported_range(
+    monkeypatch,
+    configured: str,
+    expected: int,
+) -> None:
+    monkeypatch.setenv("CHAT_V4_MAX_SOURCE_QUERIES", configured)
+    plan = _plan(
+        **{
+            source: (f"{source} first", f"{source} second", f"{source} third")
+            for source in SOURCE_NAMES
+        }
+    )
+
+    limited = v4_planner._limit_first_wave_queries(plan)
+
+    assert all(len(queries) == expected for _, queries in limited.tool_queries.items())
+
+
+def test_planner_keeps_reexamination_as_nedrug_core_when_mart_is_always_on() -> None:
+    class Client:
+        serving_id = "190"
+
+        def complete_detailed(self, _messages, *, budget_s, max_tokens):
+            assert budget_s > 0
+            assert max_tokens > 0
+            return v4_llm.CompletionResult(
+                text=_plan().model_copy(update={"answer_sources": ("mart",)}).model_dump_json(),
+                finish_reason="stop",
+                usage={},
+                elapsed_ms=10.0,
+            )
+
+    outcome = V4Planner(Client()).plan_with_trace("리바로젯 재심사 언제 끝나?", ())
+
+    assert outcome.plan.answer_sources == ("nedrug",)
 
 
 def test_planner_fallback_trace_is_non_null_when_transport_fails() -> None:
@@ -2253,9 +2587,15 @@ def test_runtime_emits_public_five_stage_progress_for_linked_answer() -> None:
         "연결 조회",
         "답변 작성 중",
     ]
-    assert progress[2]["detail"] == "건강보험심사평가원 완료"
-    assert progress[3]["detail"] == "건강보험심사평가원 완료 · 웹 자료 완료"
-    assert progress[1]["detail"] == "시장 · 허가 · 임상"
+    assert progress[2]["detail"] == (
+        "완료 1/7 — 건강보험심사평가원 | 조회 중 — 내부 데이터마트 · "
+        "식품의약품안전처 · FDA · ClinicalTrials.gov · 웹 자료 · 특허 자료"
+    )
+    assert progress[3]["detail"] == (
+        "완료 2/7 — 건강보험심사평가원 · 웹 자료 | 조회 중 — 내부 데이터마트 · "
+        "식품의약품안전처 · FDA · ClinicalTrials.gov · 특허 자료"
+    )
+    assert progress[1]["detail"] == "- 시장\n- 허가\n- 임상"
     assert all("MCP" not in event["detail"] for event in progress)
 
 
@@ -2264,7 +2604,7 @@ def test_query_plan_progress_limits_expanded_intents_to_five() -> None:
         "jw_chat_agent_poc.service.v4.runtime", fromlist=["_expanded_intents_detail"]
     )._expanded_intents_detail(("시장", "허가", "임상", "환자수", "특허", "급여", "안전성"))
 
-    assert detail == "시장 · 허가 · 임상 · 환자수 · 특허 · 외 2개"
+    assert detail == "- 시장\n- 허가\n- 임상\n- 환자수\n- 특허\n- 외 2개"
 
 
 def test_runtime_runs_one_web_gap_fill_for_missing_hira_periods() -> None:
@@ -2629,6 +2969,193 @@ def test_v4_gates_keep_mart_numbers_copy_only_and_require_sources() -> None:
     assert "85.87" in gated.text
     assert "## 출처" in gated.text
     assert gated.trace["mart_numeric_copy_only"]["blocked"] is True
+
+
+def test_v4_sources_hide_internal_urls_and_iso_time_but_keep_public_links() -> None:
+    result = SourceResult(
+        source="web",
+        query="리바로 최신 근거",
+        status="ok",
+        payload={
+            "calls": [
+                {
+                    "render_data": {
+                        "items": [
+                            {
+                                "title": "공개 기사",
+                                "url": "https://example.org/article",
+                                "published_at": "2026-08-10",
+                            },
+                            {"title": "내부 서비스", "url": "http://svc:8080/raw"},
+                            {
+                                "title": "내부 코드 서비스",
+                                "url": "http://code-serving-235.llmops.svc:8080/raw",
+                            },
+                            {
+                                "title": "내부 게이트웨이",
+                                "url": "http://llmops-gateway-api-service:8080/mcp/raw",
+                            },
+                        ]
+                    }
+                }
+            ]
+        },
+        citations=(
+            Citation(
+                source="웹 자료",
+                query="리바로 최신 근거",
+                url="http://mcp-tavily.llmops.svc:8080/mcp",
+                retrieved_at=datetime(2026, 8, 11, 1, 2, 3, tzinfo=UTC),
+                used=True,
+            ),
+        ),
+    )
+
+    gated = apply_v4_gates("리바로 최신 근거", "확인된 내용입니다.", (result,))
+
+    assert '웹 자료 — "리바로 최신 근거" 웹 검색' in gated.text
+    assert "https://example.org/article" in gated.text
+    assert "2026-08-10" in gated.text
+    assert "mcp-tavily" not in gated.text
+    assert "svc:8080" not in gated.text
+    assert "code-serving-235" not in gated.text
+    assert "llmops-gateway-api-service" not in gated.text
+    assert "2026-08-11T01:02:03" not in gated.text
+
+
+def test_v4_tavily_retries_transport_once_but_not_empty_or_parse_failure(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("WEB_SEARCH_PROVIDER", "tavily_mcp")
+    calls: list[str] = []
+    responses = [
+        ExternalCall(
+            tool="web_search",
+            source="web",
+            status="error",
+            summary_text="timeout",
+            render_data={"error": "Read timed out"},
+        ),
+        ExternalCall(
+            tool="web_search",
+            source="web",
+            status="live",
+            summary_text="ok",
+            render_data={"items": [{"url": "https://example.org"}]},
+        ),
+    ]
+
+    def request(_external, query, *, search_depth, topic):
+        calls.append(f"{query}:{search_depth}:{topic}")
+        return responses.pop(0)
+
+    monkeypatch.setattr(v4_adapters, "_v4_tavily_mcp_request", request)
+    result = v4_adapters._v4_web_search(
+        SimpleNamespace(),
+        "리바로 최신 근거",
+        search_depth="advanced",
+    )
+
+    assert result.status == "live"
+    assert len(calls) == 2
+    assert result.render_data["v4_tavily_policy"]["attempts"] == 2
+
+    for response in (
+        ExternalCall(
+            tool="web_search",
+            source="web",
+            status="no_data",
+            summary_text="empty",
+            render_data={"items": [], "parser_outcome": "empty_result"},
+        ),
+        ExternalCall(
+            tool="web_search",
+            source="web",
+            status="error",
+            summary_text="parse",
+            render_data={"error_type": "parse_failure"},
+        ),
+        ExternalCall(
+            tool="web_search",
+            source="web",
+            status="error",
+            summary_text="MCP protocol failure",
+            render_data={"error": "JSON-RPC server error from tool"},
+        ),
+    ):
+        calls.clear()
+        monkeypatch.setattr(
+            v4_adapters,
+            "_v4_tavily_mcp_request",
+            lambda _external, query, *, search_depth, topic, value=response: (
+                calls.append(query) or value
+            ),
+        )
+        v4_adapters._v4_web_search(
+            SimpleNamespace(),
+            "고정 질문",
+            search_depth="advanced",
+        )
+        assert calls == ["고정 질문"]
+
+
+def test_v4_tavily_cache_flag_does_not_cache_without_gate_runner_marker(monkeypatch) -> None:
+    monkeypatch.setenv("WEB_SEARCH_PROVIDER", "tavily_mcp")
+    monkeypatch.setenv("CHAT_V4_GATE_WEB_CACHE_ENABLED", "true")
+    v4_adapters._clear_v4_gate_web_cache()
+    calls: list[str] = []
+
+    def request(_external, query, *, search_depth, topic):
+        calls.append(query)
+        return ExternalCall(
+            tool="web_search",
+            source="web",
+            status="live",
+            summary_text="ok",
+            render_data={"items": [{"url": "https://example.org"}]},
+        )
+
+    monkeypatch.setattr(v4_adapters, "_v4_tavily_mcp_request", request)
+
+    v4_adapters._v4_web_search(SimpleNamespace(), "실사용 질문", search_depth="advanced")
+    v4_adapters._v4_web_search(SimpleNamespace(), "실사용 질문", search_depth="advanced")
+
+    assert calls == ["실사용 질문", "실사용 질문"]
+
+
+def test_v4_tavily_gate_cache_requires_runner_marker_and_keeps_source_depth(monkeypatch) -> None:
+    monkeypatch.setenv("WEB_SEARCH_PROVIDER", "tavily_mcp")
+    v4_adapters._clear_v4_gate_web_cache()
+    calls: list[tuple[str, str]] = []
+
+    def request(_external, query, *, search_depth, topic):
+        calls.append((query, search_depth))
+        return ExternalCall(
+            tool="web_search",
+            source="web",
+            status="live",
+            summary_text="ok",
+            render_data={"items": [{"url": "https://example.org"}]},
+        )
+
+    monkeypatch.setattr(v4_adapters, "_v4_tavily_mcp_request", request)
+    v4_adapters._v4_web_search(SimpleNamespace(), "웹 질문", search_depth="advanced")
+    v4_adapters._v4_web_search(SimpleNamespace(), "웹 질문", search_depth="advanced")
+    assert calls == [("웹 질문", "advanced"), ("웹 질문", "advanced")]
+
+    calls.clear()
+    monkeypatch.setenv("CHAT_V4_GATE_WEB_CACHE_ENABLED", "true")
+    monkeypatch.setenv("CHAT_V4_GATE_RUNNER", "true")
+    v4_adapters._v4_web_search(SimpleNamespace(), "웹 질문", search_depth="advanced")
+    cached = v4_adapters._v4_web_search(
+        SimpleNamespace(),
+        "웹 질문",
+        search_depth="advanced",
+    )
+    v4_adapters._v4_web_search(SimpleNamespace(), "특허 질문", search_depth="basic")
+
+    assert calls == [("웹 질문", "advanced"), ("특허 질문", "basic")]
+    assert cached.render_data["v4_tavily_policy"]["gate_cache_hit"] is True
 
 
 def test_v4_gate_does_not_substitute_originator_sales_for_generic_subset() -> None:

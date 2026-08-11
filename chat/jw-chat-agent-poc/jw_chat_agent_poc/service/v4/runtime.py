@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from jw_chat_agent_poc.service.conversation import ConversationTurn
 from jw_chat_agent_poc.service.v4.adapters import build_source_adapters
-from jw_chat_agent_poc.service.v4.contracts import SourceResult, V4Answer
+from jw_chat_agent_poc.service.v4.contracts import SOURCE_NAMES, SourceResult, V4Answer
 from jw_chat_agent_poc.service.v4.executor import ParallelSourceExecutor
 from jw_chat_agent_poc.service.v4.gates import apply_v4_gates
 from jw_chat_agent_poc.service.v4.llm import planner_client, synthesizer_client
@@ -102,14 +102,13 @@ class V4Runtime:
         completed_sources: list[str] = []
 
         def source_completed(source: str) -> None:
-            public = _PUBLIC_PROGRESS_SOURCE.get(source, "조회 자료")
-            if public in completed_sources:
+            if source in completed_sources:
                 return
-            completed_sources.append(public)
+            completed_sources.append(source)
             _emit_progress(
                 progress_callback,
                 "자료 수집 중",
-                " · ".join(f"{name} 완료" for name in completed_sources),
+                _source_progress_detail(completed_sources),
             )
 
         prior_results = self._get_session_results(session_id)
@@ -483,9 +482,28 @@ def _emit_progress(callback: ProgressCallback | None, name: str, detail: str) ->
 
 def _expanded_intents_detail(intents: Sequence[str]) -> str:
     visible = [value.strip() for value in intents if value.strip()][:5]
-    detail = " · ".join(visible) if visible else "질문에 맞는 조회 경로를 구성했습니다"
+    detail = "\n".join(f"- {value}" for value in visible)
+    if not detail:
+        return "질문에 맞는 조회 경로를 구성했습니다"
     remaining = max(0, len(intents) - len(visible))
-    return f"{detail} · 외 {remaining}개" if remaining else detail
+    return f"{detail}\n- 외 {remaining}개" if remaining else detail
+
+
+def _source_progress_detail(completed_sources: Sequence[str]) -> str:
+    completed = [
+        _PUBLIC_PROGRESS_SOURCE[source]
+        for source in SOURCE_NAMES
+        if source in completed_sources
+    ]
+    pending = [
+        _PUBLIC_PROGRESS_SOURCE[source]
+        for source in SOURCE_NAMES
+        if source not in completed_sources
+    ]
+    detail = f"완료 {len(completed)}/{len(SOURCE_NAMES)} — " + " · ".join(completed)
+    if pending:
+        detail += " | 조회 중 — " + " · ".join(pending)
+    return detail
 
 
 def _one_line(value: str, limit: int = 120) -> str:

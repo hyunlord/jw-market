@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
+from urllib.parse import urlparse
 
 from jw_chat_agent_poc.service.v4.contracts import GatedAnswer, SourceResult
 
@@ -18,6 +20,10 @@ _PERCENT_RE = re.compile(
     re.IGNORECASE,
 )
 _VALUE = r"-?\d[\d,]*(?:\.\d+)?"
+_VOLUME_PATTERN = re.compile(
+    rf"(?:처방량|판매량|수량)\s*(?:은|는|이|가|:)?\s*(?:약\s*)?(?P<value>{_VALUE})\s*(?:Rx|건|개)?",
+    re.IGNORECASE,
+)
 _MART_VALUE_PATTERNS: dict[str, re.Pattern[str]] = {
     "매출": re.compile(
         rf"(?:매출(?:액)?\s*(?:은|는|이|가|:)?\s*(?:약\s*)?(?:KRW\s*)?"
@@ -38,8 +44,22 @@ _MART_VALUE_PATTERNS: dict[str, re.Pattern[str]] = {
     ),
     "순위": re.compile(r"(?P<value>\d[\d,]*)\s*위"),
     "hhi": re.compile(r"(?:HHI\D{0,12}(?P<after>\d[\d,]*(?:\.\d+)?)|(?P<before>\d[\d,]*(?:\.\d+)?)\D{0,4}HHI)", re.IGNORECASE),
+    "처방량": _VOLUME_PATTERN,
+    "판매량": _VOLUME_PATTERN,
+    "수량": _VOLUME_PATTERN,
 }
-_MART_TERMS = ("매출", "점유율", "순위", "hhi", "성장률", "시장 규모", "시장규모")
+_MART_TERMS = (
+    "매출",
+    "점유율",
+    "순위",
+    "hhi",
+    "성장률",
+    "시장 규모",
+    "시장규모",
+    "처방량",
+    "판매량",
+    "수량",
+)
 _METRIC_FIELDS: dict[str, tuple[str, ...]] = {
     "매출": ("sales", "amount", "value"),
     "점유율": ("share", "percentage", "percent", "pct"),
@@ -47,6 +67,9 @@ _METRIC_FIELDS: dict[str, tuple[str, ...]] = {
     "hhi": ("hhi",),
     "성장률": ("growth", "yoy", "cagr", "delta"),
     "시장 규모": ("market_size", "market_value", "value"),
+    "처방량": ("prescription_volume", "volume", "value"),
+    "판매량": ("prescription_volume", "volume", "value"),
+    "수량": ("prescription_volume", "volume", "value"),
 }
 _CONTEXT_FIELDS = ("period", "year", "month", "yyyymm")
 _CONFIRMED_CAUSE_RE = re.compile(
@@ -970,29 +993,25 @@ def _append_sources(text: str, results: tuple[SourceResult, ...]) -> str:
     if "## 출처" in text:
         text = text.split("## 출처", 1)[0].rstrip()
     lines: list[str] = []
-    seen: set[tuple[str, str | None, str]] = set()
+    seen: set[tuple[str, str]] = set()
     for result in results:
         if result.status != "ok":
             continue
-        if result.citations:
-            for citation in result.citations:
-                key = (citation.source, citation.url, citation.query)
-                if key in seen:
-                    continue
-                seen.add(key)
-                url = f" · {citation.url}" if citation.url else ""
-                reuse = " · 이전 조회 재사용" if result.cache_hit else ""
-                detail = _source_reference_detail(result)
-                lines.append(
-                    f"- {citation.source} · 조회 {citation.retrieved_at.isoformat()} · "
-                    f"{citation.query}{detail}{url}{reuse}"
-                )
-        else:
-            key = (result.source, None, result.query)
-            if key not in seen:
-                seen.add(key)
-                reuse = " · 이전 조회 재사용" if result.cache_hit else ""
-                lines.append(f"- {result.source} · {result.query}{reuse}")
+        source = _public_source_name(result)
+        key = (source, result.query)
+        if key in seen:
+            continue
+        seen.add(key)
+        detail = _source_reference_detail(result)
+        reuse = " · 이전 조회 재사용" if result.cache_hit else ""
+        line = f'- {source} — "{result.query}" {_source_reference_type(result)}{detail}{reuse}'
+        references = _public_source_references(result)
+        if references:
+            line += " · " + " · ".join(
+                f"{published_at} {url}" if published_at else url
+                for url, published_at in references
+            )
+        lines.append(line)
     if not lines:
         lines.append("- 사용 가능한 출처를 확보하지 못했습니다.")
     return f"{text}\n\n## 출처\n" + "\n".join(lines)
@@ -1012,3 +1031,79 @@ def _source_reference_detail(result: SourceResult) -> str:
         )
     )
     return "" if not notice_numbers else " · " + " · ".join(notice_numbers)
+
+
+def _public_source_name(result: SourceResult) -> str:
+    names = {
+        "mart": "내부 데이터마트",
+        "nedrug": "식품의약품안전처",
+        "hira": "건강보험심사평가원",
+        "openfda": "FDA",
+        "clinicaltrials": "ClinicalTrials.gov",
+        "web": "웹 자료",
+        "patent": "특허 자료",
+    }
+    return names[result.source]
+
+
+def _source_reference_type(result: SourceResult) -> str:
+    if result.source == "hira" and result.evidence is not None:
+        if "reimbursement" in result.evidence.eligible_claims:
+            return "고시 검색"
+    return {
+        "mart": "내부 지표 조회",
+        "nedrug": "허가 검색",
+        "hira": "통계 조회",
+        "openfda": "안전성 검색",
+        "clinicaltrials": "임상 검색",
+        "web": "웹 검색",
+        "patent": "특허 검색",
+    }[result.source]
+
+
+def _public_source_references(result: SourceResult) -> tuple[tuple[str, str | None], ...]:
+    references: list[tuple[str, str | None]] = []
+    for citation in result.citations:
+        if _is_public_source_url(citation.url):
+            references.append((str(citation.url), None))
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            url = value.get("url") or value.get("source_url")
+            if _is_public_source_url(url):
+                published_at = value.get("published_at") or value.get("published_date")
+                references.append(
+                    (str(url), str(published_at).strip() if published_at else None)
+                )
+            for item in value.values():
+                visit(item)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                visit(item)
+
+    visit(result.payload)
+    return tuple(dict.fromkeys(references))[:5]
+
+
+def _is_public_source_url(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    parsed = urlparse(value)
+    host = (parsed.hostname or "").casefold()
+    if parsed.scheme not in {"http", "https"} or not host:
+        return False
+    if (
+        "." not in host
+        or host == "localhost"
+        or host.endswith(".svc")
+        or ".svc." in host
+        or host.endswith(".local")
+        or host.startswith(("mcp-", "code-serving-", "read-only"))
+        or any(token in host for token in ("mcp-", "code-serving-", "read-only"))
+    ):
+        return False
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return True
+    return not (address.is_private or address.is_loopback or address.is_link_local)
