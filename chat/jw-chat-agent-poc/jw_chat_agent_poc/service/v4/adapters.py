@@ -319,6 +319,29 @@ def _evidence_envelope(
             eligible_claims=tuple(eligible_claims),
             causal=False,
         )
+    if source == "patent":
+        patent_text = " ".join(
+            _walk_named_values(
+                payload,
+                {
+                    "title",
+                    "snippet",
+                    "summary_text",
+                    "patent_expiry",
+                    "expiration_date",
+                    "reexam_date",
+                },
+            )
+        ).casefold()
+        has_patent_evidence = bool(
+            re.search(r"patent|특허|reexam|재심사|expir(?:e|es|ed|ation)", patent_text)
+        )
+        return EvidenceEnvelope(
+            kind="patent",
+            **common,
+            eligible_claims=("patent",) if has_patent_evidence else (),
+            causal=False,
+        )
     kind = "clinical" if source == "clinicaltrials" else source
     return EvidenceEnvelope(
         kind=kind,

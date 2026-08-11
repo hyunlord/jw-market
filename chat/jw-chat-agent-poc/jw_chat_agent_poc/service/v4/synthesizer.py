@@ -334,6 +334,8 @@ def _synthesis_messages(
                 "그 근거를 사용하지 않는다. 관찰연구, 기기 연구, 인접 질환, 질문과 다른 모집상태의 연구는 핵심 답이 "
                 "아니라 `참고: 인접 연구` 구획에만 둔다. causal=false 근거만으로 원인을 확인했다고 쓰지 말고 관찰 사실과 "
                 "가설을 분리한다. HIRA 입원과 외래 환자수는 중복 가능하므로 합산하거나 비율을 계산하지 않는다. "
+                "study_classification에서 ADJACENT로 표시된 임상은 `참고: 인접 연구` 구획에만 두고, "
+                "인접 연구를 종합 인사이트에서 다시 요약하거나 해석하지 않는다. "
                 "HIRA 환자수는 `환자수(명)` 값만 사용한다. `명세서건수(건)`이나 `방문일수(일)`를 환자수로 "
                 "바꾸어 쓰지 않고, 금액은 `(원)` 라벨이 붙은 값과 단위를 그대로 쓴다. "
                 "반드시 `## 핵심 답`, `## 근거와 맥락`, "
@@ -367,7 +369,68 @@ def _evidence_packet(result: SourceResult) -> dict[str, Any]:
     }
     if result.source == "hira":
         packet["field_labels"] = dict(_HIRA_FIELD_LABELS)
+    if result.source == "clinicaltrials":
+        packet["study_classification"] = _clinical_study_classification(result.payload)
     return packet
+
+
+def _clinical_study_classification(payload: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def visit(value: Any) -> None:
+        if isinstance(value, Mapping):
+            protocol = value.get("protocolSection")
+            if isinstance(protocol, Mapping):
+                identification = protocol.get("identificationModule")
+                design = protocol.get("designModule")
+                arms = protocol.get("armsInterventionsModule")
+                study_id = str(value.get("NCTId") or value.get("nctId") or "").strip()
+                if not study_id and isinstance(identification, Mapping):
+                    study_id = str(
+                        identification.get("nctId") or identification.get("NCTId") or ""
+                    ).strip()
+                study_type = ""
+                if isinstance(design, Mapping):
+                    study_type = str(
+                        design.get("studyType") or design.get("study_type") or ""
+                    ).strip().upper()
+                interventions = arms.get("interventions") if isinstance(arms, Mapping) else ()
+                intervention_types = tuple(
+                    dict.fromkeys(
+                        str(item.get("type") or "").strip().upper()
+                        for item in interventions or ()
+                        if isinstance(item, Mapping) and str(item.get("type") or "").strip()
+                    )
+                )
+                if study_id and study_id not in seen:
+                    seen.add(study_id)
+                    therapeutic = bool(
+                        set(intervention_types)
+                        & {"DRUG", "BIOLOGICAL", "GENETIC", "DIETARY_SUPPLEMENT", "RADIATION"}
+                    )
+                    if study_type == "OBSERVATIONAL":
+                        answer_section = "ADJACENT_OBSERVATIONAL"
+                    elif study_type == "INTERVENTIONAL" and therapeutic:
+                        answer_section = "PRIMARY_DRUG_INTERVENTIONAL"
+                    else:
+                        answer_section = "ADJACENT_NON_DRUG_INTERVENTIONAL"
+                    rows.append(
+                        {
+                            "study_id": study_id,
+                            "study_type": study_type or "UNKNOWN",
+                            "intervention_types": list(intervention_types),
+                            "answer_section": answer_section,
+                        }
+                    )
+            for item in value.values():
+                visit(item)
+        elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+            for item in value:
+                visit(item)
+
+    visit(payload)
+    return rows
 
 
 def _mart_block(result: SourceResult) -> str:

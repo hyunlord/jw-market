@@ -982,8 +982,10 @@ def _append_sources(text: str, results: tuple[SourceResult, ...]) -> str:
                 seen.add(key)
                 url = f" · {citation.url}" if citation.url else ""
                 reuse = " · 이전 조회 재사용" if result.cache_hit else ""
+                detail = _source_reference_detail(result)
                 lines.append(
-                    f"- {citation.source} · 조회 {citation.retrieved_at.isoformat()} · {citation.query}{url}{reuse}"
+                    f"- {citation.source} · 조회 {citation.retrieved_at.isoformat()} · "
+                    f"{citation.query}{detail}{url}{reuse}"
                 )
         else:
             key = (result.source, None, result.query)
@@ -994,3 +996,19 @@ def _append_sources(text: str, results: tuple[SourceResult, ...]) -> str:
     if not lines:
         lines.append("- 사용 가능한 출처를 확보하지 못했습니다.")
     return f"{text}\n\n## 출처\n" + "\n".join(lines)
+
+
+def _source_reference_detail(result: SourceResult) -> str:
+    if result.source != "hira" or result.evidence is None:
+        return ""
+    if "reimbursement" not in result.evidence.eligible_claims:
+        return ""
+    notice_numbers = tuple(
+        dict.fromkeys(
+            str(value).strip()
+            for path, value in _walk_scalars(result.payload)
+            if path.casefold().endswith(".notice_number")
+            and re.fullmatch(r"고시\s+제\d{4}-\d+호", str(value).strip())
+        )
+    )
+    return "" if not notice_numbers else " · " + " · ".join(notice_numbers)

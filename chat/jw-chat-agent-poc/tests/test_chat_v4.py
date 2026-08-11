@@ -1140,6 +1140,45 @@ def test_v4_evidence_envelope_grants_claims_only_from_matching_payload_fields() 
     assert patent.eligible_claims == ("patent",)
 
 
+def test_v4_patent_source_grants_patent_claim_only_for_matching_payload() -> None:
+    patent = v4_adapters._evidence_envelope(
+        "patent",
+        "리바로 특허 언제 만료돼?",
+        {
+            "calls": [
+                {
+                    "tool": "web_search",
+                    "render_data": {
+                        "items": [
+                            {
+                                "title": "Livalo patent protection",
+                                "snippet": "The patent expires on February 2, 2024.",
+                            }
+                        ]
+                    },
+                }
+            ]
+        },
+    )
+    unrelated = v4_adapters._evidence_envelope(
+        "patent",
+        "리바로 특허 언제 만료돼?",
+        {
+            "calls": [
+                {
+                    "tool": "web_search",
+                    "render_data": {
+                        "items": [{"title": "Livalo overview", "snippet": "Product overview."}]
+                    },
+                }
+            ]
+        },
+    )
+
+    assert patent.eligible_claims == ("patent",)
+    assert unrelated.eligible_claims == ()
+
+
 def test_v4_claim_eligibility_guard_blocks_source_tag_without_matching_claim() -> None:
     result = SourceResult(
         source="nedrug",
@@ -1329,6 +1368,122 @@ def test_v4_claim_eligibility_guard_keeps_hira_reimbursement_exclusion_criteria(
 
     assert "초기 3회 투여 후 효과가 없는 경우는 제외기준" in gated.text
     assert "효능효과는 망막질환 전반" not in gated.text
+
+
+def test_v4_hira_reimbursement_source_includes_notice_number() -> None:
+    result = SourceResult(
+        source="hira",
+        query="아일리아 급여기준",
+        status="ok",
+        payload={
+            "calls": [
+                {
+                    "render_data": {
+                        "criteria": "투여대상 및 제외기준",
+                        "notice_number": "고시 제2024-235호",
+                    }
+                }
+            ]
+        },
+        evidence=EvidenceEnvelope(
+            kind="hira",
+            entity_match="EXACT",
+            source_scope="KR",
+            time_match="NOT_REQUESTED",
+            eligible_claims=("reimbursement",),
+            causal=False,
+        ),
+        citations=(
+            Citation(
+                source="HIRA",
+                query="아일리아 급여기준",
+                url="https://example.invalid/hira-notice",
+                retrieved_at=datetime(2026, 8, 11, tzinfo=UTC),
+                used=True,
+            ),
+        ),
+    )
+
+    gated = apply_v4_gates(
+        "아일리아 급여기준 알려줘",
+        "## 핵심 답\n아일리아 급여기준의 투여대상과 제외기준입니다. [출처: HIRA]",
+        (result,),
+    )
+
+    assert "고시 제2024-235호" in gated.text
+
+
+def test_v4_clinical_studies_are_classified_per_study_without_mutating_detail() -> None:
+    payload = {
+        "calls": [
+            {
+                "render_data": {
+                    "payload": {
+                        "studies": [
+                            {
+                                "NCTId": "NCT00000001",
+                                "protocolSection": {
+                                    "designModule": {"studyType": "INTERVENTIONAL"},
+                                    "armsInterventionsModule": {
+                                        "interventions": [{"type": "DRUG", "name": "candidate"}]
+                                    },
+                                },
+                            },
+                            {
+                                "NCTId": "NCT00000002",
+                                "protocolSection": {
+                                    "designModule": {"studyType": "OBSERVATIONAL"},
+                                    "armsInterventionsModule": {"interventions": []},
+                                },
+                            },
+                            {
+                                "NCTId": "NCT00000003",
+                                "protocolSection": {
+                                    "designModule": {"studyType": "INTERVENTIONAL"},
+                                    "armsInterventionsModule": {
+                                        "interventions": [{"type": "DEVICE", "name": "device"}]
+                                    },
+                                },
+                            },
+                        ]
+                    }
+                }
+            }
+        ]
+    }
+    result = SourceResult(
+        source="clinicaltrials",
+        query="뇌경색 임상시험",
+        status="ok",
+        payload=payload,
+    )
+
+    messages = v4_synthesizer._synthesis_messages(_plan(), (result,), ())
+    prompt = json.loads(messages[-1]["content"])
+    packet = prompt["external_evidence"][0]
+
+    assert packet["detail"] == payload
+    assert packet["study_classification"] == [
+        {
+            "study_id": "NCT00000001",
+            "study_type": "INTERVENTIONAL",
+            "intervention_types": ["DRUG"],
+            "answer_section": "PRIMARY_DRUG_INTERVENTIONAL",
+        },
+        {
+            "study_id": "NCT00000002",
+            "study_type": "OBSERVATIONAL",
+            "intervention_types": [],
+            "answer_section": "ADJACENT_OBSERVATIONAL",
+        },
+        {
+            "study_id": "NCT00000003",
+            "study_type": "INTERVENTIONAL",
+            "intervention_types": ["DEVICE"],
+            "answer_section": "ADJACENT_NON_DRUG_INTERVENTIONAL",
+        },
+    ]
+    assert "인접 연구를 종합 인사이트에서 다시 요약하거나 해석하지 않는다" in messages[0]["content"]
 
 
 def test_v4_trend_query_requests_history_from_query_layer() -> None:
