@@ -3971,6 +3971,69 @@ def test_v4_gates_allow_payload_derived_values_from_all_queried_mart_dimensions(
     assert "1.76%" in gated.text
 
 
+def test_v4_gates_bind_requested_dimension_tables_even_when_synthesis_numbers_are_valid() -> None:
+    result = _mart_dimension_result()
+    resolved_question = "리바로젯 제품의 진료과별·유통채널별 처방량 추이를 알려줘"
+    answer = (
+        "## 진료과별 처방량 추이\n\n"
+        "## 유통채널별 처방량 추이\n\n"
+        "진료과별로 순환기 처방량은 2,157,968.39 Rx이며, "
+        "유통채널별로 의원 처방량은 3,243,568.08 Rx입니다. "
+        "두 차원 모두 증가 추이로 확인되었습니다. [출처: 내부 데이터마트]"
+    )
+
+    gated = apply_v4_gates(resolved_question, answer, (result,))
+
+    assert gated.trace["mart_numeric_copy_only"]["blocked"] is False
+    assert gated.trace["requested_dimension_surface"] == {
+        "requested": ["specialty", "channel"],
+        "repaired": ["specialty", "channel"],
+    }
+    assert "| 진료과 | 시작 기간 | 시작 처방량 | 최근 기간 | 최근 처방량 |" in gated.text
+    assert "| 유통채널 | 시작 기간 | 시작 처방량 | 최근 기간 | 최근 처방량 |" in gated.text
+    assert gated.text.count("## 진료과별 처방량 추이") == 1
+    assert gated.text.count("## 유통채널별 처방량 추이") == 1
+    assert "두 차원 모두 증가 추이" in gated.text
+
+
+def test_v4_gates_do_not_bind_share_percentages_to_requested_growth() -> None:
+    gated = apply_v4_gates(
+        "리바로젯 진료과별 성장률을 알려줘",
+        "순환기 진료과 성장률은 5.40%입니다. [출처: 내부 데이터마트]",
+        (_mart_dimension_result(),),
+    )
+
+    assert gated.trace["mart_numeric_copy_only"]["blocked"] is True
+    assert "5.40%" not in gated.text
+
+
+def test_v4_gates_do_not_render_dimension_tables_for_sales_only_question() -> None:
+    gated = apply_v4_gates(
+        "리바로젯 매출 추이를 알려줘",
+        "리바로젯 매출은 999.99억원입니다. [출처: 내부 데이터마트]",
+        (_mart_dimension_result(),),
+    )
+
+    assert gated.trace["mart_numeric_copy_only"]["blocked"] is True
+    assert "## 진료과별 처방량 추이" not in gated.text
+    assert "## 유통채널별 처방량 추이" not in gated.text
+    assert "| 기간 | 리바로젯 매출 |" in gated.text
+
+
+def test_v4_gates_do_not_treat_generic_channel_word_as_mart_dimension() -> None:
+    gated = apply_v4_gates(
+        "리바로젯 최신 뉴스 채널 반응을 알려줘",
+        "확인된 뉴스 채널 반응을 정리했습니다. [출처: 웹 자료]",
+        (_mart_dimension_result(),),
+    )
+
+    assert gated.trace["requested_dimension_surface"] == {
+        "requested": [],
+        "repaired": [],
+    }
+    assert "## 유통채널별 처방량 추이" not in gated.text
+
+
 def test_v4_gates_dimension_values_exclude_render_metadata_and_normalize_decimals() -> None:
     result = SourceResult(
         source="mart",

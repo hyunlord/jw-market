@@ -623,7 +623,10 @@ def _evidence_fallback(
     paragraphs: list[str] = []
     for result in results:
         if result.source == "mart":
-            dimensions = render_mart_dimension_facts((result,))
+            dimensions = render_mart_dimension_facts(
+                (result,),
+                question=question or result.query,
+            )
             history = _mart_history_fallback(
                 result.payload,
                 question=question or result.query,

@@ -322,6 +322,40 @@ def apply_v4_gates(
         "misbound_patient_values": sorted(invalid_patient_values),
     }
 
+    requested_dimensions = _requested_dimension_levels(question)
+    missing_dimension_blocks: list[str] = []
+    repaired_dimensions: list[str] = []
+    replaced_headings: set[str] = set()
+    for level, block in _rendered_mart_dimension_blocks(mart_results):
+        if level not in requested_dimensions:
+            continue
+        table_header = next(
+            (
+                line
+                for line in block.splitlines()
+                if line.startswith("| ") and not line.startswith("| ---")
+            ),
+            "",
+        )
+        if table_header and table_header not in text:
+            missing_dimension_blocks.append(block)
+            repaired_dimensions.append(level)
+            heading = next(
+                (line for line in block.splitlines() if line.startswith("## ")),
+                "",
+            )
+            if heading:
+                replaced_headings.add(heading)
+    if missing_dimension_blocks:
+        text = "\n".join(
+            line for line in text.splitlines() if line.strip() not in replaced_headings
+        ).strip()
+        text = _merge_unique_blocks(*missing_dimension_blocks, text)
+    trace["requested_dimension_surface"] = {
+        "requested": list(requested_dimensions),
+        "repaired": list(dict.fromkeys(repaired_dimensions)),
+    }
+
     text = _merge_unique_blocks(text)
 
     text = _append_sources(text, results)
@@ -398,7 +432,9 @@ def _payload_numbers(
         else:
             serialized = json.dumps(result.payload, ensure_ascii=False, default=str)
         tokens.update(_normalize_number(token) for token in _NUMBER_RE.findall(serialized))
-    tokens.update(_mart_dimension_payload_numbers(results))
+    tokens.update(
+        _mart_dimension_payload_numbers(results, allowed_fields=allowed_fields)
+    )
     return tokens
 
 
@@ -408,6 +444,8 @@ def _normalize_number(value: str) -> str:
 
 def _mart_dimension_payload_numbers(
     results: tuple[SourceResult, ...],
+    *,
+    allowed_fields: tuple[str, ...] = (),
 ) -> set[str]:
     tokens: set[str] = set()
     for render_data in _mart_dimension_renders(results):
@@ -421,6 +459,7 @@ def _mart_dimension_payload_numbers(
                 if not _is_mart_number(value) or not _is_public_dimension_field(
                     leaf,
                     public_fields,
+                    allowed_fields,
                 ):
                     continue
                 tokens.add(_normalize_number(str(value)))
@@ -448,12 +487,28 @@ def _mart_dimension_public_numeric_fields(
     return fields
 
 
-def _is_public_dimension_field(leaf: str, public_fields: set[str]) -> bool:
-    return (
+def _is_public_dimension_field(
+    leaf: str,
+    public_fields: set[str],
+    allowed_fields: tuple[str, ...],
+) -> bool:
+    is_public = (
         leaf in public_fields
         or any(field in leaf for field in public_fields if field not in {"value"})
         or any(marker in leaf for marker in _PERCENTAGE_FIELD_MARKERS)
     )
+    if not is_public or not allowed_fields:
+        return is_public
+
+    requested_fields = set(allowed_fields) - set(_CONTEXT_FIELDS) - {"value"}
+    if leaf in {"value", "value_recent"}:
+        declared_fields = public_fields - {"value", "value_recent", "rank"}
+        return any(
+            requested in declared or declared in requested
+            for requested in requested_fields
+            for declared in declared_fields
+        )
+    return any(requested in leaf for requested in requested_fields)
 
 
 def _two_decimal_display(value: Any) -> str:
@@ -671,7 +726,7 @@ def _render_mart_facts(
     question: str,
     allowed_fields: tuple[str, ...],
 ) -> str:
-    dimensions = render_mart_dimension_facts(results)
+    dimensions = render_mart_dimension_facts(results, question=question)
     history = _render_mart_history(results, question)
     if dimensions or history:
         return _merge_unique_blocks(dimensions, history)
@@ -712,8 +767,20 @@ def _render_mart_facts(
     return "확인된 내부 데이터마트 지표는 " + ", ".join(dict.fromkeys(facts[:20])) + "입니다."
 
 
-def render_mart_dimension_facts(results: tuple[SourceResult, ...]) -> str:
-    blocks: list[str] = []
+def _requested_dimension_levels(question: str) -> tuple[str, ...]:
+    lowered = question.casefold()
+    levels: list[str] = []
+    if "진료과" in lowered:
+        levels.append("specialty")
+    if re.search(r"(?:유통\s*채널|채널\s*별)", lowered):
+        levels.append("channel")
+    return tuple(levels)
+
+
+def _rendered_mart_dimension_blocks(
+    results: tuple[SourceResult, ...],
+) -> tuple[tuple[str, str], ...]:
+    blocks: list[tuple[str, str]] = []
     for render_data in _mart_dimension_renders(results):
         level = str(render_data.get("level") or "").strip()
         level_label = _DIMENSION_LABELS.get(level.casefold(), level)
@@ -730,7 +797,7 @@ def render_mart_dimension_facts(results: tuple[SourceResult, ...]) -> str:
             unit=unit,
         )
         if rendered_trends:
-            blocks.append(rendered_trends)
+            blocks.append((level.casefold(), rendered_trends))
             continue
         segment_rows = render_data.get("level_segments")
         rendered_segments = _render_mart_dimension_segments(
@@ -741,8 +808,23 @@ def render_mart_dimension_facts(results: tuple[SourceResult, ...]) -> str:
             unit=unit,
         )
         if rendered_segments:
-            blocks.append(rendered_segments)
-    return _merge_unique_blocks(*blocks)
+            blocks.append((level.casefold(), rendered_segments))
+    return tuple(blocks)
+
+
+def render_mart_dimension_facts(
+    results: tuple[SourceResult, ...],
+    *,
+    question: str = "",
+) -> str:
+    requested_levels = set(_requested_dimension_levels(question))
+    return _merge_unique_blocks(
+        *(
+            block
+            for level, block in _rendered_mart_dimension_blocks(results)
+            if not question or level in requested_levels
+        )
+    )
 
 
 def _render_mart_dimension_trends(
