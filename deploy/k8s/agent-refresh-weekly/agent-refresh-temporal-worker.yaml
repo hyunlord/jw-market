@@ -47,7 +47,7 @@ metadata:
   name: jw-agent-refresh-temporal-worker
   namespace: llmops
   annotations:
-    kubernetes.io/change-cause: "weekly global Agent2 and Agent3 Temporal schedule 7e607e6f"
+    kubernetes.io/change-cause: "Agent2 tiered weekly execution and durable verdicts 494384b7"
   labels:
     app: jw-agent-refresh-temporal-worker
 spec:
@@ -70,12 +70,12 @@ spec:
         genos: "enabled"
       containers:
         - name: worker
-          image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-agent-refresh-temporal@sha256:8fbfe10f82a3106faf6dccf9846e997506e1bf3f18da408f3475639c1cd8b516
+          image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-agent-refresh-temporal@sha256:f442ef5495cf27f7f2743384fd830f1bdf7bb7d9b8470b2a5e3ea2a80bc17242
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "pipeline.scripts.agent_refresh_weekly.temporal_worker"]
           env:
             - name: APP_VERSION
-              value: 7e607e6f3416da275275c1686bce53b8bf5895ca
+              value: 494384b7708c3ff8fed049a986ba717219b998b4
             - name: TEMPORAL_ADDRESS
               value: temporal-frontend.temporal.svc:7233
             - name: TEMPORAL_NAMESPACE
@@ -89,7 +89,7 @@ spec:
             - name: MARKET_OUTPUT_PVC
               value: llmops-market-output
             - name: AGENT_JOB_IMAGE
-              value: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:762b10bc0d3d7745b4660a0af602e754d1aed53a00f2c7b41777ca4874e75d51
+              value: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:ab52ce4eb5899c118f4d7c18e2834b5aa2b248ede337793203264192472955e1
             - name: AGENT_REFRESH_POLL_SECONDS
               value: "30"
             - name: AGENT_REFRESH_CLUSTER_GUARD_INTERVAL_SECONDS
