@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import ast
+import hashlib
+import os
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -103,6 +106,97 @@ def test_agent2_jobs_share_one_immutable_worklist_snapshot() -> None:
     assert "--brands" not in script
     assert "affected_scope" not in script
     assert "/market-output/agent-refresh-weekly/${WEEKLY_RUN_ID}" in script
+
+
+def test_agent2_variant_enters_python_from_app_directory(tmp_path: Path) -> None:
+    body = render_stage_job(
+        stage="agent2-short",
+        workflow_id="weekly-test",
+        image=IMAGE,
+        namespace="llmops",
+        output_claim="llmops-market-output",
+    )
+    script = body["spec"]["template"]["spec"]["containers"][0]["args"][0]
+    app_dir = tmp_path / "app"
+    work_dir = tmp_path / "market-output" / "weekly-test"
+    bin_dir = tmp_path / "bin"
+    app_dir.mkdir()
+    work_dir.mkdir(parents=True)
+    bin_dir.mkdir()
+    worklist = work_dir / "worklist.json"
+    worklist.write_text("{}\n", encoding="utf-8")
+    digest = hashlib.sha256(worklist.read_bytes()).hexdigest()
+    (work_dir / "worklist.sha256").write_text(
+        f"{digest}  {worklist}\n",
+        encoding="utf-8",
+    )
+    python_stub = bin_dir / "python"
+    python_stub.write_text(
+        "#!/bin/sh\nprintf 'python_cwd=%s\\n' \"$PWD\"\n",
+        encoding="utf-8",
+    )
+    python_stub.chmod(0o755)
+    executable = script.replace("/app", str(app_dir)).replace(
+        "/market-output/agent-refresh-weekly/${WEEKLY_RUN_ID}",
+        str(work_dir),
+    )
+
+    # 2026-08-11 regressions were in-process and did not detect the cwd leak at
+    # the container entrypoint.
+    result = subprocess.run(
+        ["bash", "-c", executable],
+        cwd=tmp_path,
+        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"},
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert f"python_cwd={app_dir}" in result.stdout
+
+
+def test_agent2_variant_hash_failure_stops_before_python(tmp_path: Path) -> None:
+    body = render_stage_job(
+        stage="agent2-long",
+        workflow_id="weekly-test",
+        image=IMAGE,
+        namespace="llmops",
+        output_claim="llmops-market-output",
+    )
+    script = body["spec"]["template"]["spec"]["containers"][0]["args"][0]
+    app_dir = tmp_path / "app"
+    work_dir = tmp_path / "market-output" / "weekly-test"
+    bin_dir = tmp_path / "bin"
+    app_dir.mkdir()
+    work_dir.mkdir(parents=True)
+    bin_dir.mkdir()
+    worklist = work_dir / "worklist.json"
+    worklist.write_text("{}\n", encoding="utf-8")
+    (work_dir / "worklist.sha256").write_text(
+        f"{'0' * 64}  {worklist}\n",
+        encoding="utf-8",
+    )
+    python_stub = bin_dir / "python"
+    python_stub.write_text("#!/bin/sh\necho python_was_called\n", encoding="utf-8")
+    python_stub.chmod(0o755)
+    executable = script.replace("/app", str(app_dir)).replace(
+        "/market-output/agent-refresh-weekly/${WEEKLY_RUN_ID}",
+        str(work_dir),
+    )
+
+    result = subprocess.run(
+        ["bash", "-c", executable],
+        cwd=tmp_path,
+        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"},
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "FAILED" in result.stdout
+    assert "python_was_called" not in result.stdout
 
 
 def test_weekly_stage_reason_keeps_all_unknown_brand_names() -> None:

@@ -233,8 +233,13 @@ cat \"{root}/worklist.sha256\"
         variant = stage.removeprefix("agent2-")
         return f"""set -euo pipefail
 cd /app
-cd \"{root}\" && sha256sum -c worklist.sha256
+sha256sum -c \"{root}/worklist.sha256\"
 mkdir -p \"{root}/{variant}\"
+printf 'agent_refresh_weekly cwd=%s expected=/app\\n' "$PWD"
+if [ "$PWD" != /app ]; then
+  printf 'agent_refresh_weekly unexpected cwd=%s expected=/app\\n' "$PWD" >&2
+  exit 70
+fi
 python -m pipeline.scripts.ai_analysis.agent2_regen_orchestrator \\
   --bundle-kind general \\
   --dry-run \\
