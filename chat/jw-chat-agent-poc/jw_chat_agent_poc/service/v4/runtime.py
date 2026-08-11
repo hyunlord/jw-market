@@ -144,8 +144,9 @@ class V4Runtime:
                 self._executor,
                 plan,
                 session_id=session_id,
-                total_timeout_s=min(45.0, _remaining(deadline)),
+                total_timeout_s=min(50.0, _remaining(deadline)),
                 answer_sources=plan.answer_sources,
+                settle_sources=("mart",),
                 soft_deadline_s=6.0,
                 progress_callback=source_completed,
             )
@@ -338,8 +339,8 @@ def build_default_runtime() -> V4Runtime:
         planner=V4Planner(planner_client()),
         executor=ParallelSourceExecutor(
             adapters=build_source_adapters(),
-            per_tool_timeout_s=30.0,
-            total_timeout_s=45.0,
+            per_tool_timeout_s=45.0,
+            total_timeout_s=50.0,
         ),
         synthesizer=V4Synthesizer(synthesizer_client()),
     )

@@ -32,6 +32,7 @@ from jw_chat_agent_poc.service.v4.runtime import (
     _preserve_period_in_answer_queries,
 )
 from jw_chat_agent_poc.service.v4 import adapters as v4_adapters
+from jw_chat_agent_poc.service.v4 import executor as v4_executor
 from jw_chat_agent_poc.service.v4 import llm as v4_llm
 from jw_chat_agent_poc.service.v4 import planner as v4_planner
 from jw_chat_agent_poc.service.v4 import runtime as v4_runtime
@@ -2386,6 +2387,53 @@ def test_parallel_executor_soft_deadline_stops_after_answer_source_arrives() -> 
     assert any(item.notice == "정답 근거 도착 후 soft deadline으로 미포함" for item in results)
 
 
+@pytest.mark.parametrize("mart_status", ("ok", "empty"))
+def test_parallel_executor_waits_for_mart_to_settle_before_soft_quorum(
+    mart_status: str,
+    monkeypatch,
+) -> None:
+    wait_timeouts: list[float | None] = []
+    original_wait = v4_executor.wait
+
+    def tracked_wait(futures, *, timeout, return_when):
+        wait_timeouts.append(timeout)
+        return original_wait(futures, timeout=timeout, return_when=return_when)
+
+    monkeypatch.setattr(v4_executor, "wait", tracked_wait)
+
+    def adapter(source: str, query: str) -> SourceResult:
+        delay = {"hira": 0.01, "mart": 0.09}.get(source, 0.25)
+        time.sleep(delay)
+        status = mart_status if source == "mart" else "ok"
+        return SourceResult(
+            source=source,
+            query=query,
+            status=status,
+            payload={"source": source},
+        )
+
+    executor = ParallelSourceExecutor(
+        adapters={name: (lambda query, source=name: adapter(source, query)) for name in SOURCE_NAMES},
+        per_tool_timeout_s=1.0,
+        total_timeout_s=1.0,
+    )
+    started = time.monotonic()
+    results = executor.execute(
+        _plan(),
+        session_id="session-soft-deadline-mart-settle",
+        answer_sources=("hira",),
+        settle_sources=("mart",),
+        soft_deadline_s=0.03,
+    )
+    elapsed = time.monotonic() - started
+
+    assert 0.08 <= elapsed < 0.2
+    assert next(item for item in results if item.source == "hira").status == "ok"
+    assert next(item for item in results if item.source == "mart").status == mart_status
+    assert any(item.notice == "정답 근거 도착 후 soft deadline으로 미포함" for item in results)
+    assert len(wait_timeouts) <= 8
+
+
 def test_planner_does_not_outer_retry_transport_failures() -> None:
     class TimeoutClient:
         def __init__(self) -> None:
@@ -2575,6 +2623,56 @@ def test_runtime_marks_successful_citations_used() -> None:
 
     assert answer.trace["tool_results"][0]["citations"][0]["used"] is True
     assert answer.trace["tool_results"][0]["citations"][0]["source"] == "웹 자료"
+
+
+def test_runtime_reserves_first_wave_for_always_on_mart_settlement() -> None:
+    plan = _plan().model_copy(update={"answer_sources": ("nedrug",)})
+    calls: list[dict[str, object]] = []
+
+    class Planner:
+        def plan(self, _question, _turns, *, budget_s):
+            return plan
+
+        def link(self, *_args, **_kwargs):
+            return None
+
+    class Executor:
+        def execute_with_trace(self, _plan, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(
+                results=(
+                    SourceResult(
+                        source="nedrug",
+                        query="nedrug query",
+                        status="ok",
+                        payload={"answer": "허가 근거"},
+                    ),
+                    SourceResult(
+                        source="mart",
+                        query="리바로 요즘 어때",
+                        status="empty",
+                    ),
+                ),
+                trace={
+                    "elapsed_ms": 10.0,
+                    "quorum_fired": False,
+                    "quorum_fire_ms": None,
+                    "tools": [],
+                },
+            )
+
+    class Synthesizer:
+        def synthesize(self, _plan, _results, _turns, *, budget_s):
+            return "허가 근거 기반 답변"
+
+    V4Runtime(
+        planner=Planner(),
+        executor=Executor(),
+        synthesizer=Synthesizer(),
+    ).answer("리바로 효능효과", conversation_id="mart-settle", turns=())
+
+    assert calls[0]["settle_sources"] == ("mart",)
+    assert 49.0 <= float(calls[0]["total_timeout_s"]) <= 50.0
 
 
 def test_runtime_reserves_planner_budget_without_echoing_config_as_actual_serving() -> None:

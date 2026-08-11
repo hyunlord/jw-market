@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Callable, Mapping
-from concurrent.futures import Future, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 import threading
 import time
@@ -49,6 +49,7 @@ class ParallelSourceExecutor:
         session_id: str,
         total_timeout_s: float | None = None,
         answer_sources: tuple[SourceName, ...] | None = None,
+        settle_sources: tuple[SourceName, ...] | None = None,
         soft_deadline_s: float | None = None,
         source_filter: tuple[SourceName, ...] | None = None,
         progress_callback: Callable[[SourceName], None] | None = None,
@@ -58,6 +59,7 @@ class ParallelSourceExecutor:
             session_id=session_id,
             total_timeout_s=total_timeout_s,
             answer_sources=answer_sources,
+            settle_sources=settle_sources,
             soft_deadline_s=soft_deadline_s,
             source_filter=source_filter,
             progress_callback=progress_callback,
@@ -70,6 +72,7 @@ class ParallelSourceExecutor:
         session_id: str,
         total_timeout_s: float | None = None,
         answer_sources: tuple[SourceName, ...] | None = None,
+        settle_sources: tuple[SourceName, ...] | None = None,
         soft_deadline_s: float | None = None,
         source_filter: tuple[SourceName, ...] | None = None,
         progress_callback: Callable[[SourceName], None] | None = None,
@@ -155,6 +158,7 @@ class ParallelSourceExecutor:
                     and soft_deadline_s is not None
                     and now - started >= soft_deadline_s
                     and _answer_quorum_met(output, answer_sources)
+                    and _sources_settled(output, tool_trace, settle_sources)
                 ):
                     quorum_fired = True
                     quorum_fire_ms = (now - started) * 1000
@@ -218,18 +222,15 @@ class ParallelSourceExecutor:
                     self._per_tool_timeout_s - (time.monotonic() - futures[future][3])
                     for future in remaining
                 )
+                wait_candidates = [remaining_total, next_tool_deadline]
+                if answer_sources and soft_deadline_s is not None:
+                    soft_remaining = started + soft_deadline_s - time.monotonic()
+                    if soft_remaining > 0:
+                        wait_candidates.append(soft_remaining)
                 done, _ = wait(
                     remaining,
-                    timeout=max(
-                        0.001,
-                        min(
-                            remaining_total,
-                            next_tool_deadline,
-                            max(0.001, started + soft_deadline_s - time.monotonic())
-                            if answer_sources and soft_deadline_s is not None
-                            else remaining_total,
-                        ),
-                    ),
+                    timeout=max(0.001, min(wait_candidates)),
+                    return_when=FIRST_COMPLETED,
                 )
                 for future in done:
                     remaining.remove(future)
@@ -290,3 +291,19 @@ def _answer_quorum_met(
         )
         for source in answer_sources
     )
+
+
+def _sources_settled(
+    output: list[SourceResult | None],
+    tool_trace: Mapping[int, Mapping[str, Any]],
+    settle_sources: tuple[SourceName, ...] | None,
+) -> bool:
+    if not settle_sources:
+        return True
+    for source in settle_sources:
+        indices = [
+            index for index, trace in tool_trace.items() if trace["source"] == source
+        ]
+        if not indices or any(output[index] is None for index in indices):
+            return False
+    return True
