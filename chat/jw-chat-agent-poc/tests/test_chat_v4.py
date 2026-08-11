@@ -1155,7 +1155,8 @@ def test_v4_synthesis_prompt_keeps_external_topic_ahead_of_always_on_mart() -> N
     assert "외부 근거가 핵심 답" in system
     assert "내부 데이터마트는 종합 인사이트나 참고에만" in system
     assert "요청 주제를 대체하거나 첫 문단을 빼앗지 않는다" in system
-    assert "도구로 확인된 원인 후보" in system
+    assert "첫 층은 `관측`" in system
+    assert "도구로 확인된 원인 후보" not in system
 
 
 def test_v4_synthesis_preserves_reexamination_source_fields_verbatim() -> None:
@@ -1764,7 +1765,7 @@ def test_v4_claim_eligibility_guard_blocks_source_tag_without_matching_claim() -
     )
 
     assert "2030년에 만료" not in gated.text
-    assert "현재 근거 자격으로 확인되지 않았습니다" in gated.text
+    assert "현재 근거 자격으로 확인되지 않았습니다" not in gated.text
     assert gated.trace["claim_eligibility_guard"]["blocked"] is True
     assert gated.trace["claim_eligibility_guard"]["unsupported_claims"] == ["patent"]
 
@@ -1812,7 +1813,7 @@ def test_v4_claim_eligibility_guard_blocks_untagged_claim_without_typed_support(
     )
 
     assert "2030년에 만료" not in gated.text
-    assert "현재 근거 자격으로 확인되지 않았습니다" in gated.text
+    assert "현재 근거 자격으로 확인되지 않았습니다" not in gated.text
     assert gated.trace["claim_eligibility_guard"]["blocked"] is True
     assert gated.trace["claim_eligibility_guard"]["unsupported_claims"] == ["patent"]
 
@@ -3946,8 +3947,8 @@ def test_v4_gates_render_existing_mart_history_points_when_synthesis_is_blocked(
         "연도별: 2021년 7월 69.24억원 · 2021년 12월 75.34억원 · "
         "2022년 12월 77.73억원 · 2026년 6월 85.87억원"
     ) in gated.text
-    assert "| 2021-07 | 69.24억원 | 1446.74억원 |" in gated.text
-    assert "| 2026-06 | 85.87억원 | 2308.33억원 |" in gated.text
+    assert "| 2021-07 | 69.24억원 | 1,446.74억원 |" in gated.text
+    assert "| 2026-06 | 85.87억원 | 2,308.33억원 |" in gated.text
     assert "99.99" not in gated.text
 
 
@@ -3965,8 +3966,8 @@ def test_v4_gates_allow_payload_derived_values_from_all_queried_mart_dimensions(
     gated = apply_v4_gates(resolved_question, answer, (result,))
 
     assert gated.trace["mart_numeric_copy_only"]["blocked"] is False
-    assert "2,157,968.39" in gated.text
-    assert "3,243,568.08" in gated.text
+    assert "약 216만 Rx" in gated.text
+    assert "약 324만 Rx" in gated.text
     assert "5.40%" in gated.text
     assert "1.76%" in gated.text
 
@@ -4103,7 +4104,7 @@ def test_v4_fallback_preserves_multiple_trend_renders_for_one_dimension() -> Non
 
     assert "의원" in gated.text
     assert "요양병원" in gated.text
-    assert "202.5 Rx" in gated.text
+    assert "202.50 Rx" in gated.text
 
 
 def test_v4_gates_dimension_fallback_keeps_table_prose_and_sales_history() -> None:
@@ -4123,8 +4124,8 @@ def test_v4_gates_dimension_fallback_keeps_table_prose_and_sales_history() -> No
     assert "유통채널 분해에서는" in gated.text
     assert "| 진료과 | 시작 기간 | 시작 처방량 | 최근 기간 | 최근 처방량 |" in gated.text
     assert "| 유통채널 | 시작 기간 | 시작 처방량 | 최근 기간 | 최근 처방량 |" in gated.text
-    assert "2,157,968.39 Rx" in gated.text
-    assert "3,243,568.08 Rx" in gated.text
+    assert "약 216만 Rx" in gated.text
+    assert "약 324만 Rx" in gated.text
     assert "리바로젯 매출은" in gated.text
     assert "9,999,999" not in gated.text
 
@@ -4165,13 +4166,13 @@ def test_v4_gates_use_market_series_for_market_size_trend_fallback() -> None:
     )
 
     assert (
-        "리바로 전략 시장 규모는 2022년 12월 1743.44억원에서 "
-        "2026년 6월 2308.33억원으로 4년간 증가했습니다."
+        "리바로 전략 시장 규모는 2022년 12월 약 1,743억원에서 "
+        "2026년 6월 약 2,308억원으로 4년간 증가했습니다."
     ) in gated.text
     assert (
-        "연도별: 2022년 12월 1743.44억원 · 2023년 12월 1901.22억원 · "
-        "2024년 12월 2077.31억원 · 2025년 12월 2244.08억원 · "
-        "2026년 6월 2308.33억원"
+        "연도별: 2022년 12월 1,743.44억원 · 2023년 12월 1,901.22억원 · "
+        "2024년 12월 2,077.31억원 · 2025년 12월 2,244.08억원 · "
+        "2026년 6월 2,308.33억원"
     ) in gated.text
     assert "리바로 매출은" not in gated.text
     assert "9999" not in gated.text
@@ -4304,7 +4305,7 @@ def test_v4_gates_prepend_requested_mart_metric_when_synthesis_omits_it() -> Non
         results,
     )
 
-    assert gated.text.startswith("리바로 2026-06 UBIST 전략 mart 지표: 매출 85.87억원")
+    assert gated.text.startswith("리바로의 2026년 6월 UBIST 지표는 매출 85.87억원")
     assert gated.trace["requested_metric_surface"]["repaired"] is True
     assert "8587458961.25" not in gated.text
 
@@ -4343,7 +4344,7 @@ def test_v4_gate_replaces_raw_won_paragraph_with_display_summary() -> None:
         results,
     )
 
-    assert gated.text.startswith("리바로 2026-06 UBIST 전략 mart 지표: 매출 85.87억원")
+    assert gated.text.startswith("리바로의 2026년 6월 UBIST 지표는 매출 85.87억원")
     assert "8587458961.25" not in gated.text
     assert gated.trace["surface_raw_won"]["blocked"] is True
 

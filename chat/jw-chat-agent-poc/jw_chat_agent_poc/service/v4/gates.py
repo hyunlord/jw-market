@@ -10,11 +10,14 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 
 from jw_chat_agent_poc.service.v4.contracts import GatedAnswer, SourceResult
+from jw_chat_agent_poc.service.v4.display import normalize_answer_surface
 
 
 _NUMBER_RE = re.compile(r"(?<![\w.])-?\d[\d,]*(?:\.\d+)?")
 _RAW_WON_RE = re.compile(
-    r"\b\d{7,}(?:\.\d+)?\s*(?:\(\s*원\s*\)|원)(?:은|는|이|가|을|를|으로|에서|의)?"
+    r"(?<![\w.])\d[\d,]{6,}(?:\.\d+)?\s*(?:\(\s*원\s*\)|원|KRW)"
+    r"(?:은|는|이|가|을|를|으로|에서|의)?",
+    re.IGNORECASE,
 )
 _PERCENT_RE = re.compile(
     r"(?P<value>-?\d[\d,]*(?:\.\d+)?)\s*(?:\(\s*%(?:p)?\s*\)|%(?:p\b)?)",
@@ -238,18 +241,6 @@ def apply_v4_gates(
     }
 
     raw_won_blocked = bool(_RAW_WON_RE.search(text))
-    if raw_won_blocked:
-        retained = [
-            block.strip()
-            for block in re.split(r"\n\s*\n", text)
-            if block.strip() and not _RAW_WON_RE.search(block)
-        ]
-        verified_summary = _render_mart_facts(
-            mart_results,
-            question=question,
-            allowed_fields=metric_fields,
-        )
-        text = _merge_unique_blocks(verified_summary, "\n\n".join(retained))
     trace["surface_raw_won"] = {"blocked": raw_won_blocked}
 
     display_percentages = _mart_display_percentages(mart_results)
@@ -259,22 +250,6 @@ def apply_v4_gates(
         for match in _PERCENT_RE.finditer(text)
         if _normalize_number(match.group("value")) in raw_percentages
     }
-    if exposed_raw_percentages:
-        retained = [
-            block.strip()
-            for block in re.split(r"\n\s*\n", text)
-            if block.strip()
-            and not any(
-                _normalize_number(match.group("value")) in exposed_raw_percentages
-                for match in _PERCENT_RE.finditer(block)
-            )
-        ]
-        verified_summary = _render_mart_facts(
-            mart_results,
-            question=question,
-            allowed_fields=metric_fields,
-        )
-        text = _merge_unique_blocks(verified_summary, "\n\n".join(retained))
     trace["surface_mart_percentage"] = {
         "blocked": bool(exposed_raw_percentages),
         "tokens": sorted(exposed_raw_percentages),
@@ -357,6 +332,9 @@ def apply_v4_gates(
     }
 
     text = _merge_unique_blocks(text)
+
+    text, surface_trace = normalize_answer_surface(text)
+    trace["final_surface"] = surface_trace
 
     text = _append_sources(text, results)
     trace["sources_block"] = {"present": "## 출처" in text}

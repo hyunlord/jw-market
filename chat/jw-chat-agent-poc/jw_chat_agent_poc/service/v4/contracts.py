@@ -98,6 +98,19 @@ class EvidenceEnvelope(_StrictModel):
     ingredient: tuple[str, ...] = ()
     company: tuple[str, ...] = ()
     approval_date: tuple[str, ...] = ()
+    subject_grain: Literal[
+        "market",
+        "ingredient",
+        "company",
+        "brand",
+        "channel",
+        "specialty",
+        "unknown",
+    ] = "unknown"
+    period_start: str | None = None
+    period_end: str | None = None
+    parent_entity: str | None = None
+    eligible_attributions: tuple[str, ...] = ()
 
 
 class SourceResult(_StrictModel):

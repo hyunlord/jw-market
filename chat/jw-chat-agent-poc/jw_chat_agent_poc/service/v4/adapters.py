@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import os
 import re
@@ -8,7 +9,7 @@ import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, replace
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from datetime import UTC, datetime
 from typing import Any
 
@@ -234,6 +235,7 @@ def _evidence_envelope(
         "entity_match": entity_match,
         "source_scope": _SOURCE_SCOPE[source],
         "time_match": time_match,
+        **_trace_only_envelope_fields(source, query, payload),
     }
     if source == "hira":
         keys = _payload_keys(payload)
@@ -353,6 +355,56 @@ def _evidence_envelope(
         eligible_claims=("observed_fact",),
         causal=False if source in {"openfda", "web"} else None,
     )
+
+
+def _trace_only_envelope_fields(
+    source: SourceName,
+    query: str,
+    payload: Any,
+) -> dict[str, Any]:
+    periods = sorted(
+        {
+            str(value).strip()[:7]
+            for value in _walk_named_values(
+                payload,
+                {"period", "from_period", "to_period", "yyyymm"},
+            )
+            if re.fullmatch(r"20\d{2}-(?:0[1-9]|1[0-2])(?:-\d{2})?", str(value).strip())
+        }
+    )
+    lowered = query.casefold()
+    keys = _payload_keys(payload)
+    if "specialty" in keys or "진료과" in lowered:
+        grain = "specialty"
+    elif "channel" in keys or "채널" in lowered:
+        grain = "channel"
+    elif keys & {"company", "manufacturer", "entp_name", "company_ranking_series"}:
+        grain = "company"
+    elif keys & {"ingredient", "item_ingr_name", "ingredient_trend"}:
+        grain = "ingredient"
+    elif keys & {"brand", "anchor_brand", "brand_value_series_10pt"}:
+        grain = "brand"
+    elif source == "mart" or "시장" in lowered:
+        grain = "market"
+    else:
+        grain = "unknown"
+
+    parent = next(
+        iter(_walk_named_values(payload, {"market_id", "parent_entity", "market"})),
+        None,
+    )
+    attributions = (
+        ("observed_association",)
+        if source == "mart" and "cause_card_data" in json.dumps(payload, ensure_ascii=False, default=str)
+        else ()
+    )
+    return {
+        "subject_grain": grain,
+        "period_start": periods[0] if periods else None,
+        "period_end": periods[-1] if periods else None,
+        "parent_entity": parent,
+        "eligible_attributions": attributions,
+    }
 
 
 def _parallel_hira_year_calls(
@@ -860,12 +912,14 @@ def _strategic_mart_calls(layer, brand: str, query: str) -> list[dict[str, Any]]
     except (LookupError, ValueError):
         cause = {}
     if cause:
+        cause, period_anchor = align_cause_periods(cause)
         calls.append(
             {
                 "source": str(scope.get("source") or "내부 데이터마트"),
                 "tool": "cause_card_data",
                 "summary_text": f"{brand} 시장의 원인분석 분해 데이터를 직접 조회했습니다.",
                 "render_data": cause,
+                "cause_period_anchor": period_anchor,
             }
         )
 
@@ -915,6 +969,132 @@ def _strategic_mart_calls(layer, brand: str, query: str) -> list[dict[str, Any]]
         except (LookupError, ValueError):
             pass
     return calls
+
+
+def align_cause_periods(
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, str] | None]:
+    """Clip cause-card time series to their common observed month range."""
+
+    aligned = copy.deepcopy(payload)
+    period_sets: list[set[str]] = []
+
+    def collect(value: Any, parent_key: str = "") -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                collect(item, str(key))
+            return
+        if not isinstance(value, list):
+            return
+        if _is_cause_series_key(parent_key):
+            periods = {
+                str(item.get("period") or "").strip()
+                for item in value
+                if isinstance(item, dict)
+                and _is_month_period(item.get("period"))
+            }
+            if len(periods) >= 2:
+                period_sets.append(periods)
+        for item in value:
+            collect(item, parent_key)
+
+    collect(aligned)
+    if not period_sets:
+        return aligned, None
+    common_periods = set(period_sets[0])
+    for periods in period_sets[1:]:
+        common_periods.intersection_update(periods)
+    if len(common_periods) < 2:
+        return aligned, None
+    period_start = min(common_periods)
+    period_end = max(common_periods)
+
+    def clip(value: Any, parent_key: str = "") -> None:
+        if isinstance(value, dict):
+            for key, item in tuple(value.items()):
+                if isinstance(item, list) and _is_cause_series_key(str(key)):
+                    clipped = [
+                        point
+                        for point in item
+                        if not isinstance(point, dict)
+                        or not _is_month_period(point.get("period"))
+                        or str(point["period"]) in common_periods
+                    ]
+                    value[key] = clipped
+                    if str(key) == "series":
+                        _refresh_cause_row(value, clipped)
+                    for point in clipped:
+                        clip(point, str(key))
+                else:
+                    clip(item, str(key))
+        elif isinstance(value, list):
+            for item in value:
+                clip(item, parent_key)
+
+    clip(aligned)
+    anchor = {"period_start": period_start, "period_end": period_end}
+    aligned["cause_period_anchor"] = anchor
+    return aligned, anchor
+
+
+def _is_cause_series_key(key: str) -> bool:
+    lowered = key.casefold()
+    return lowered == "series" or lowered.endswith("_series") or "series_" in lowered
+
+
+def _is_month_period(value: Any) -> bool:
+    return bool(re.fullmatch(r"20\d{2}-(?:0[1-9]|1[0-2])", str(value or "").strip()))
+
+
+def _refresh_cause_row(row: dict[str, Any], series: list[Any]) -> None:
+    points = [
+        point
+        for point in series
+        if isinstance(point, dict) and _is_month_period(point.get("period"))
+    ]
+    if len(points) < 2:
+        return
+    points.sort(key=lambda point: str(point["period"]))
+    first, last = points[0], points[-1]
+    row["from_period"] = str(first["period"])
+    row["to_period"] = str(last["period"])
+    for source_key, target_key in (
+        ("ms_pct", "from_ms_pct"),
+        ("ms_pct", "to_ms_pct"),
+    ):
+        point = first if target_key.startswith("from_") else last
+        if point.get(source_key) is not None:
+            row[target_key] = point[source_key]
+    if first.get("ms_pct") is not None and last.get("ms_pct") is not None:
+        row["share_delta_pctp"] = _decimal_delta(
+            first["ms_pct"],
+            last["ms_pct"],
+            Decimal("0.0001"),
+        )
+    for key in ("value", "value_krw"):
+        if last.get(key) is not None:
+            row["value_recent"] = last[key]
+            if first.get(key) is not None:
+                row["value_delta"] = float(Decimal(str(last[key])) - Decimal(str(first[key])))
+                row["value_delta_krw"] = row["value_delta"]
+            break
+    if last.get("value_억원") is not None:
+        row["value_recent_억원"] = last["value_억원"]
+        if first.get("value_억원") is not None:
+            row["value_delta_억원"] = _decimal_delta(
+                first["value_억원"],
+                last["value_억원"],
+                Decimal("0.01"),
+            )
+
+
+def _decimal_delta(start: Any, end: Any, quantum: Decimal) -> float:
+    return float(
+        (Decimal(str(end)) - Decimal(str(start))).quantize(
+            quantum,
+            rounding=ROUND_HALF_UP,
+        )
+    )
 
 
 def _mart_market_id(scope: dict[str, Any]) -> str | None:

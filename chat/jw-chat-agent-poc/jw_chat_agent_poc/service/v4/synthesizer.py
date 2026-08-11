@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
@@ -21,6 +22,13 @@ _INTERNAL_SURFACE_RE = re.compile(
     r"\bslot[_ -]?id\b|\b(?:sickCd|ptntCnt|value)\b|"
     r"\b\d{7,}(?:\.\d+)?\s*KRW(?![A-Za-z])|"
     r"\b\d{7,}(?:\.\d+)?\s*(?:\(\s*원\s*\)|원)(?:은|는|이|가|을|를|으로|에서|의)?|"
+    r"\b(?:hira|clinicaltrials|mfds|openfda|tavily)_[a-z0-9_]+\b|"
+    r"(?:\bNCT\d{8}\b\s*[,/]\s*)+\bNCT\d{8}\b)|"
+    r"\b[A-Z][A-Z0-9_]{2,}\s*[:=]\s*[^\s,;]+",
+)
+_RETRYABLE_INTERNAL_RE = re.compile(
+    r"(?i:MCP(?:[^가-힣\n]{0,80})?(?:에서|returned|결과)|\btotalCount\b|"
+    r"\bslot[_ -]?id\b|\b(?:sickCd|ptntCnt|value)\b|"
     r"\b(?:hira|clinicaltrials|mfds|openfda|tavily)_[a-z0-9_]+\b|"
     r"(?:\bNCT\d{8}\b\s*[,/]\s*)+\bNCT\d{8}\b)|"
     r"\b[A-Z][A-Z0-9_]{2,}\s*[:=]\s*[^\s,;]+",
@@ -57,6 +65,35 @@ _HIRA_FIELD_LABELS = {
     "rvdInsupBrdnAmt": "보험자부담금(원)",
     "rvdRpeTamtAmt": "요양급여비용총액(원)",
 }
+_SYNTHESIS_SYSTEM_PROMPT = (
+    "너는 JW MI팀의 CHAT-V4 답변 합성기다. 질문이 묻는 값이나 내용을 첫 문단에서 직접 답하고, "
+    "직접 관련 없는 근거는 뒤로 보내거나 생략한다. 도구 로그를 나열하지 말고 근거를 연결한 자연스러운 "
+    "한국어 줄글로 작성한다. 사실은 '~로 확인되었습니다' 또는 '~입니다'로 쓰고 문장 끝에 [출처: X]를 "
+    "붙인다. 해석은 '~로 해석될 수 있습니다' 또는 '~할 것으로 추정됩니다'로 구분하며 근거에 없는 숫자를 "
+    "만들지 않는다. 못 찾은 부분만 마지막 한 줄에 적는다. 내부 도구명, MCP 상태 문구, totalCount, slot id, "
+    "식별자 목록과 대문자 레코드 필드명을 노출하지 않는다. <INTERNAL_DATAMART> 안의 숫자와 표기는 한 글자도 바꾸지 않는다. "
+    "단위 환산, 반올림, 계산, 합산을 금지하며 UBIST와 IQVIA를 합산하지 않는다. "
+    "MISMATCH 근거는 이미 제외됐고 PARTIAL, US, 기간 불일치는 한계를 본문에 명시한다. "
+    "질문이 매출·점유율·순위·판매량·시장 규모·추이를 직접 물으면 내부 데이터마트를 핵심 답으로 쓴다. "
+    "질문이 원인을 물으면 동적 cause_answer_contract의 세 층과 귀속 제한을 따르고, 첫 층은 "
+    "`관측`으로 명확히 구분한다. "
+    "허가·급여·임상·안전성·특허처럼 외부 주제를 물으면 해당 외부 근거가 핵심 답이며, 상시 제공된 내부 "
+    "데이터마트는 종합 인사이트나 참고에만 둔다. 내부 데이터마트가 요청 주제를 대체하거나 첫 문단을 빼앗지 않는다. "
+    "evidence.eligible_claims에 없는 주장에는 그 근거를 사용하지 않는다. 관찰연구, 기기 연구, 인접 질환, "
+    "질문과 다른 모집상태의 연구는 핵심 답이 아니라 `참고: 인접 연구` 구획에만 둔다. causal=false 근거만으로 "
+    "원인을 확인했다고 쓰지 말고 관찰 사실과 가설을 분리한다. HIRA 입원과 외래 환자수는 중복 가능하므로 "
+    "합산하거나 비율을 계산하지 않는다. study_classification에서 ADJACENT로 표시된 임상은 `참고: 인접 연구` "
+    "구획에만 두고 인접 연구를 종합 인사이트에서 다시 요약하거나 해석하지 않는다. HIRA 환자수는 `환자수(명)` "
+    "값만 사용한다. `명세서건수(건)`이나 `방문일수(일)`를 환자수로 바꾸어 쓰지 않고, 금액은 `(원)` 라벨이 "
+    "붙은 값과 단위를 그대로 쓴다. 반드시 `## 핵심 답`, `## 근거와 맥락`, `## 종합 인사이트`, "
+    "`## 미확인 요소`, `## 출처`의 마크다운 소제목으로 구성한다. 한 문단은 최대 4문장으로 쓰고, "
+    "고시·허가사항은 투여대상·제외기준·투여방법·투여횟수처럼 의미 단위 불릿으로 요약한다. 근거 본문은 "
+    "활용하되 다운로드 안내문이나 담당부서 연락 안내는 답변에 복사하지 않는다. gap_fill로 표시된 웹 근거는 "
+    "공식 통계 표나 시계열에 섞지 말고 별도 문단에서 '공식 통계 아님'을 밝혀 서술한다. TIER1 또는 TIER2가 "
+    "아닌 웹 정량값은 쓰지 않는다. 제네릭처럼 하위 제품 집합을 묻는 질문에서는 그 집합이 근거에 없을 때 "
+    "본품이나 상위 제품의 수치를 대신 답하지 않고 요청 집합의 값을 확인하지 못했다고 먼저 밝힌다."
+)
+_CAUSE_MARKERS = ("원인", "왜 ", "이유")
 @dataclass(frozen=True)
 class SynthesisOutcome:
     text: str
@@ -130,7 +167,7 @@ class V4Synthesizer:
         elif not answer:
             fallback_reason = "empty_or_transport_error"
 
-        if answer and _INTERNAL_SURFACE_RE.search(answer):
+        if answer and _RETRYABLE_INTERNAL_RE.search(answer):
             original_answer = answer
             repair_messages = [
                 *messages,
@@ -165,7 +202,7 @@ class V4Synthesizer:
                 usable,
                 question=plan.resolved_question,
             )
-        elif _INTERNAL_SURFACE_RE.search(answer):
+        elif _RETRYABLE_INTERNAL_RE.search(answer):
             answer = _replace_internal_blocks(answer, usable)
 
         hira_surface = inspect_requested_hira_surface(
@@ -214,7 +251,7 @@ class V4Synthesizer:
                 if retried_answer and retried.finish_reason != "length":
                     answer = (
                         _replace_internal_blocks(retried_answer, usable)
-                        if _INTERNAL_SURFACE_RE.search(retried_answer)
+                        if _RETRYABLE_INTERNAL_RE.search(retried_answer)
                         else retried_answer
                     )
                     completion = retried
@@ -234,6 +271,15 @@ class V4Synthesizer:
                 "usage": completion.usage if completion else {},
                 "elapsed_ms": completion.elapsed_ms if completion else None,
                 "prompt_chars": sum(len(message["content"]) for message in messages),
+                "prompt_layout": {
+                    "static_prefix_sha256": hashlib.sha256(
+                        messages[0]["content"].encode()
+                    ).hexdigest(),
+                    "static_prefix_chars": len(messages[0]["content"]),
+                    "dynamic_suffix_chars": len(messages[1]["content"]),
+                    "explicit_cache": "unavailable_via_genos_serving",
+                    "implicit_cache_eligible": True,
+                },
                 "raw_payload_chars": sum(
                     len(json.dumps(result.payload, ensure_ascii=False, default=str))
                     for result in usable
@@ -299,6 +345,7 @@ def _synthesis_messages(
         {"question": turn.question, "answer": turn.answer}
         for turn in tuple(turns)[-3:]
     ]
+    asks_cause = any(marker in plan.resolved_question.casefold() for marker in _CAUSE_MARKERS)
     prompt = {
         "internal_datamart": [_mart_block(result) for result in mart],
         "external_evidence": [_evidence_packet(result) for result in external],
@@ -322,40 +369,33 @@ def _synthesis_messages(
             "출처는 본문 문장 끝에 [출처: 이름]으로 표시",
         ],
     }
+    if asks_cause:
+        prompt["cause_answer_contract"] = {
+            "layers": ["관측", "날짜가 확인된 외부 사건", "가설"],
+            "period_rule": (
+                "cause_period_anchor의 공통 시작·종료 기간 안에서만 모든 분해 수치를 비교한다"
+            ),
+            "attribution_rule": (
+                "시장 전체 채널·성분 수치를 특정 브랜드 원인으로 귀속하지 않는다. "
+                "브랜드×채널 교차 근거가 있을 때만 브랜드 수준으로 쓴다"
+            ),
+            "language_ladder": [
+                "관측: ~로 확인되었습니다",
+                "시점 병치: ~와 시기가 일치합니다",
+                "해석: ~로 해석될 수 있습니다",
+                "가설: ~일 가능성이 있으나 확인되지 않았습니다",
+            ],
+            "forbidden_without_movement_evidence": ["전환", "잠식", "대체"],
+            "few_shot_shape": (
+                "관측 수치를 먼저 시장 기여와 점유율 기여로 나누고, 날짜가 확인된 외부 사건은 "
+                "시점만 병치하며, 남는 설명은 확인되지 않은 가설로 분리한다. 예시 문장의 수치는 "
+                "사용하지 말고 현재 payload 값만 그대로 사용한다"
+            ),
+        }
     return [
         {
             "role": "system",
-            "content": (
-                "너는 JW MI팀의 CHAT-V4 답변 합성기다. 질문이 묻는 값이나 내용을 첫 문단에서 직접 답하고, "
-                "직접 관련 없는 근거는 뒤로 보내거나 생략한다. 도구 로그를 나열하지 말고 근거를 연결한 자연스러운 "
-                "한국어 줄글로 작성한다. 사실은 '~로 확인되었습니다' 또는 '~입니다'로 쓰고 문장 끝에 [출처: X]를 "
-                "붙인다. 해석은 '~로 해석될 수 있습니다' 또는 '~할 것으로 추정됩니다'로 구분하며 근거에 없는 숫자를 "
-                "만들지 않는다. 못 찾은 부분만 마지막 한 줄에 적는다. 내부 도구명, MCP 상태 문구, totalCount, slot id, "
-                "식별자 목록과 대문자 레코드 필드명을 노출하지 않는다. <INTERNAL_DATAMART> 안의 숫자와 표기는 한 글자도 바꾸지 않는다. "
-                "단위 환산, 반올림, 계산, 합산을 금지하며 UBIST와 IQVIA를 합산하지 않는다. "
-                "MISMATCH 근거는 이미 제외됐고 PARTIAL, US, 기간 불일치는 한계를 본문에 명시한다. "
-                "질문이 매출·점유율·순위·판매량·시장 규모·추이를 직접 물으면 내부 데이터마트를 핵심 답으로 쓴다. "
-                "질문이 원인을 물으면 cause_card_data의 EI/MS 분해, 성장 기여, 경쟁 이동, 채널 변화처럼 실제로 도착한 "
-                "분해 데이터만 `도구로 확인된 원인 후보` 층에 쓰고, 데이터 밖 설명은 가설로 분리한다. "
-                "허가·급여·임상·안전성·특허처럼 외부 주제를 물으면 해당 외부 근거가 핵심 답이며, 상시 제공된 내부 "
-                "데이터마트는 종합 인사이트나 참고에만 둔다. 내부 데이터마트가 요청 주제를 대체하거나 첫 문단을 빼앗지 않는다. "
-                "evidence.eligible_claims에 없는 주장에는 "
-                "그 근거를 사용하지 않는다. 관찰연구, 기기 연구, 인접 질환, 질문과 다른 모집상태의 연구는 핵심 답이 "
-                "아니라 `참고: 인접 연구` 구획에만 둔다. causal=false 근거만으로 원인을 확인했다고 쓰지 말고 관찰 사실과 "
-                "가설을 분리한다. HIRA 입원과 외래 환자수는 중복 가능하므로 합산하거나 비율을 계산하지 않는다. "
-                "study_classification에서 ADJACENT로 표시된 임상은 `참고: 인접 연구` 구획에만 두고, "
-                "인접 연구를 종합 인사이트에서 다시 요약하거나 해석하지 않는다. "
-                "HIRA 환자수는 `환자수(명)` 값만 사용한다. `명세서건수(건)`이나 `방문일수(일)`를 환자수로 "
-                "바꾸어 쓰지 않고, 금액은 `(원)` 라벨이 붙은 값과 단위를 그대로 쓴다. "
-                "반드시 `## 핵심 답`, `## 근거와 맥락`, "
-                "`## 종합 인사이트`, `## 미확인 요소`, `## 출처`의 마크다운 소제목으로 구성한다. 한 문단은 최대 4문장으로 "
-                "쓰고, 고시·허가사항은 투여대상·제외기준·투여방법·투여횟수처럼 의미 단위 불릿으로 요약한다. "
-                "근거 본문은 활용하되 다운로드 안내문이나 담당부서 연락 안내는 답변에 복사하지 않는다."
-                " gap_fill로 표시된 웹 근거는 공식 통계 표나 시계열에 섞지 말고 별도 문단에서 "
-                "'공식 통계 아님'을 밝혀 서술한다. TIER1 또는 TIER2가 아닌 웹 정량값은 쓰지 않는다. "
-                "제네릭처럼 하위 제품 집합을 묻는 질문에서는 그 집합이 근거에 없을 때 본품이나 상위 제품의 "
-                "수치를 대신 답하지 않고, 요청 집합의 값을 확인하지 못했다고 먼저 밝힌다."
-            ),
+            "content": _SYNTHESIS_SYSTEM_PROMPT,
         },
         {
             "role": "user",
@@ -443,11 +483,27 @@ def _clinical_study_classification(payload: Any) -> list[dict[str, Any]]:
 
 
 def _mart_block(result: SourceResult) -> str:
-    payload = result.payload
+    payload = _public_mart_payload(result.payload)
     tables = _markdown_tables(payload)
     raw = json.dumps(payload, ensure_ascii=False, default=str)
     body = "\n\n".join((*tables, f"원형 JSON: {raw}"))
     return f"<INTERNAL_DATAMART source=\"{_PUBLIC_SOURCE[result.source]}\">\n{body}\n</INTERNAL_DATAMART>"
+
+
+def _public_mart_payload(value: Any) -> Any:
+    """Remove renderer/progress metadata while preserving every evidence value."""
+
+    if isinstance(value, Mapping):
+        return {
+            str(key): _public_mart_payload(item)
+            for key, item in value.items()
+            if str(key) not in {"summary_text", "tool"}
+        }
+    if isinstance(value, list):
+        return [_public_mart_payload(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_public_mart_payload(item) for item in value)
+    return value
 
 def _select_usable_results(
     plan: PlannerOutput,
@@ -481,7 +537,15 @@ SOURCE_ORDER = {
 def _markdown_tables(value: Any) -> tuple[str, ...]:
     tables: list[str] = []
     for rows in _dict_lists(value):
-        columns = tuple(dict.fromkeys(str(key) for row in rows for key in row))[:12]
+        columns = tuple(
+            key
+            for key in dict.fromkeys(str(key) for row in rows for key in row)
+            if any(
+                not isinstance(row.get(key), (Mapping, list, tuple))
+                for row in rows
+                if key in row
+            )
+        )[:12]
         if not columns:
             continue
         header = "| " + " | ".join(columns) + " |"

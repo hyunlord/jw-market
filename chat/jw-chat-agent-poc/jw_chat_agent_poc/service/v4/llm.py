@@ -22,8 +22,9 @@ from jw_chat_agent_poc.service.genos_client import GenosClient
 
 LOGGER = logging.getLogger(__name__)
 
-PLANNER_MODEL = "gemini-3.1-pro-preview"
+PLANNER_MODEL = "gemini-3-flash-preview"
 SYNTHESIZER_MODEL = "gemini-3.1-pro-preview"
+_THINKING_LEVELS = frozenset({"LOW", "MEDIUM", "HIGH"})
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,7 @@ class GenOSV4Client:
         model: str,
         timeout_s: int,
         total_budget_s: int,
+        thinking_level: str | None = None,
     ) -> None:
         self._client = GenosClient(
             base_url=base_url,
@@ -55,6 +57,10 @@ class GenOSV4Client:
             total_budget_s=total_budget_s,
             model=model,
         )
+        normalized = thinking_level.strip().upper() if thinking_level else None
+        if normalized is not None and normalized not in _THINKING_LEVELS:
+            raise ValueError(f"unsupported thinking_level: {thinking_level}")
+        self._thinking_level = normalized
 
     def complete(
         self,
@@ -71,12 +77,11 @@ class GenOSV4Client:
                 timeout_s=min(client.timeout_s, bounded),
                 total_budget_s=min(client.total_budget_s, bounded),
             )
-        if max_tokens is None:
-            return client._chat_text(list(messages))  # noqa: SLF001 - direct GenOS transport reuse
         return _chat_completion_with_token_cap(
             client,
             list(messages),
             max_tokens=max_tokens,
+            thinking_level=self._thinking_level,
         ).text
 
     def complete_detailed(
@@ -98,6 +103,7 @@ class GenOSV4Client:
             client,
             list(messages),
             max_tokens=max_tokens,
+            thinking_level=self._thinking_level,
         )
 
     @property
@@ -105,6 +111,10 @@ class GenOSV4Client:
         marker = "/serving/"
         base_url = self._client.base_url.rstrip("/")
         return base_url.rsplit(marker, 1)[-1].split("/", 1)[0] if marker in base_url else "unknown"
+
+    @property
+    def thinking_level(self) -> str | None:
+        return self._thinking_level
 
 
 def planner_client() -> GenOSV4Client:
@@ -114,6 +124,7 @@ def planner_client() -> GenOSV4Client:
         model=os.environ.get("V4_PLANNER_MODEL", PLANNER_MODEL),
         timeout_s=int(os.environ.get("V4_PLANNER_TIMEOUT_S", "18")),
         total_budget_s=int(os.environ.get("V4_PLANNER_BUDGET_S", "24")),
+        thinking_level=os.environ.get("V4_PLANNER_THINKING_LEVEL", "LOW"),
     )
 
 
@@ -143,6 +154,7 @@ def synthesizer_client() -> GenOSV4Client:
         ),
         timeout_s=int(os.environ.get("V4_SYNTHESIZER_TIMEOUT_S", "60")),
         total_budget_s=int(os.environ.get("V4_SYNTHESIZER_BUDGET_S", "64")),
+        thinking_level=os.environ.get("V4_SYNTHESIZER_THINKING_LEVEL", "MEDIUM"),
     )
 
 
@@ -150,18 +162,24 @@ def _chat_completion_with_token_cap(
     client: GenosClient,
     messages: list[dict[str, str]],
     *,
-    max_tokens: int,
+    max_tokens: int | None,
+    thinking_level: str | None = None,
 ) -> CompletionResult:
-    if max_tokens <= 0:
+    if max_tokens is not None and max_tokens <= 0:
         raise ValueError("max_tokens must be positive")
     started = time.monotonic()
     payload = {
         "messages": messages,
         "stream": True,
         "temperature": 0.0,
-        "max_tokens": max_tokens,
         "stream_options": {"include_usage": True},
     }
+    if max_tokens is not None:
+        payload["max_tokens"] = max_tokens
+    if thinking_level is not None:
+        payload["google"] = {
+            "thinking_config": {"thinking_level": thinking_level}
+        }
     if client.model:
         payload["model"] = client.model
     headers = {"Authorization": f"Bearer {client.token}"} if client.token else {}

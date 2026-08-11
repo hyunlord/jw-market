@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 import logging
 import re
 import threading
@@ -19,6 +20,11 @@ from jw_chat_agent_poc.service.v4.gates import apply_v4_gates
 from jw_chat_agent_poc.service.v4.llm import planner_client, synthesizer_client
 from jw_chat_agent_poc.service.v4.planner import V4Planner
 from jw_chat_agent_poc.service.v4.synthesizer import SynthesisOutcome, V4Synthesizer
+from jw_chat_agent_poc.service.v4.shadow import (
+    CanonicalFact,
+    build_canonical_ledger,
+    build_grounding_shadow,
+)
 
 
 _PUBLIC_SOURCE = {
@@ -36,8 +42,31 @@ _PUBLIC_PROGRESS_SOURCE = {
     "nedrug": "식품의약품안전처",
 }
 LOGGER = logging.getLogger(__name__)
+_GROUNDING_EXECUTOR = ThreadPoolExecutor(
+    max_workers=2,
+    thread_name_prefix="v4-grounding-shadow",
+)
+_GROUNDING_SLOTS = threading.BoundedSemaphore(value=2)
 ProgressCallback = Callable[[dict[str, Any]], None]
 _PROGRESS_URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
+
+
+def _release_grounding_slot(_future: Future[tuple[CanonicalFact, ...]]) -> None:
+    _GROUNDING_SLOTS.release()
+
+
+def _submit_grounding_ledger(
+    results: Sequence[SourceResult],
+) -> Future[tuple[CanonicalFact, ...]] | None:
+    if not _GROUNDING_SLOTS.acquire(blocking=False):
+        return None
+    try:
+        future = _GROUNDING_EXECUTOR.submit(build_canonical_ledger, tuple(results))
+    except RuntimeError:
+        _GROUNDING_SLOTS.release()
+        return None
+    future.add_done_callback(_release_grounding_slot)
+    return future
 
 
 class V4Runtime:
@@ -272,6 +301,7 @@ class V4Runtime:
             current_results = _merge_results(prior_results, current_results)
         results = tuple(_mark_citations_used(result) for result in current_results)
         self._remember_session_results(session_id, results)
+        grounding_future = _submit_grounding_ledger(results)
         _emit_progress(
             progress_callback,
             "답변 작성 중",
@@ -296,6 +326,28 @@ class V4Runtime:
                 trace={},
             )
         gated = apply_v4_gates(plan.resolved_question, synthesis.text, results)
+        if grounding_future is None:
+            grounding_shadow = {
+                "mode": "SHADOW_RECORD_ONLY",
+                "answer_mutation": False,
+                "status": "unknown",
+                "reason": "executor_saturated",
+            }
+        else:
+            try:
+                grounding_shadow = build_grounding_shadow(
+                    gated.text,
+                    results,
+                    ledger=grounding_future.result(timeout=2.0),
+                )
+            except Exception as exc:  # noqa: BLE001 - shadow must never change the answer path
+                grounding_future.cancel()
+                grounding_shadow = {
+                    "mode": "SHADOW_RECORD_ONLY",
+                    "answer_mutation": False,
+                    "status": "unknown",
+                    "error_type": type(exc).__name__,
+                }
         elapsed_ms = (time.monotonic() - started) * 1000
         synth_usage = _normalized_synth_usage(synthesis.trace)
         planner_usage = _normalized_planner_usage(planner_outcome.trace.get("usage"))
@@ -350,6 +402,7 @@ class V4Runtime:
             },
             "stage_timing": stage_timing,
             "gates": gated.trace,
+            "typed_grounding_shadow": grounding_shadow,
         }
         sources = tuple(
             dict.fromkeys(
