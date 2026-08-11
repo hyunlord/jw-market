@@ -329,9 +329,6 @@ _SOURCE_STAGE_CONTRACTS: dict[str, tuple[str, ...]] = {
         "mart_publish",
         "refresh",
         "signal",
-        "agent_refresh",
-        "agent3",
-        "agent2",
         "dashboard",
     ),
     "iqvia_nsa": (
@@ -345,9 +342,6 @@ _SOURCE_STAGE_CONTRACTS: dict[str, tuple[str, ...]] = {
         "mart_publish",
         "refresh",
         "signal",
-        "agent_refresh",
-        "agent3",
-        "agent2",
         "dashboard",
     ),
     "iqvia_csd_channel": (

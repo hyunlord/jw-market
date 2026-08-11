@@ -61,7 +61,7 @@ def test_nsa_completion_declares_a_source_only_upper_bound() -> None:
 
 
 @pytest.mark.parametrize("category", ["iqvia_csd_keyword", "iqvia_csd_channel"])
-def test_csd_terminal_with_explicit_empty_scope_skips_agent_job(
+def test_csd_terminal_does_not_schedule_weekly_agent_job(
     category: str,
     sqlite_ledger,
     fake_transport,
@@ -86,18 +86,15 @@ def test_csd_terminal_with_explicit_empty_scope_skips_agent_job(
         create_app(IngestService(sqlite_ledger, None, transport=fake_transport))
     ).post("/ingest/terminal", json=payload)
 
-    # Then no Kubernetes Agent Job is created and the no-op remains auditable
+    # Then ingestion does not create the weekly-only Agent Job.
     assert response.status_code == 200
-    assert response.json()["agent_trigger_status"] == "not_applicable"
+    assert response.json()["agent_trigger_status"] == "weekly_schedule_only"
     assert response.json()["agent_job_name"] is None
     assert fake_transport.submitted == []
-    events = sqlite_ledger.stage_events(*identity)
-    assert [(event.stage, event.status, event.reason) for event in events] == [
-        ("agent_refresh", "skipped", "not_applicable"),
-    ]
+    assert sqlite_ledger.stage_events(*identity) == []
 
 
-def test_terminal_without_affected_scope_keeps_legacy_global_agent_job(
+def test_terminal_without_affected_scope_does_not_restore_legacy_agent_job(
     sqlite_ledger,
     fake_transport,
 ) -> None:
@@ -109,15 +106,16 @@ def test_terminal_without_affected_scope_keeps_legacy_global_agent_job(
     payload = _terminal_payload()
     payload.update({"category": identity[1], "source": identity[1], "epoch": identity[0]})
 
-    # When the old payload reaches the additive receiver contract
+    # When the old payload reaches the receiver contract
     response = TestClient(
         create_app(IngestService(sqlite_ledger, None, transport=fake_transport))
     ).post("/ingest/terminal", json=payload)
 
-    # Then missing scope retains the former global submission behavior
+    # Then missing scope cannot opt ingestion back into weekly Agent execution.
     assert response.status_code == 200
-    assert response.json()["agent_trigger_status"] == "submitted"
-    assert len(fake_transport.submitted) == 1
+    assert response.json()["agent_trigger_status"] == "weekly_schedule_only"
+    assert response.json()["agent_job_name"] is None
+    assert fake_transport.submitted == []
 
 
 def test_ingest_refresh_uses_only_numeric_profile() -> None:
@@ -275,7 +273,7 @@ def test_failed_agent_refresh_does_not_claim_derived_stages(
     ]
 
 
-def test_complete_terminal_launches_agent_job_after_ingest_is_complete(
+def test_complete_terminal_leaves_agent_work_to_weekly_schedule(
     sqlite_ledger, fake_transport
 ) -> None:
     identity = ("2026-05", "ubist", "a" * 64)
@@ -290,12 +288,10 @@ def test_complete_terminal_launches_agent_job_after_ingest_is_complete(
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["agent_trigger_status"] == "submitted"
-    assert payload["agent_job_name"].startswith("jw-agent-refresh-ubist-")
+    assert payload["agent_trigger_status"] == "weekly_schedule_only"
+    assert payload["agent_job_name"] is None
     assert sqlite_ledger.status(*identity).status == "complete"
-    assert len(fake_transport.submitted) == 1
-    submitted = fake_transport.submitted[0][1]
-    assert submitted["metadata"]["labels"]["app"] == "jw-agent-refresh"
+    assert fake_transport.submitted == []
 
 
 def test_agent_refresh_retry_preserves_failed_attempt(sqlite_ledger, monkeypatch):
@@ -427,7 +423,7 @@ def test_terminal_rejects_unknown_completion_schema_version(sqlite_ledger) -> No
     assert response.json()["detail"] == "unsupported completion schema_version '2'"
 
 
-def test_global_agent_refresh_cap_blocks_a_second_active_job(sqlite_ledger) -> None:
+def test_terminal_does_not_consult_agent_capacity_owned_by_weekly_schedule(sqlite_ledger) -> None:
     identity = ("2026-05", "ubist", "a" * 64)
     sqlite_ledger.receive(*identity, manifest_path="/input/manifest.json")
     sqlite_ledger.mark_running(*identity, job_name="jw-ingest-parent", run_id="run-1")
@@ -462,8 +458,8 @@ def test_global_agent_refresh_cap_blocks_a_second_active_job(sqlite_ledger) -> N
     response = client.post("/ingest/terminal", json=_terminal_payload())
 
     assert response.status_code == 200
-    assert response.json()["agent_trigger_status"] == "deferred_capacity"
-    assert response.json()["agent_trigger_reason"] == "global agent refresh cap reached (1/1)"
+    assert response.json()["agent_trigger_status"] == "weekly_schedule_only"
+    assert response.json()["agent_trigger_reason"] is None
     assert submitted == []
 
 
@@ -489,11 +485,11 @@ def test_non_complete_terminal_never_submits_agent_job(sqlite_ledger) -> None:
     )
 
     assert response.status_code == 200
-    assert response.json()["agent_trigger_status"] == "not_applicable"
+    assert response.json()["agent_trigger_status"] == "weekly_schedule_only"
     assert submitted == []
 
 
-def test_agent_submission_failure_never_reopens_or_fails_completed_ingest(
+def test_terminal_does_not_call_legacy_agent_submission_transport(
     sqlite_ledger,
 ) -> None:
     identity = ("2026-05", "ubist", "a" * 64)
@@ -511,8 +507,8 @@ def test_agent_submission_failure_never_reopens_or_fails_completed_ingest(
     response = client.post("/ingest/terminal", json=_terminal_payload())
 
     assert response.status_code == 200
-    assert response.json()["agent_trigger_status"] == "failed"
-    assert response.json()["agent_trigger_reason"] == "RuntimeError"
+    assert response.json()["agent_trigger_status"] == "weekly_schedule_only"
+    assert response.json()["agent_trigger_reason"] is None
     assert sqlite_ledger.status(*identity).status == "complete"
 
 

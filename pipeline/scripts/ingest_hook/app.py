@@ -2083,47 +2083,8 @@ def create_app(service: IngestService) -> FastAPI:
                 ),
             )
         agent_job_name = None
-        agent_trigger_status = "not_applicable"
+        agent_trigger_status = "weekly_schedule_only"
         agent_trigger_reason = None
-        if payload.event == "complete" and payload.mode == "production":
-            try:
-                agent_job_name = job_launcher.submit_agent_refresh_job(
-                    epoch=payload.epoch,
-                    category=category,
-                    manifest_sha=payload.manifest_sha,
-                    ingest_run_id=entry.run_id,
-                    transport=service.transport,
-                    inspect_transport=service.inspect_transport,
-                    list_transport=service.list_transport,
-                    affected_scope=(
-                        payload.affected_scope.model_dump()
-                        if payload.affected_scope is not None
-                        else None
-                    ),
-                )
-                if agent_job_name is None:
-                    timestamp = service.timestamp()
-                    service.ledger.record_stage(
-                        payload.epoch,
-                        category,
-                        payload.manifest_sha,
-                        run_id=f"{entry.run_id}:agent-refresh",
-                        seq=1,
-                        stage="agent_refresh",
-                        status="skipped",
-                        reason="not_applicable",
-                        started_at=timestamp,
-                        finished_at=timestamp,
-                        duration_ms=0,
-                    )
-                else:
-                    agent_trigger_status = "submitted"
-            except job_launcher.AgentRefreshCapacityError as exc:
-                agent_trigger_status = "deferred_capacity"
-                agent_trigger_reason = str(exc)
-            except Exception as exc:  # agent work is a separate failure domain
-                agent_trigger_status = "failed"
-                agent_trigger_reason = type(exc).__name__
         promoted = service.promote()
         return {
             "accepted": True,

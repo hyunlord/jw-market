@@ -209,27 +209,13 @@ def _stub_numeric_success(
     )
     monkeypatch.setattr(
         runner,
-        "_run_numeric_agent_refresh",
-        lambda context: calls.append(
-            (
-                "agent_refresh",
-                {
-                    "category": context.category,
-                    "run_id": context.run_id,
-                    "affected_scope": context.affected_scope,
-                },
-            )
-        ),
-    )
-    monkeypatch.setattr(
-        runner,
         "_removed_existing_forecast_guard",
         lambda *_args: pytest.fail("reingest must not verify/reuse existing forecast"),
         raising=False,
     )
 
 
-def test_numeric_reingest_runs_core_stages_and_delegates_real_agent_path(
+def test_numeric_reingest_runs_core_stages_without_weekly_agent_path(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -284,7 +270,7 @@ def test_numeric_reingest_runs_core_stages_and_delegates_real_agent_path(
         ledger=ledger,
     )
 
-    # Then: it executes the numeric core stages and delegates the existing agent path.
+    # Then: it executes only the numeric ingestion stages.
     assert _complete_stage_names(ledger) == [
         "g3",
         "load",
@@ -297,14 +283,7 @@ def test_numeric_reingest_runs_core_stages_and_delegates_real_agent_path(
         "signal",
     ]
     assert [stage for stage in _complete_stage_names(ledger) if stage.startswith("agent")] == []
-    assert (
-        "agent_refresh",
-        {
-            "category": "ubist",
-            "run_id": RUN_ID,
-            "affected_scope": affected_scope,
-        },
-    ) in calls
+    assert not any(name == "agent_refresh" for name, _ in calls)
     assert ("gates", {"category": "ubist", "build_db": f"build_{RUN_ID}", "sigma_source": "ubist"}) in calls
     assert any(call[0] == "refresh_argv" for call in calls)
     assert ledger.terminals[-1]["status"] == "complete"

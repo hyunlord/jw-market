@@ -19,7 +19,6 @@ from pipeline.scripts.deploy.mart_load_ops import (
     restore_table_group_atomically,
 )
 from pipeline.scripts.ingest_hook import config
-from pipeline.scripts.ingest_hook import agent_refresh_runner
 from pipeline.scripts.ingest_hook import csd_channel_activation
 from pipeline.scripts.ingest_hook import csd_keyword_activation
 from pipeline.scripts.ingest_hook import iqvia_nsa_mart_activation as iqvia_activation
@@ -194,7 +193,6 @@ def run(
             reason="numeric post-gates passed for recomputed mart",
         )
         _publish_and_refresh_numeric(context, active_ledger, prepared, spec)
-        _run_numeric_agent_refresh(context)
         return _complete_terminal(
             active_ledger,
             context,
@@ -729,22 +727,6 @@ def _record_external_stage_chain(
             context,
             stage,
             reason="external source-owned stage completed by normal activation helper",
-        )
-
-
-def _run_numeric_agent_refresh(context: RequestContext) -> None:
-    """Run the existing numeric Agent path before releasing the global slot."""
-
-    returncode = agent_refresh_runner.run(
-        epoch=context.identity[0],
-        category=context.category,
-        manifest_sha=context.identity[2],
-        ingest_run_id=context.run_id,
-        affected_scope=context.affected_scope,
-    )
-    if returncode != 0:
-        raise CompleteReingestRejected(
-            f"numeric Agent refresh failed with return code {returncode}"
         )
 
 

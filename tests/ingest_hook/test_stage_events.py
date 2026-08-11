@@ -118,9 +118,6 @@ def test_status_exposes_deterministic_expected_stage_contract(client, bucket):
         "mart_publish",
         "refresh",
         "signal",
-        "agent_refresh",
-        "agent3",
-        "agent2",
         "dashboard",
     ]
     assert all(item["applicable"] is True for item in status["expected_stages"])
@@ -162,7 +159,7 @@ def test_terminal_run_ignores_stale_running_stage_from_prior_run(
 
     assert status["status"] == "failed"
     assert status["current_stage"] is None
-    assert len(status["expected_stages"]) == 14
+    assert len(status["expected_stages"]) == 11
 
 
 def test_running_run_reports_only_its_own_current_stage(sqlite_ledger, bucket):
@@ -197,7 +194,7 @@ def test_running_run_reports_only_its_own_current_stage(sqlite_ledger, bucket):
 
     assert status["status"] == "running"
     assert status["current_stage"] == "refresh"
-    assert len(status["expected_stages"]) == 14
+    assert len(status["expected_stages"]) == 11
 
 
 def test_running_run_reports_startup_recovery_stage(sqlite_ledger, bucket):

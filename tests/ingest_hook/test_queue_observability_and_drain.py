@@ -1133,9 +1133,6 @@ def test_terminal_callback_promotes_next_only_after_slot_release(
         "mart_publish",
         "refresh",
         "signal",
-        "agent_refresh",
-        "agent3",
-        "agent2",
         "dashboard",
     ]
 
