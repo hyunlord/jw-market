@@ -839,9 +839,13 @@ def _load_with_source_inventory(
         bootstrap_files=tuple(
             (input_root / entry.path).resolve() for entry in manifest.files
         ),
-        # Run-scoped databases start empty. Reuse classification metadata, but
-        # feed every current source file to the loader that populates the new DB.
-        rebuild_all_current=(target_db_override is not None or rebuild_all_current),
+        # UBIST upload and reingest rebuild the same current corpus. Run-scoped
+        # databases also need every current source file because they start empty.
+        rebuild_all_current=(
+            manifest.category == "ubist"
+            or target_db_override is not None
+            or rebuild_all_current
+        ),
         row_floor_ratio=spec.row_floor_ratio,
         permissive=config.e2e_commissioning(),
         rebuild=lambda source_files: _real_load(
