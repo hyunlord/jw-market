@@ -3,10 +3,11 @@ from __future__ import annotations
 import ipaddress
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from jw_chat_agent_poc.service.v4.contracts import GatedAnswer, SourceResult
 
@@ -72,6 +73,11 @@ _METRIC_FIELDS: dict[str, tuple[str, ...]] = {
     "수량": ("prescription_volume", "volume", "value"),
 }
 _CONTEXT_FIELDS = ("period", "year", "month", "yyyymm")
+_DIMENSION_LABELS = {
+    "specialty": "진료과",
+    "channel": "유통채널",
+}
+_PERCENTAGE_FIELD_MARKERS = ("pct", "percent", "percentage", "share")
 _CONFIRMED_CAUSE_RE = re.compile(
     r"[^.\n]*(?:원인으로\s*확인|때문인\s*것으로\s*확인|원인은)[^.\n]*(?:\.|$)"
 )
@@ -392,11 +398,172 @@ def _payload_numbers(
         else:
             serialized = json.dumps(result.payload, ensure_ascii=False, default=str)
         tokens.update(_normalize_number(token) for token in _NUMBER_RE.findall(serialized))
+    tokens.update(_mart_dimension_payload_numbers(results))
     return tokens
 
 
 def _normalize_number(value: str) -> str:
     return value.replace(",", "").lstrip("+")
+
+
+def _mart_dimension_payload_numbers(
+    results: tuple[SourceResult, ...],
+) -> set[str]:
+    tokens: set[str] = set()
+    for render_data in _mart_dimension_renders(results):
+        public_fields = _mart_dimension_public_numeric_fields(render_data)
+        for row_key in ("level_segments", "level_top5_trend_series"):
+            rows = render_data.get(row_key)
+            if not isinstance(rows, list):
+                continue
+            for path, value in _walk_scalars(rows):
+                leaf = path.rsplit(".", 1)[-1].casefold()
+                if not _is_mart_number(value) or not _is_public_dimension_field(
+                    leaf,
+                    public_fields,
+                ):
+                    continue
+                tokens.add(_normalize_number(str(value)))
+                tokens.add(_normalize_number(_format_mart_value(value)))
+                if any(marker in leaf for marker in _PERCENTAGE_FIELD_MARKERS):
+                    tokens.add(_two_decimal_display(value))
+    return tokens
+
+
+def _mart_dimension_public_numeric_fields(
+    render_data: Mapping[str, Any],
+) -> set[str]:
+    fields = {"rank", "value", "value_recent"}
+    query_spec = render_data.get("query_spec")
+    metrics = query_spec.get("metrics") if isinstance(query_spec, Mapping) else None
+    metric_items = metrics if isinstance(metrics, (list, tuple)) else (metrics,)
+    fields.update(
+        str(metric).strip().casefold()
+        for metric in metric_items
+        if isinstance(metric, str) and metric.strip()
+    )
+    measure = render_data.get("measure")
+    if isinstance(measure, str) and measure.strip():
+        fields.add(measure.strip().casefold())
+    return fields
+
+
+def _is_public_dimension_field(leaf: str, public_fields: set[str]) -> bool:
+    return (
+        leaf in public_fields
+        or any(field in leaf for field in public_fields if field not in {"value"})
+        or any(marker in leaf for marker in _PERCENTAGE_FIELD_MARKERS)
+    )
+
+
+def _two_decimal_display(value: Any) -> str:
+    try:
+        number = Decimal(str(value).replace(",", ""))
+    except (InvalidOperation, ValueError):
+        return _normalize_number(str(value))
+    return format(number.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP), ".2f")
+
+
+def _mart_dimension_renders(
+    results: tuple[SourceResult, ...],
+) -> tuple[Mapping[str, Any], ...]:
+    candidates: list[tuple[int, Mapping[str, Any]]] = []
+    seen: set[str] = set()
+    for result in results:
+        calls = result.payload.get("calls") if isinstance(result.payload, Mapping) else None
+        if not isinstance(calls, list):
+            continue
+        for call in calls:
+            render_data = call.get("render_data") if isinstance(call, Mapping) else None
+            if not isinstance(render_data, Mapping):
+                continue
+            level = str(render_data.get("level") or "").strip().casefold()
+            if not level or level not in _declared_dimensions(render_data):
+                continue
+            trend_rows = render_data.get("level_top5_trend_series")
+            segment_rows = render_data.get("level_segments")
+            score = (
+                2
+                if isinstance(trend_rows, list) and trend_rows
+                else 1
+                if isinstance(segment_rows, list) and segment_rows
+                else 0
+            )
+            if score == 0:
+                continue
+            fingerprint = json.dumps(
+                render_data,
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            )
+            if fingerprint in seen:
+                continue
+            seen.add(fingerprint)
+            candidates.append((score, render_data))
+
+    trends = tuple(render for score, render in candidates if score == 2)
+    return tuple(
+        render
+        for score, render in candidates
+        if score == 2
+        or not any(
+            _mart_dimension_scope_matches(render, trend) for trend in trends
+        )
+    )
+
+
+def _mart_dimension_scope_matches(
+    left: Mapping[str, Any],
+    right: Mapping[str, Any],
+) -> bool:
+    if _mart_dimension_level_measure(left) != _mart_dimension_level_measure(right):
+        return False
+    for key in ("market", "brand", "source"):
+        left_value = _mart_dimension_scope_value(left, key)
+        right_value = _mart_dimension_scope_value(right, key)
+        if left_value and right_value and left_value != right_value:
+            return False
+    return True
+
+
+def _mart_dimension_level_measure(
+    render_data: Mapping[str, Any],
+) -> tuple[str, str]:
+    return (
+        str(render_data.get("level") or "").strip().casefold(),
+        str(
+            render_data.get("measure") or render_data.get("value_label") or "value"
+        ).strip().casefold(),
+    )
+
+
+def _mart_dimension_scope_value(
+    render_data: Mapping[str, Any],
+    key: str,
+) -> str:
+    query_spec = render_data.get("query_spec")
+    value = query_spec.get(key) if isinstance(query_spec, Mapping) else None
+    if value in (None, ""):
+        value = render_data.get(key)
+    return str(value or "").strip().casefold()
+
+
+def _declared_dimensions(render_data: Mapping[str, Any]) -> set[str]:
+    query_spec = render_data.get("query_spec")
+    if not isinstance(query_spec, Mapping):
+        return set()
+    dimensions: set[str] = set()
+    for key in ("group_by", "dimensions"):
+        value = query_spec.get(key)
+        items = value if isinstance(value, (list, tuple)) else (value,)
+        for item in items:
+            if not isinstance(item, str):
+                continue
+            dimensions.update(
+                token.strip().casefold() for token in item.split(",") if token.strip()
+            )
+    return dimensions
 
 
 def _requested_display_numbers(
@@ -504,9 +671,10 @@ def _render_mart_facts(
     question: str,
     allowed_fields: tuple[str, ...],
 ) -> str:
+    dimensions = render_mart_dimension_facts(results)
     history = _render_mart_history(results, question)
-    if history:
-        return history
+    if dimensions or history:
+        return _merge_unique_blocks(dimensions, history)
 
     summaries: list[str] = []
     for result in results:
@@ -542,6 +710,183 @@ def _render_mart_facts(
     if not facts:
         return "mart 근거는 확인했지만 복사 가능한 수치 필드를 찾지 못했습니다."
     return "확인된 내부 데이터마트 지표는 " + ", ".join(dict.fromkeys(facts[:20])) + "입니다."
+
+
+def render_mart_dimension_facts(results: tuple[SourceResult, ...]) -> str:
+    blocks: list[str] = []
+    for render_data in _mart_dimension_renders(results):
+        level = str(render_data.get("level") or "").strip()
+        level_label = _DIMENSION_LABELS.get(level.casefold(), level)
+        value_label = str(
+            render_data.get("value_label") or render_data.get("measure") or "값"
+        ).strip()
+        unit = str(render_data.get("unit_label") or "").strip()
+        trend_rows = render_data.get("level_top5_trend_series")
+        rendered_trends = _render_mart_dimension_trends(
+            trend_rows,
+            render_data=render_data,
+            level_label=level_label,
+            value_label=value_label,
+            unit=unit,
+        )
+        if rendered_trends:
+            blocks.append(rendered_trends)
+            continue
+        segment_rows = render_data.get("level_segments")
+        rendered_segments = _render_mart_dimension_segments(
+            segment_rows,
+            render_data=render_data,
+            level_label=level_label,
+            value_label=value_label,
+            unit=unit,
+        )
+        if rendered_segments:
+            blocks.append(rendered_segments)
+    return _merge_unique_blocks(*blocks)
+
+
+def _render_mart_dimension_trends(
+    rows: Any,
+    *,
+    render_data: Mapping[str, Any],
+    level_label: str,
+    value_label: str,
+    unit: str,
+) -> str:
+    if not isinstance(rows, list):
+        return ""
+    rendered_rows: list[tuple[str, str, Any, str, Any]] = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        name = str(row.get("name") or "").strip()
+        series = row.get("series")
+        if not name or not isinstance(series, list):
+            continue
+        points: list[tuple[str, Any]] = []
+        for point in series:
+            if not isinstance(point, Mapping):
+                continue
+            period = str(point.get("period") or "").strip()
+            value = _mart_dimension_point_value(point, render_data)
+            if period and value is not None:
+                points.append((period, value))
+        if not points:
+            continue
+        first_period, first_value = points[0]
+        last_period, last_value = points[-1]
+        rendered_rows.append((name, first_period, first_value, last_period, last_value))
+    if not rendered_rows:
+        return ""
+
+    first = rendered_rows[0]
+    unit_suffix = f" {unit}" if unit else ""
+    prose = (
+        f"{level_label} 분해에서는 {first[0]}의 {value_label}이 "
+        f"{first[1]} {_format_mart_value(first[2])}{unit_suffix}에서 "
+        f"{first[3]} {_format_mart_value(first[4])}{unit_suffix}로 조회되었습니다. "
+        f"전체 조회 항목은 아래 표에 정리했습니다. [출처: 내부 데이터마트]"
+    )
+    lines = [
+        f"## {level_label}별 {value_label} 추이",
+        f"| {level_label} | 시작 기간 | 시작 {value_label} | 최근 기간 | 최근 {value_label} |",
+        "| --- | --- | ---: | --- | ---: |",
+    ]
+    for name, first_period, first_value, last_period, last_value in rendered_rows:
+        lines.append(
+            f"| {_escape_mart_cell(name)} | {first_period} | "
+            f"{_format_mart_value(first_value)}{unit_suffix} | {last_period} | "
+            f"{_format_mart_value(last_value)}{unit_suffix} |"
+        )
+    return prose + "\n\n" + "\n".join(lines)
+
+
+def _render_mart_dimension_segments(
+    rows: Any,
+    *,
+    render_data: Mapping[str, Any],
+    level_label: str,
+    value_label: str,
+    unit: str,
+) -> str:
+    if not isinstance(rows, list):
+        return ""
+    rendered_rows: list[tuple[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        name = str(row.get("name") or "").strip()
+        value = _mart_dimension_point_value(row, render_data)
+        if name and value is not None:
+            rendered_rows.append((name, value))
+    if not rendered_rows:
+        return ""
+    unit_suffix = f" {unit}" if unit else ""
+    period = str(render_data.get("period") or "현재").strip()
+    prose = (
+        f"{period} {level_label} 분해에서 {rendered_rows[0][0]}의 {value_label}은 "
+        f"{_format_mart_value(rendered_rows[0][1])}{unit_suffix}로 조회되었습니다. "
+        f"전체 조회 항목은 아래 표에 정리했습니다. [출처: 내부 데이터마트]"
+    )
+    lines = [
+        f"## {level_label}별 {value_label}",
+        f"| {level_label} | {value_label} |",
+        "| --- | ---: |",
+        *(
+            f"| {_escape_mart_cell(name)} | {_format_mart_value(value)}{unit_suffix} |"
+            for name, value in rendered_rows
+        ),
+    ]
+    return prose + "\n\n" + "\n".join(lines)
+
+
+def _mart_dimension_point_value(
+    point: Mapping[str, Any],
+    render_data: Mapping[str, Any],
+) -> Any | None:
+    query_spec = render_data.get("query_spec")
+    metrics = query_spec.get("metrics") if isinstance(query_spec, Mapping) else None
+    metric_items = metrics if isinstance(metrics, (list, tuple)) else (metrics,)
+    candidates = [item for item in metric_items if isinstance(item, str)]
+    measure = render_data.get("measure")
+    if isinstance(measure, str):
+        candidates.append(measure)
+    candidates.extend(("value", "value_recent"))
+    for key in dict.fromkeys(candidates):
+        value = point.get(key)
+        if _is_mart_number(value):
+            return value
+    excluded = {"rank", "year", "month", "yyyymm"}
+    for key, value in point.items():
+        lowered = str(key).casefold()
+        if lowered in excluded or any(
+            marker in lowered for marker in _PERCENTAGE_FIELD_MARKERS
+        ):
+            continue
+        if _is_mart_number(value):
+            return value
+    return None
+
+
+def _is_mart_number(value: Any) -> bool:
+    if isinstance(value, bool):
+        return False
+    try:
+        Decimal(str(value).replace(",", ""))
+    except (InvalidOperation, ValueError):
+        return False
+    return value not in (None, "")
+
+
+def _format_mart_value(value: Any) -> str:
+    try:
+        return _format_decimal(str(value).replace(",", ""))
+    except InvalidOperation:
+        return str(value)
+
+
+def _escape_mart_cell(value: str) -> str:
+    return value.replace("|", "\\|").replace("\n", " ")
 
 
 def _render_mart_history(results: tuple[SourceResult, ...], question: str) -> str:
@@ -1005,13 +1350,14 @@ def _append_sources(text: str, results: tuple[SourceResult, ...]) -> str:
         detail = _source_reference_detail(result)
         reuse = " · 이전 조회 재사용" if result.cache_hit else ""
         line = f'- {source} — "{result.query}" {_source_reference_type(result)}{detail}{reuse}'
-        references = _public_source_references(result)
-        if references:
-            line += " · " + " · ".join(
-                f"{published_at} {url}" if published_at else url
-                for url, published_at in references
-            )
         lines.append(line)
+        references = _public_source_references(result)
+        lines.extend(
+            "  - "
+            + (f"{published_at} " if published_at else "")
+            + f"[{_public_reference_label(url, title)}]({url})"
+            for url, published_at, title in references
+        )
     if not lines:
         lines.append("- 사용 가능한 출처를 확보하지 못했습니다.")
     return f"{text}\n\n## 출처\n" + "\n".join(lines)
@@ -1061,19 +1407,26 @@ def _source_reference_type(result: SourceResult) -> str:
     }[result.source]
 
 
-def _public_source_references(result: SourceResult) -> tuple[tuple[str, str | None], ...]:
-    references: list[tuple[str, str | None]] = []
+def _public_source_references(
+    result: SourceResult,
+) -> tuple[tuple[str, str | None, str | None], ...]:
+    references: list[tuple[str, str | None, str | None]] = []
     for citation in result.citations:
         if _is_public_source_url(citation.url):
-            references.append((str(citation.url), None))
+            references.append((str(citation.url), None, None))
 
     def visit(value: Any) -> None:
         if isinstance(value, dict):
             url = value.get("url") or value.get("source_url")
             if _is_public_source_url(url):
                 published_at = value.get("published_at") or value.get("published_date")
+                title = value.get("title") or value.get("name")
                 references.append(
-                    (str(url), str(published_at).strip() if published_at else None)
+                    (
+                        str(url),
+                        str(published_at).strip() if published_at else None,
+                        str(title).strip() if title else None,
+                    )
                 )
             for item in value.values():
                 visit(item)
@@ -1082,7 +1435,35 @@ def _public_source_references(result: SourceResult) -> tuple[tuple[str, str | No
                 visit(item)
 
     visit(result.payload)
-    return tuple(dict.fromkeys(references))[:5]
+    by_url: dict[str, tuple[str, str | None, str | None]] = {}
+    for url, published_at, title in references:
+        existing = by_url.get(url)
+        if existing is None:
+            by_url[url] = (url, published_at, title)
+            continue
+        by_url[url] = (
+            url,
+            existing[1] or published_at,
+            existing[2] or title,
+        )
+    return tuple(by_url.values())[:5]
+
+
+def _public_reference_label(url: str, title: str | None) -> str:
+    decoded = unquote(url)
+    parsed = urlparse(decoded)
+    host = (parsed.hostname or "출처").removeprefix("www.")
+    visible_title = _one_line_source_title(title)
+    if not visible_title:
+        path_title = unquote(parsed.path).rstrip("/").rsplit("/", 1)[-1]
+        visible_title = _one_line_source_title(path_title) or "원문"
+    return f"{host} · {visible_title}"
+
+
+def _one_line_source_title(value: str | None, limit: int = 72) -> str:
+    text = unquote(" ".join(str(value or "").split()))
+    text = text.replace("[", "(").replace("]", ")")
+    return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
 def _is_public_source_url(value: Any) -> bool:

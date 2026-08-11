@@ -3312,7 +3312,7 @@ def _v4_sse_events(
     def emit_progress(event: dict[str, str]) -> None:
         # Progress is observational. Queueing failure is logged and never gates the answer.
         try:
-            events.put_nowait({**event, "status": "in_progress"})
+            events.put_nowait({"status": "in_progress", **event})
         except Exception:
             LOGGER.exception("V4 SSE progress queue failed")
 

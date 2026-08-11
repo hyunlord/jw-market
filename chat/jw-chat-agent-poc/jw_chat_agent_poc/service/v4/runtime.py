@@ -36,7 +36,8 @@ _PUBLIC_PROGRESS_SOURCE = {
     "nedrug": "식품의약품안전처",
 }
 LOGGER = logging.getLogger(__name__)
-ProgressCallback = Callable[[dict[str, str]], None]
+ProgressCallback = Callable[[dict[str, Any]], None]
+_PROGRESS_URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
 
 
 class V4Runtime:
@@ -100,16 +101,54 @@ class V4Runtime:
             "조회 계획",
             _expanded_intents_detail(plan.expanded_intents),
         )
-        completed_sources: list[str] = []
+        source_queries = {
+            source: _source_query_summary(queries)
+            for source, queries in plan.tool_queries.items()
+        }
+        source_expected = {
+            source: len(queries) for source, queries in plan.tool_queries.items()
+        }
+        source_results: dict[str, list[SourceResult]] = {
+            source: [] for source in SOURCE_NAMES
+        }
+        for source in SOURCE_NAMES:
+            _emit_source_progress(
+                progress_callback,
+                source=source,
+                query=source_queries[source],
+                results=(),
+                expected=source_expected[source],
+            )
 
-        def source_completed(source: str) -> None:
-            if source in completed_sources:
-                return
-            completed_sources.append(source)
+        def source_completed(result_or_source: SourceResult | str) -> None:
+            if isinstance(result_or_source, SourceResult):
+                result = result_or_source
+            else:
+                source = str(result_or_source)
+                if source not in source_queries:
+                    return
+                result = SourceResult(
+                    source=source,
+                    query=source_queries[source],
+                    status="ok",
+                )
+            source_results[result.source].append(result)
             _emit_progress(
                 progress_callback,
-                "자료 수집 중",
-                _source_progress_detail(completed_sources),
+                "자료 수집",
+                _source_progress_line(
+                    result.source,
+                    source_queries[result.source],
+                    source_results[result.source],
+                    source_expected[result.source],
+                ),
+                status=(
+                    "done"
+                    if len(source_results[result.source]) >= source_expected[result.source]
+                    else "in_progress"
+                ),
+                raw_name=f"v4_source:{result.source}",
+                raw_detail=source_queries[result.source],
             )
 
         prior_results = self._get_session_results(session_id)
@@ -139,6 +178,8 @@ class V4Runtime:
                     "session_result_reused": True,
                 },
             )
+            for result in first_execution.results:
+                source_completed(result)
         else:
             first_execution = _execute_with_trace(
                 self._executor,
@@ -210,6 +251,20 @@ class V4Runtime:
                 trace=gap_execution.trace,
             )
         current_results = (*first_results, *linked_results, *gap_execution.results)
+        for source in SOURCE_NAMES:
+            missing_results = max(
+                1 if source_expected[source] == 0 else 0,
+                source_expected[source] - len(source_results[source]),
+            )
+            for _ in range(missing_results):
+                source_completed(
+                    SourceResult(
+                        source=source,
+                        query=source_queries[source],
+                        status="timeout",
+                        notice="현재 답변 조회에서 미포함",
+                    )
+                )
         if prior_results and (
             _is_causal_followup(question)
             or (_is_prior_result_reference(question) and not can_reuse_prior)
@@ -473,11 +528,16 @@ def _normalized_planner_usage(value: object) -> dict[str, int | str]:
     }
 
 
-def _emit_progress(callback: ProgressCallback | None, name: str, detail: str) -> None:
+def _emit_progress(
+    callback: ProgressCallback | None,
+    name: str,
+    detail: str,
+    **metadata: Any,
+) -> None:
     if callback is None:
         return
     try:
-        callback({"name": name, "detail": detail})
+        callback({"name": name, "detail": detail, **metadata})
     except Exception:  # Progress is observational and must not become an answer gate.
         LOGGER.exception("V4 progress event emission failed")
 
@@ -491,21 +551,88 @@ def _expanded_intents_detail(intents: Sequence[str]) -> str:
     return f"{detail}\n- 외 {remaining}개" if remaining else detail
 
 
-def _source_progress_detail(completed_sources: Sequence[str]) -> str:
-    completed = [
-        _PUBLIC_PROGRESS_SOURCE[source]
-        for source in SOURCE_NAMES
-        if source in completed_sources
-    ]
-    pending = [
-        _PUBLIC_PROGRESS_SOURCE[source]
-        for source in SOURCE_NAMES
-        if source not in completed_sources
-    ]
-    detail = f"완료 {len(completed)}/{len(SOURCE_NAMES)} — " + " · ".join(completed)
-    if pending:
-        detail += " | 조회 중 — " + " · ".join(pending)
-    return detail
+def _emit_source_progress(
+    callback: ProgressCallback | None,
+    *,
+    source: str,
+    query: str,
+    results: Sequence[SourceResult],
+    expected: int,
+) -> None:
+    _emit_progress(
+        callback,
+        "자료 수집",
+        _source_progress_line(source, query, results, expected),
+        status="started" if not results else "in_progress",
+        raw_name=f"v4_source:{source}",
+        raw_detail=query,
+    )
+
+
+def _source_progress_line(
+    source: str,
+    query: str,
+    results: Sequence[SourceResult],
+    expected: int,
+) -> str:
+    label = _PUBLIC_PROGRESS_SOURCE[source]
+    quoted_query = f'"{query}"'
+    if not results:
+        return f"○ {label} {quoted_query} 조회 중"
+    if len(results) < expected:
+        return f"○ {label} {quoted_query} 조회 중 ({len(results)}/{expected})"
+
+    elapsed_seconds = max((result.elapsed_ms for result in results), default=0.0) / 1000
+    statuses = {result.status for result in results}
+    if "ok" in statuses:
+        return f"✓ {label} {quoted_query} 완료({elapsed_seconds:.2f}초)"
+    if statuses == {"empty"}:
+        return f"– {label} {quoted_query} 결과 없음"
+    reason = "응답 지연" if "timeout" in statuses else "조회 오류"
+    return f"! {label} {quoted_query} 미포함({reason})"
+
+
+def _source_query_summary(queries: Sequence[str]) -> str:
+    first = _public_progress_query(queries[0]) if queries else "조회 내용 확인 불가"
+    remaining = max(0, len(queries) - 1)
+    suffix = f" 외 {remaining}건" if remaining else ""
+    return _one_line(first + suffix, limit=100)
+
+
+def _public_progress_query(value: str) -> str:
+    query = " ".join(value.split())
+    query = _PROGRESS_URL_RE.sub(_mask_internal_progress_url, query)
+    query = re.sub(
+        r"\b(?:mcp|code-serving|read-only)-[a-z0-9.-]+\b",
+        "내부 조회 경로",
+        query,
+        flags=re.IGNORECASE,
+    )
+    query = re.sub(
+        r"\bslot(?:[_ -]?id)?\s*[:=#-]?\s*\d+\b",
+        "내부 조회 식별자",
+        query,
+        flags=re.IGNORECASE,
+    )
+    return re.sub(
+        r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b",
+        "관련 데이터 조회",
+        query,
+        flags=re.IGNORECASE,
+    )
+
+
+def _mask_internal_progress_url(match: re.Match[str]) -> str:
+    url = match.group(0)
+    host = (urlparse(url).hostname or "").casefold()
+    if (
+        host.endswith(".svc")
+        or ".svc." in host
+        or host in {"localhost", "127.0.0.1"}
+        or host.startswith(("mcp-", "code-serving-", "read-only"))
+    ):
+        return "내부 조회 경로"
+    return url
 
 
 def _one_line(value: str, limit: int = 120) -> str:

@@ -57,6 +57,133 @@ def _plan(**queries: tuple[str, ...]) -> PlannerOutput:
     )
 
 
+def _mart_dimension_result() -> SourceResult:
+    return SourceResult(
+        source="mart",
+        query="리바로젯 제품의 진료과별·유통채널별 처방 추이를 알려줘",
+        status="ok",
+        payload={
+            "calls": [
+                {
+                    "render_data": {
+                        "brand": "리바로젯",
+                        "brand_value_series_10pt": [
+                            {"period": "2025-07", "value_억원": 110.11},
+                            {"period": "2026-06", "value_억원": 124.54},
+                        ],
+                    }
+                },
+                {
+                    "render_data": {
+                        "brand": "리바로젯",
+                        "level": "specialty",
+                        "measure": "volume",
+                        "unit_label": "Rx",
+                        "value_label": "처방량",
+                        "query_spec": {
+                            "group_by": ["specialty", "period"],
+                            "metrics": ["prescription_volume"],
+                            "derive": ["trend"],
+                        },
+                        "level_top5_trend_series": [
+                            {
+                                "name": "순환기(Cardiology IM)",
+                                "rank": 2,
+                                "ms_recent_pct": 5.395646752887111,
+                                "from_period": "2025-07",
+                                "to_period": "2026-06",
+                                "value_recent": 2157968.39,
+                                "unit_label": "Rx",
+                                "series": [
+                                    {
+                                        "period": "2025-07",
+                                        "prescription_volume": 1821652.2,
+                                    },
+                                    {
+                                        "period": "2026-06",
+                                        "prescription_volume": 2157968.39,
+                                    },
+                                ],
+                            },
+                            {
+                                "name": "내분비(Endocrinology IM)",
+                                "rank": 3,
+                                "from_period": "2025-07",
+                                "to_period": "2026-06",
+                                "value_recent": 872514.18,
+                                "unit_label": "Rx",
+                                "series": [
+                                    {
+                                        "period": "2025-07",
+                                        "prescription_volume": 725031.88,
+                                    },
+                                    {
+                                        "period": "2026-06",
+                                        "prescription_volume": 872514.18,
+                                    },
+                                ],
+                            },
+                        ],
+                    }
+                },
+                {
+                    "render_data": {
+                        "brand": "리바로젯",
+                        "level": "channel",
+                        "measure": "volume",
+                        "unit_label": "Rx",
+                        "value_label": "처방량",
+                        "query_spec": {
+                            "group_by": ["channel", "period"],
+                            "metrics": ["prescription_volume"],
+                            "derive": ["trend"],
+                        },
+                        "level_top5_trend_series": [
+                            {
+                                "name": "의원",
+                                "rank": 1,
+                                "ms_recent_pct": 1.7557991782971925,
+                                "from_period": "2025-07",
+                                "to_period": "2026-06",
+                                "value_recent": 3243568.08,
+                                "unit_label": "Rx",
+                                "series": [
+                                    {
+                                        "period": "2025-07",
+                                        "prescription_volume": 2677228.15,
+                                    },
+                                    {
+                                        "period": "2026-06",
+                                        "prescription_volume": 3243568.08,
+                                    },
+                                ],
+                            },
+                            {
+                                "name": "종병",
+                                "rank": 2,
+                                "from_period": "2025-07",
+                                "to_period": "2026-06",
+                                "value_recent": 2976857.85,
+                                "unit_label": "Rx",
+                                "series": [
+                                    {
+                                        "period": "2025-07",
+                                        "prescription_volume": 2507293.78,
+                                    },
+                                    {
+                                        "period": "2026-06",
+                                        "prescription_volume": 2976857.85,
+                                    },
+                                ],
+                            },
+                        ],
+                    }
+                },
+            ]
+        },
+    )
+
+
 def test_planner_output_requires_all_seven_nonempty_query_lists() -> None:
     payload = {
         "resolved_question": "질문",
@@ -755,6 +882,29 @@ def test_v4_synthesis_failure_prefers_mart_history_over_snapshot_summary() -> No
         "2026년 6월 124.54억원"
     ) in outcome.text
     assert "리바로젯 2026-06 매출은" not in outcome.text
+    assert outcome.trace["fallback_reason"] == "empty_or_transport_error"
+
+
+def test_v4_synthesis_failure_renders_every_queried_mart_dimension() -> None:
+    class Client:
+        def complete_detailed(self, _messages, *, budget_s=None, max_tokens=None):
+            raise TimeoutError("synthesis deadline")
+
+    plan = _plan().model_copy(
+        update={
+            "resolved_question": "리바로젯 제품의 진료과별·유통채널별 처방 추이를 알려줘"
+        }
+    )
+
+    outcome = V4Synthesizer(Client()).synthesize_with_trace(
+        plan, (_mart_dimension_result(),), (), budget_s=24.0
+    )
+
+    assert "진료과별 처방량 추이" in outcome.text
+    assert "유통채널별 처방량 추이" in outcome.text
+    assert "순환기(Cardiology IM)" in outcome.text
+    assert "의원" in outcome.text
+    assert "리바로젯 매출은" in outcome.text
     assert outcome.trace["fallback_reason"] == "empty_or_transport_error"
 
 
@@ -2892,24 +3042,98 @@ def test_runtime_emits_public_five_stage_progress_for_linked_answer() -> None:
         progress_callback=progress.append,
     )
 
-    assert [event["name"] for event in progress] == [
+    stage_progress = [
+        event
+        for event in progress
+        if not event.get("raw_name", "").startswith("v4_source:")
+    ]
+    assert [event["name"] for event in stage_progress] == [
         "질문 해석",
         "조회 계획",
-        "자료 수집 중",
-        "자료 수집 중",
         "연결 조회",
         "답변 작성 중",
     ]
-    assert progress[2]["detail"] == (
-        "완료 1/7 — 건강보험심사평가원 | 조회 중 — 내부 데이터마트 · "
-        "식품의약품안전처 · FDA · ClinicalTrials.gov · 웹 자료 · 특허 자료"
-    )
-    assert progress[3]["detail"] == (
-        "완료 2/7 — 건강보험심사평가원 · 웹 자료 | 조회 중 — 내부 데이터마트 · "
-        "식품의약품안전처 · FDA · ClinicalTrials.gov · 특허 자료"
-    )
-    assert progress[1]["detail"] == "- 시장\n- 허가\n- 임상"
+    assert stage_progress[1]["detail"] == "- 시장\n- 허가\n- 임상"
     assert all("MCP" not in event["detail"] for event in progress)
+
+
+def test_runtime_emits_seven_query_bearing_source_lines_and_terminal_updates() -> None:
+    plan = _plan()
+
+    class Planner:
+        serving_id = "190"
+
+        def plan_with_trace(self, *_args, **_kwargs):
+            return SimpleNamespace(plan=plan, trace={"elapsed_ms": 1.0, "usage": {}})
+
+    class Executor:
+        def execute_with_trace(self, current_plan, *, progress_callback=None, **_kwargs):
+            results = []
+            for source, queries in current_plan.tool_queries.items():
+                status = "empty" if source == "web" else "timeout" if source == "patent" else "ok"
+                result = SourceResult(
+                    source=source,
+                    query=queries[0],
+                    status=status,
+                    payload={} if status == "ok" else None,
+                    elapsed_ms=1250.0,
+                    notice="응답 지연으로 미포함" if status == "timeout" else None,
+                )
+                results.append(result)
+                if progress_callback is not None:
+                    progress_callback(result)
+            return SimpleNamespace(
+                results=tuple(results),
+                trace={"elapsed_ms": 2.0, "tools": []},
+            )
+
+    class Synthesizer:
+        def synthesize_with_trace(self, *_args, **_kwargs):
+            return v4_synthesizer.SynthesisOutcome(
+                text="근거 기반 답변",
+                trace={"elapsed_ms": 3.0, "usage": {}},
+            )
+
+    progress: list[dict[str, str]] = []
+    V4Runtime(
+        planner=Planner(), executor=Executor(), synthesizer=Synthesizer()
+    ).answer(
+        "리바로 자료",
+        conversation_id="source-lines",
+        turns=(),
+        progress_callback=progress.append,
+    )
+
+    source_events = [
+        event for event in progress if event.get("raw_name", "").startswith("v4_source:")
+    ]
+    started = [event for event in source_events if event["status"] == "started"]
+    finished = [event for event in source_events if event["status"] == "done"]
+    assert len(started) == 7
+    assert len(finished) == 7
+    assert {event["raw_name"] for event in started} == {
+        f"v4_source:{source}" for source in SOURCE_NAMES
+    }
+    assert all('"' in event["detail"] and "조회 중" in event["detail"] for event in started)
+    assert any("완료(1.25초)" in event["detail"] for event in finished)
+    assert any("결과 없음" in event["detail"] for event in finished)
+    assert any("미포함(응답 지연)" in event["detail"] for event in finished)
+    assert all("mart query" not in event["detail"] for event in source_events)
+
+
+def test_v4_source_progress_query_hides_internal_identifiers() -> None:
+    detail = __import__(
+        "jw_chat_agent_poc.service.v4.runtime", fromlist=["_public_progress_query"]
+    )._public_progress_query(
+        "hira_disease_name_code http://mcp-hira.llmops.svc:8080/mcp "
+        "code-serving-235 slot id 17"
+    )
+
+    assert "관련 데이터 조회" in detail
+    assert "hira_disease_name_code" not in detail
+    assert "llmops.svc" not in detail
+    assert "code-serving-235" not in detail
+    assert "slot id 17" not in detail
 
 
 def test_query_plan_progress_limits_expanded_intents_to_five() -> None:
@@ -3336,6 +3560,46 @@ def test_v4_sources_hide_internal_urls_and_iso_time_but_keep_public_links() -> N
     assert "2026-08-11T01:02:03" not in gated.text
 
 
+def test_v4_sources_render_one_decoded_title_link_per_public_url() -> None:
+    result = SourceResult(
+        source="web",
+        query="리바로 최신 근거",
+        status="ok",
+        payload={
+            "items": [
+                {
+                    "title": "%EB%A6%AC%EB%B0%94%EB%A1%9C 성장 기사",
+                    "url": "https://example.org/%EB%A6%AC%EB%B0%94%EB%A1%9C",
+                },
+                {
+                    "title": "채널 분석",
+                    "url": "https://news.example.com/%EC%B1%84%EB%84%90",
+                },
+            ]
+        },
+        citations=(
+            Citation(
+                source="웹 자료",
+                query="리바로 최신 근거",
+                url="https://example.org/%EB%A6%AC%EB%B0%94%EB%A1%9C",
+                retrieved_at=datetime(2026, 8, 11, 1, 2, 3, tzinfo=UTC),
+                used=True,
+            ),
+        ),
+    )
+
+    gated = apply_v4_gates("리바로 최신 근거", "확인된 내용입니다.", (result,))
+    url_lines = [line for line in gated.text.splitlines() if "](" in line]
+    visible_labels = [line.split("](", 1)[0] for line in url_lines]
+
+    assert len(url_lines) == 2
+    assert all(line.startswith("  - ") for line in url_lines)
+    assert "[example.org · 리바로 성장 기사]" in url_lines[0]
+    assert "[news.example.com · 채널 분석]" in url_lines[1]
+    assert all("%" not in label for label in visible_labels)
+    assert all(line.count("](") == 1 for line in url_lines)
+
+
 def test_v4_tavily_retries_transport_once_but_not_empty_or_parse_failure(
     monkeypatch,
 ) -> None:
@@ -3685,6 +3949,121 @@ def test_v4_gates_render_existing_mart_history_points_when_synthesis_is_blocked(
     assert "| 2021-07 | 69.24억원 | 1446.74억원 |" in gated.text
     assert "| 2026-06 | 85.87억원 | 2308.33억원 |" in gated.text
     assert "99.99" not in gated.text
+
+
+def test_v4_gates_allow_payload_derived_values_from_all_queried_mart_dimensions() -> None:
+    result = _mart_dimension_result()
+    resolved_question = (
+        "리바로젯 제품의 진료과별·유통채널별 처방량과 점유율 추이를 알려줘"
+    )
+    answer = (
+        "순환기 진료과의 처방량은 2,157,968.39 Rx이고 점유율은 5.40%이며, "
+        "의원 유통채널의 처방량은 3,243,568.08 Rx이고 점유율은 1.76%입니다. "
+        "[출처: 내부 데이터마트]"
+    )
+
+    gated = apply_v4_gates(resolved_question, answer, (result,))
+
+    assert gated.trace["mart_numeric_copy_only"]["blocked"] is False
+    assert "2,157,968.39" in gated.text
+    assert "3,243,568.08" in gated.text
+    assert "5.40%" in gated.text
+    assert "1.76%" in gated.text
+
+
+def test_v4_gates_dimension_values_exclude_render_metadata_and_normalize_decimals() -> None:
+    result = SourceResult(
+        source="mart",
+        query="리바로젯 진료과별 처방량",
+        status="ok",
+        payload={
+            "calls": [
+                {
+                    "render_data": {
+                        "level": "specialty",
+                        "measure": "volume",
+                        "value_label": "처방량",
+                        "unit_label": "Rx",
+                        "query_result_id": 777,
+                        "query_spec": {
+                            "group_by": ["specialty"],
+                            "metrics": ["prescription_volume"],
+                        },
+                        "level_segments": [
+                            {"name": "순환기", "prescription_volume": 200.0}
+                        ],
+                    }
+                }
+            ]
+        },
+    )
+
+    valid = apply_v4_gates(
+        "리바로젯 진료과별 처방량 알려줘",
+        "순환기 진료과 처방량은 200 Rx입니다. [출처: 내부 데이터마트]",
+        (result,),
+    )
+    invalid = apply_v4_gates(
+        "리바로젯 진료과별 순위 알려줘",
+        "리바로젯은 777위입니다. [출처: 내부 데이터마트]",
+        (result,),
+    )
+
+    assert valid.trace["mart_numeric_copy_only"]["blocked"] is False
+    assert invalid.trace["mart_numeric_copy_only"]["blocked"] is True
+    assert "777위" not in invalid.text
+
+
+def test_v4_fallback_preserves_multiple_trend_renders_for_one_dimension() -> None:
+    result = _mart_dimension_result()
+    payload = json.loads(json.dumps(result.payload, ensure_ascii=False))
+    second_channel = json.loads(json.dumps(payload["calls"][2], ensure_ascii=False))
+    second_channel["render_data"]["query_spec"]["market"] = "ml_secondary"
+    second_channel["render_data"]["level_top5_trend_series"] = [
+        {
+            "name": "요양병원",
+            "unit_label": "Rx",
+            "series": [
+                {"period": "2025-07", "prescription_volume": 101.25},
+                {"period": "2026-06", "prescription_volume": 202.5},
+            ],
+        }
+    ]
+    payload["calls"].append(second_channel)
+    multi_result = result.model_copy(update={"payload": payload})
+
+    gated = apply_v4_gates(
+        "리바로젯 유통채널별 처방량 추이 알려줘",
+        "처방량은 9,999,999 Rx입니다.",
+        (multi_result,),
+    )
+
+    assert "의원" in gated.text
+    assert "요양병원" in gated.text
+    assert "202.5 Rx" in gated.text
+
+
+def test_v4_gates_dimension_fallback_keeps_table_prose_and_sales_history() -> None:
+    result = _mart_dimension_result()
+    resolved_question = "리바로젯 제품의 진료과별·유통채널별 처방량 추이를 알려줘"
+
+    gated = apply_v4_gates(
+        resolved_question,
+        "순환기 진료과의 처방량은 9,999,999 Rx입니다.",
+        (result,),
+    )
+
+    assert gated.trace["mart_numeric_copy_only"]["blocked"] is True
+    assert "진료과별 처방량 추이" in gated.text
+    assert "유통채널별 처방량 추이" in gated.text
+    assert "진료과 분해에서는" in gated.text
+    assert "유통채널 분해에서는" in gated.text
+    assert "| 진료과 | 시작 기간 | 시작 처방량 | 최근 기간 | 최근 처방량 |" in gated.text
+    assert "| 유통채널 | 시작 기간 | 시작 처방량 | 최근 기간 | 최근 처방량 |" in gated.text
+    assert "2,157,968.39 Rx" in gated.text
+    assert "3,243,568.08 Rx" in gated.text
+    assert "리바로젯 매출은" in gated.text
+    assert "9,999,999" not in gated.text
 
 
 def test_v4_gates_use_market_series_for_market_size_trend_fallback() -> None:
@@ -4367,3 +4746,44 @@ def test_flag_on_live_stream_emits_progress_before_running_v4(monkeypatch) -> No
     assert body.index("조회 계획") < body.index("자료 수집 중")
     assert body.index("자료 수집 중") < body.index("답변 작성 중")
     assert runtime.calls == [("리바로 요즘 어때", None, 0)]
+
+
+def test_flag_on_live_stream_preserves_terminal_source_line_status(monkeypatch) -> None:
+    class Runtime(_FakeV4Runtime):
+        def answer(
+            self,
+            question,
+            *,
+            conversation_id,
+            turns,
+            progress_callback=None,
+        ):
+            if progress_callback is not None:
+                progress_callback(
+                    {
+                        "name": "자료 수집",
+                        "detail": '✓ 내부 데이터마트 "리바로 자료" 완료(1.25초)',
+                        "status": "done",
+                        "raw_name": "v4_source:mart",
+                        "raw_detail": "리바로 자료",
+                    }
+                )
+            return super().answer(
+                question,
+                conversation_id=conversation_id,
+                turns=turns,
+                progress_callback=None,
+            )
+
+    monkeypatch.setenv("V4_PLANNER", "on")
+    monkeypatch.setattr(service_app, "_get_v4_runtime", Runtime)
+    client = TestClient(service_app.create_app())
+
+    body = client.get(
+        "/chat/stream",
+        params={"question": "리바로 자료"},
+    ).text
+
+    assert '"raw_name":"v4_source:mart"' in body
+    assert '"status":"done"' in body
+    assert "완료(1.25초)" in body

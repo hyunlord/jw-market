@@ -9,7 +9,10 @@ from typing import Any
 
 from jw_chat_agent_poc.service.conversation import ConversationTurn
 from jw_chat_agent_poc.service.v4.contracts import PlannerOutput, SourceResult
-from jw_chat_agent_poc.service.v4.gates import inspect_requested_hira_surface
+from jw_chat_agent_poc.service.v4.gates import (
+    inspect_requested_hira_surface,
+    render_mart_dimension_facts,
+)
 from jw_chat_agent_poc.service.v4.llm import CompletionResult, GenOSV4Client
 
 
@@ -620,12 +623,13 @@ def _evidence_fallback(
     paragraphs: list[str] = []
     for result in results:
         if result.source == "mart":
+            dimensions = render_mart_dimension_facts((result,))
             history = _mart_history_fallback(
                 result.payload,
                 question=question or result.query,
             )
-            if history:
-                paragraphs.append(history)
+            if dimensions or history:
+                paragraphs.extend(block for block in (dimensions, history) if block)
                 continue
         if result.source == "hira":
             patient_facts = _hira_patient_facts(result.payload)

@@ -12,6 +12,7 @@ from jw_chat_agent_poc.service.v4.contracts import SOURCE_NAMES, PlannerOutput, 
 
 
 SourceAdapter = Callable[[str], SourceResult]
+SourceProgressCallback = Callable[[SourceResult], None]
 
 
 @dataclass(frozen=True)
@@ -52,7 +53,7 @@ class ParallelSourceExecutor:
         settle_sources: tuple[SourceName, ...] | None = None,
         soft_deadline_s: float | None = None,
         source_filter: tuple[SourceName, ...] | None = None,
-        progress_callback: Callable[[SourceName], None] | None = None,
+        progress_callback: SourceProgressCallback | None = None,
     ) -> tuple[SourceResult, ...]:
         return self.execute_with_trace(
             plan,
@@ -75,7 +76,7 @@ class ParallelSourceExecutor:
         settle_sources: tuple[SourceName, ...] | None = None,
         soft_deadline_s: float | None = None,
         source_filter: tuple[SourceName, ...] | None = None,
-        progress_callback: Callable[[SourceName], None] | None = None,
+        progress_callback: SourceProgressCallback | None = None,
     ) -> ExecutionOutcome:
         started = time.monotonic()
         output: list[SourceResult | None] = []
@@ -101,7 +102,8 @@ class ParallelSourceExecutor:
                     if cached is not None:
                         self._cache.move_to_end(key)
                 if cached is not None:
-                    output.append(cached.model_copy(update={"cache_hit": True}))
+                    cached_result = cached.model_copy(update={"cache_hit": True})
+                    output.append(cached_result)
                     tool_trace[len(output) - 1] = {
                         "source": source,
                         "query": query,
@@ -111,7 +113,7 @@ class ParallelSourceExecutor:
                         "cache_hit": True,
                     }
                     if progress_callback is not None:
-                        progress_callback(source)
+                        progress_callback(cached_result)
                 else:
                     index = len(output)
                     output.append(None)
@@ -166,17 +168,20 @@ class ParallelSourceExecutor:
                         remaining.remove(future)
                         index, source, query, submitted = futures[future]
                         future.cancel()
-                        output[index] = SourceResult(
+                        timed_out = SourceResult(
                             source=source,
                             query=query,
                             status="timeout",
                             elapsed_ms=(now - submitted) * 1000,
                             notice="정답 근거 도착 후 soft deadline으로 미포함",
                         )
+                        output[index] = timed_out
                         tool_trace[index].update(
                             ended_ms=(now - started) * 1000,
                             status="timeout",
                         )
+                        if progress_callback is not None:
+                            progress_callback(timed_out)
                     break
                 expired = [
                     future
@@ -187,17 +192,20 @@ class ParallelSourceExecutor:
                     remaining.remove(future)
                     index, source, query, submitted = futures[future]
                     future.cancel()
-                    output[index] = SourceResult(
+                    timed_out = SourceResult(
                         source=source,
                         query=query,
                         status="timeout",
                         elapsed_ms=(now - submitted) * 1000,
                         notice="응답 지연으로 미포함",
                     )
+                    output[index] = timed_out
                     tool_trace[index].update(
                         ended_ms=(now - started) * 1000,
                         status="timeout",
                     )
+                    if progress_callback is not None:
+                        progress_callback(timed_out)
                 if not remaining:
                     break
                 remaining_total = deadline - time.monotonic()
@@ -206,17 +214,20 @@ class ParallelSourceExecutor:
                         remaining.remove(future)
                         index, source, query, submitted = futures[future]
                         future.cancel()
-                        output[index] = SourceResult(
+                        timed_out = SourceResult(
                             source=source,
                             query=query,
                             status="timeout",
                             elapsed_ms=(time.monotonic() - submitted) * 1000,
                             notice="전체 응답 시간 상한으로 미포함",
                         )
+                        output[index] = timed_out
                         tool_trace[index].update(
                             ended_ms=(time.monotonic() - started) * 1000,
                             status="timeout",
                         )
+                        if progress_callback is not None:
+                            progress_callback(timed_out)
                     break
                 next_tool_deadline = min(
                     self._per_tool_timeout_s - (time.monotonic() - futures[future][3])
@@ -242,7 +253,7 @@ class ParallelSourceExecutor:
                         status=result.status,
                     )
                     if progress_callback is not None:
-                        progress_callback(source)
+                        progress_callback(result)
                     with self._cache_lock:
                         key = (session_id, source, query)
                         self._cache[key] = result
