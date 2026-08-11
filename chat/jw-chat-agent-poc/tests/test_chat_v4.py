@@ -349,6 +349,52 @@ def test_v4_mart_adapter_uses_general_view_when_brand_has_no_strategic_market(
     assert result.payload["calls"][0]["general_view_ready"] is True
 
 
+def test_v4_mart_adapter_does_not_duplicate_dual_general_view_on_strategic_miss(
+    monkeypatch,
+) -> None:
+    from jw_chat_agent_poc.agent_loop import factory
+    from jw_chat_agent_poc.service import general_view_routing
+
+    class Resolver:
+        def resolve(self, _query, *, allow_default):
+            assert allow_default is False
+            return SimpleNamespace(
+                canonical_brand="리바로",
+                molecule_en=("Pitavastatin",),
+                market_ids=("ml_006",),
+            )
+
+    class GeneralView:
+        calls: list[tuple[str, bool]] = []
+
+        def route(self, _query):
+            return general_view_routing.GeneralRoute.DUAL
+
+        def answer(self, query, *, compact, dual):
+            assert compact is False
+            self.calls.append((query, dual))
+            return {"source": "UBIST", "render_data": {"view": "general"}}
+
+    dependencies = SimpleNamespace(
+        external=SimpleNamespace(),
+        resolver=Resolver(),
+        query_layer=None,
+    )
+    general_view = GeneralView()
+    monkeypatch.setattr(factory, "build_chat_agent_dependencies", lambda **_kwargs: dependencies)
+    monkeypatch.setattr(
+        general_view_routing.GeneralViewService,
+        "from_env",
+        lambda _resolver: general_view,
+    )
+
+    result = v4_adapters.build_source_adapters()["mart"]("리바로 매출 점유율")
+
+    assert result.status == "ok"
+    assert len(result.payload["calls"]) == 1
+    assert general_view.calls == [("리바로 매출 점유율", True)]
+
+
 def test_v4_mart_adapter_bridges_ingredient_through_nedrug_product_brand(
     monkeypatch,
 ) -> None:

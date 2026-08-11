@@ -641,10 +641,11 @@ def build_source_adapters() -> dict[SourceName, Any]:
                 else []
             )
             payloads.extend(strategic)
-            if not strategic:
+            if not strategic and not has_general_payload:
                 general = general_mart(str(item.canonical_brand))
                 if general is not None:
                     payloads.append(general)
+                    has_general_payload = True
 
         source_labels = tuple(
             dict.fromkeys(
