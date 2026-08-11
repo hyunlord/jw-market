@@ -32,6 +32,7 @@ def test_disabled_assignment_records_truthful_null_duration(monkeypatch) -> None
     )
 
     runner.assert_not_called()
+    assert ledger.record_stage.call_args.kwargs["status"] == "skipped"
     assert ledger.record_stage.call_args.kwargs["reason"] == "배정 비활성 (KEYWORD_TOPIC_ASSIGN_ENABLED=false)"
     assert ledger.record_stage.call_args.kwargs["duration_ms"] is None
 
@@ -58,7 +59,7 @@ def test_enabled_assignment_records_counts_and_exact_scope(monkeypatch) -> None:
     assert ledger.record_stage.call_args.kwargs["duration_ms"] == 125
 
 
-def test_assignment_failure_is_complete_and_does_not_raise(monkeypatch) -> None:
+def test_assignment_failure_is_nonfatal_and_does_not_raise(monkeypatch) -> None:
     ledger = Mock()
     runner = Mock(side_effect=RuntimeError("GENOS_BEARER_TOKEN is required"))
     monkeypatch.setattr(csd_keyword_publish_runner.config, "keyword_topic_assign_enabled", lambda: True)
@@ -71,8 +72,30 @@ def test_assignment_failure_is_complete_and_does_not_raise(monkeypatch) -> None:
         runner=runner,
     )
 
-    assert ledger.record_stage.call_args.kwargs["status"] == "complete"
+    assert ledger.record_stage.call_args.kwargs["status"] == "failed_nonfatal"
     assert ledger.record_stage.call_args.kwargs["reason"] == "배정 실패: RuntimeError: GENOS_BEARER_TOKEN is required"
+
+
+def test_invalid_assignment_flag_is_nonfatal_with_unknown_duration(monkeypatch) -> None:
+    ledger = Mock()
+    runner = Mock()
+    monkeypatch.setattr(
+        csd_keyword_publish_runner.config,
+        "keyword_topic_assign_enabled",
+        Mock(side_effect=RuntimeError("KEYWORD_TOPIC_ASSIGN_ENABLED must be true or false")),
+    )
+
+    csd_keyword_publish_runner._record_topic_assignment(  # noqa: SLF001
+        ledger=ledger,
+        identity=("2025-10", "iqvia_csd_keyword", "a" * 64),
+        run_id="run-1",
+        affected_scope={"dimension": "period_ym", "count": 1, "values": ["2025-10"]},
+        runner=runner,
+    )
+
+    runner.assert_not_called()
+    assert ledger.record_stage.call_args.kwargs["status"] == "failed_nonfatal"
+    assert ledger.record_stage.call_args.kwargs["duration_ms"] is None
 
 
 def test_candidate_period_scope_is_sorted_and_exact() -> None:

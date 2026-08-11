@@ -43,12 +43,14 @@ def _record_topic_assignment(
 ) -> None:
     started_at = _stamp()
     duration_ms: int | None = None
+    status = "failed_nonfatal"
     try:
         enabled = config.keyword_topic_assign_enabled()
     except Exception as exc:
         enabled = None
         reason = f"배정 실패: {type(exc).__name__}: {exc}"
     if enabled is False:
+        status = "skipped"
         reason = "배정 비활성 (KEYWORD_TOPIC_ASSIGN_ENABLED=false)"
     elif enabled is True:
         started = time.monotonic()
@@ -65,6 +67,7 @@ def _record_topic_assignment(
                 if result.pending_rows == 0
                 else f"배정 {result.inserts}건 생성 · LLM 호출 {result.calls}회"
             )
+            status = "complete"
         except Exception as exc:  # Assignment is intentionally non-fatal to atomic ingest.
             reason = f"배정 실패: {type(exc).__name__}: {exc}"
             print(f"[stage] topic_extraction nonfatal reason={reason}", file=sys.stderr)
@@ -75,7 +78,7 @@ def _record_topic_assignment(
         run_id=run_id,
         seq=4,
         stage="topic_extraction",
-        status="complete",
+        status=status,
         reason=reason,
         started_at=started_at,
         finished_at=finished_at,
