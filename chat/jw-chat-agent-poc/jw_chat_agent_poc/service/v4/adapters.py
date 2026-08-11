@@ -8,6 +8,7 @@ import re
 import threading
 import time
 from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, replace
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from datetime import UTC, datetime
@@ -902,10 +903,16 @@ def _strategic_mart_calls(layer, brand: str, query: str) -> list[dict[str, Any]]
         except (LookupError, ValueError):
             continue
 
+    top_brands: dict[str, Any] | None = None
     try:
-        calls.append(layer.top_brands(brand, limit=5, metric="sales", market=market))
+        top_brands = layer.top_brands(brand, limit=8, metric="sales", market=market)
+        calls.append(top_brands)
     except (LookupError, ValueError):
         pass
+
+    bundle = _entity_bundle_call(layer, brand, market, top_brands)
+    if bundle is not None:
+        calls.append(bundle)
 
     try:
         cause = layer.cause_card_data(brand, market)
@@ -969,6 +976,143 @@ def _strategic_mart_calls(layer, brand: str, query: str) -> list[dict[str, Any]]
         except (LookupError, ValueError):
             pass
     return calls
+
+
+def _entity_bundle_call(
+    layer: Any,
+    anchor_brand: str,
+    market: str | None,
+    top_brands: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if top_brands is None or not callable(getattr(layer, "market_member_metric", None)):
+        return None
+    render_data = top_brands.get("render_data")
+    if not isinstance(render_data, dict):
+        return None
+    raw_rows = render_data.get("level_top5_trend_series")
+    if not isinstance(raw_rows, list):
+        return None
+    rows = [dict(row) for row in raw_rows if isinstance(row, dict) and row.get("brand")]
+    anchor_row = next(
+        (row for row in rows if str(row.get("brand")) == anchor_brand),
+        {"brand": anchor_brand, "company": "", "rank": None},
+    )
+    anchor_company = str(anchor_row.get("company") or "").strip()
+    family = [
+        row
+        for row in rows
+        if str(row.get("brand")) != anchor_brand
+        and anchor_company
+        and str(row.get("company") or "").strip() == anchor_company
+    ]
+    competitors = [
+        row
+        for row in rows
+        if str(row.get("brand")) != anchor_brand and row not in family
+    ]
+    selected = [anchor_row, *family[:2], *competitors[:5]]
+    selected = list({str(row["brand"]): row for row in selected}.values())
+
+    def load(row: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        try:
+            call = layer.market_member_metric(
+                anchor_brand,
+                str(row["brand"]),
+                market=market,
+                metric="series",
+            )
+        except (LookupError, ValueError):
+            return None
+        return row, call
+
+    with ThreadPoolExecutor(max_workers=max(1, len(selected))) as pool:
+        loaded = tuple(item for item in pool.map(load, selected) if item is not None)
+    if not loaded:
+        return None
+
+    period_sets = [
+        _member_periods(call)
+        for _row, call in loaded
+    ]
+    period_sets = [periods for periods in period_sets if periods]
+    if not period_sets:
+        return None
+    common_periods = set(period_sets[0])
+    for periods in period_sets[1:]:
+        common_periods.intersection_update(periods)
+    if not common_periods:
+        return None
+
+    members: list[dict[str, Any]] = []
+    for row, call in loaded:
+        member_brand = str(row["brand"])
+        role = (
+            "target"
+            if member_brand == anchor_brand
+            else "family"
+            if anchor_company and str(row.get("company") or "").strip() == anchor_company
+            else "competitor"
+        )
+        members.append(
+            {
+                "brand": member_brand,
+                "company": str(row.get("company") or ""),
+                "rank": row.get("rank"),
+                "role": role,
+                "from_period": row.get("from_period"),
+                "from_ms_pct": row.get("from_ms_pct"),
+                "to_period": row.get("to_period"),
+                "to_ms_pct": row.get("to_ms_pct"),
+                "share_delta_pctp": row.get("share_delta_pctp"),
+                "render_data": _clip_bundle_periods(call.get("render_data"), common_periods),
+            }
+        )
+    ordered_periods = sorted(common_periods)
+    return {
+        "source": str(top_brands.get("source") or "내부 데이터마트"),
+        "tool": "entity_bundle",
+        "summary_text": f"{anchor_brand}와 같은 시장의 패밀리·경쟁 브랜드 시계열을 병렬 조회했습니다.",
+        "entity_bundle": {
+            "anchor": anchor_brand,
+            "market_id": market,
+            "period_start": ordered_periods[0],
+            "period_end": ordered_periods[-1],
+            "same_period_and_denominator": True,
+            "members": members,
+        },
+    }
+
+
+def _member_periods(call: dict[str, Any]) -> set[str]:
+    render_data = call.get("render_data")
+    if not isinstance(render_data, dict):
+        return set()
+    for key in ("brand_value_series_10pt", "series"):
+        series = render_data.get(key)
+        if isinstance(series, list):
+            return {
+                str(item["period"])
+                for item in series
+                if isinstance(item, dict) and _is_month_period(item.get("period"))
+            }
+    return set()
+
+
+def _clip_bundle_periods(value: Any, periods: set[str]) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _clip_bundle_periods(item, periods)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [
+            _clip_bundle_periods(item, periods)
+            for item in value
+            if not isinstance(item, dict)
+            or not _is_month_period(item.get("period"))
+            or str(item["period"]) in periods
+        ]
+    return value
 
 
 def align_cause_periods(

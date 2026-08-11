@@ -19,6 +19,7 @@ from jw_chat_agent_poc.service.v4.contracts import (
     ToolQueries,
 )
 from jw_chat_agent_poc.service.v4.llm import CompletionResult, GenOSV4Client
+from jw_chat_agent_poc.service.v4.session_state import SessionState
 
 
 _JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
@@ -50,8 +51,9 @@ class V4Planner:
         turns: Sequence[ConversationTurn],
         *,
         budget_s: float = 10.0,
+        state: SessionState | None = None,
     ) -> PlannerOutput:
-        return self.plan_with_trace(question, turns, budget_s=budget_s).plan
+        return self.plan_with_trace(question, turns, budget_s=budget_s, state=state).plan
 
     def plan_with_trace(
         self,
@@ -59,8 +61,9 @@ class V4Planner:
         turns: Sequence[ConversationTurn],
         *,
         budget_s: float = 10.0,
+        state: SessionState | None = None,
     ) -> PlannerOutcome:
-        messages = _planner_messages(question, turns)
+        messages = _planner_messages(question, turns, state=state)
         error: Exception | None = None
         deadline = time.monotonic() + max(1.0, budget_s)
         started = time.monotonic()
@@ -130,6 +133,7 @@ class V4Planner:
         turns: Sequence[ConversationTurn],
         *,
         budget_s: float = 7.0,
+        state: SessionState | None = None,
     ) -> PlannerOutput | None:
         if not first_plan.needs_second_hop:
             return None
@@ -143,7 +147,7 @@ class V4Planner:
             for result in first_results
             if result.status == "ok"
         ]
-        messages = _planner_messages(first_plan.resolved_question, turns)
+        messages = _planner_messages(first_plan.resolved_question, turns, state=state)
         messages.append(
             {
                 "role": "user",
@@ -277,7 +281,12 @@ def _canonical_anchor_entities(
     return tuple(dict.fromkeys(found))
 
 
-def _planner_messages(question: str, turns: Sequence[ConversationTurn]) -> list[dict[str, str]]:
+def _planner_messages(
+    question: str,
+    turns: Sequence[ConversationTurn],
+    *,
+    state: SessionState | None = None,
+) -> list[dict[str, str]]:
     history = [
         {"question": turn.question, "answer": turn.answer}
         for turn in tuple(turns)[-10:]
@@ -301,7 +310,11 @@ def _planner_messages(question: str, turns: Sequence[ConversationTurn]) -> list[
         {
             "role": "user",
             "content": json.dumps(
-                {"question": question, "recent_turns": history},
+                {
+                    "question": question,
+                    "recent_turns": history,
+                    "session_state": state.public_dict() if state else None,
+                },
                 ensure_ascii=False,
             ),
         },

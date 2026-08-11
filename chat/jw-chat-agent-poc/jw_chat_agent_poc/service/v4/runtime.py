@@ -4,6 +4,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
+import inspect
 import logging
 import re
 import threading
@@ -19,6 +20,7 @@ from jw_chat_agent_poc.service.v4.executor import ParallelSourceExecutor
 from jw_chat_agent_poc.service.v4.gates import apply_v4_gates
 from jw_chat_agent_poc.service.v4.llm import planner_client, synthesizer_client
 from jw_chat_agent_poc.service.v4.planner import V4Planner
+from jw_chat_agent_poc.service.v4.session_state import SessionState, SessionStateStore
 from jw_chat_agent_poc.service.v4.synthesizer import SynthesisOutcome, V4Synthesizer
 from jw_chat_agent_poc.service.v4.shadow import (
     CanonicalFact,
@@ -76,10 +78,12 @@ class V4Runtime:
         planner: V4Planner,
         executor: ParallelSourceExecutor,
         synthesizer: V4Synthesizer,
+        state_store: SessionStateStore | Any | None = None,
     ) -> None:
         self._planner = planner
         self._executor = executor
         self._synthesizer = synthesizer
+        self._state_store = state_store
         self._total_timeout_s = 150.0
         self._session_results: OrderedDict[str, tuple[SourceResult, ...]] = OrderedDict()
         self._session_results_lock = threading.Lock()
@@ -97,20 +101,25 @@ class V4Runtime:
         deadline = started + self._total_timeout_s
         selected_turns = tuple(turns)[-10:]
         session_id = conversation_id or uuid4().hex
+        session_state = self._state_store.load(session_id) if self._state_store is not None else None
         plan_with_trace = getattr(self._planner, "plan_with_trace", None)
         if callable(plan_with_trace):
-            planner_outcome = plan_with_trace(
+            planner_outcome = _call_with_state(
+                plan_with_trace,
                 question,
                 selected_turns,
                 budget_s=min(18.0, _remaining(deadline)),
+                state=session_state,
             )
         else:
             planner_started = time.monotonic()
             planner_outcome = SimpleNamespace(
-                plan=self._planner.plan(
+                plan=_call_with_state(
+                    self._planner.plan,
                     question,
                     selected_turns,
                     budget_s=min(18.0, _remaining(deadline)),
+                    state=session_state,
                 ),
                 trace={
                     "status": "unknown",
@@ -181,6 +190,8 @@ class V4Runtime:
             )
 
         prior_results = self._get_session_results(session_id)
+        if not prior_results and session_state is not None:
+            prior_results = _results_from_session_state(session_state)
         can_reuse_prior = (
             prior_results
             and _is_prior_result_reference(question)
@@ -223,11 +234,13 @@ class V4Runtime:
             first_execution.trace.setdefault("session_result_reused", False)
         first_results = first_execution.results
         linked_plan = (
-            self._planner.link(
+            _call_with_state(
+                self._planner.link,
                 plan,
                 first_results,
                 selected_turns,
                 budget_s=min(7.0, _remaining(deadline)),
+                state=session_state,
             )
             if (
                 plan.needs_second_hop
@@ -279,7 +292,42 @@ class V4Runtime:
                 results=tuple(_tag_gap_result(result, gap_request) for result in gap_execution.results),
                 trace=gap_execution.trace,
             )
-        current_results = (*first_results, *linked_results, *gap_execution.results)
+        absence_request = _absence_context_request(plan, first_results)
+        absence_execution = SimpleNamespace(results=(), trace=None)
+        if (
+            absence_request is not None
+            and linked_plan is None
+            and gap_request is None
+            and _remaining(deadline) > 0.1
+        ):
+            _emit_progress(
+                progress_callback,
+                "관련 경과 조회",
+                "공식 문서 부재와 구분해 공개된 경과 자료를 조회합니다",
+            )
+            absence_execution = _execute_with_trace(
+                self._executor,
+                _absence_context_plan(plan, absence_request),
+                session_id=session_id,
+                total_timeout_s=min(30.0, _remaining(deadline)),
+                answer_sources=("web",),
+                soft_deadline_s=4.0,
+                source_filter=("web",),
+                progress_callback=source_completed,
+            )
+            absence_execution = SimpleNamespace(
+                results=tuple(
+                    _tag_absence_context(result, absence_request)
+                    for result in absence_execution.results
+                ),
+                trace=absence_execution.trace,
+            )
+        current_results = (
+            *first_results,
+            *linked_results,
+            *gap_execution.results,
+            *absence_execution.results,
+        )
         for source in SOURCE_NAMES:
             missing_results = max(
                 1 if source_expected[source] == 0 else 0,
@@ -309,19 +357,23 @@ class V4Runtime:
         )
         synthesize_with_trace = getattr(self._synthesizer, "synthesize_with_trace", None)
         if callable(synthesize_with_trace):
-            synthesis = synthesize_with_trace(
+            synthesis = _call_with_state(
+                synthesize_with_trace,
                 plan,
                 results,
                 selected_turns,
                 budget_s=min(60.0, _remaining(deadline)),
+                state=session_state,
             )
         else:
             synthesis = SynthesisOutcome(
-                text=self._synthesizer.synthesize(
+                text=_call_with_state(
+                    self._synthesizer.synthesize,
                     plan,
                     results,
                     selected_turns,
                     budget_s=min(60.0, _remaining(deadline)),
+                    state=session_state,
                 ),
                 trace={},
             )
@@ -365,6 +417,11 @@ class V4Runtime:
                 if isinstance(gap_execution.trace, dict)
                 else "not_applicable"
             ),
+            "absence_context_elapsed_ms": (
+                absence_execution.trace.get("elapsed_ms")
+                if isinstance(absence_execution.trace, dict)
+                else "not_applicable"
+            ),
             "total_elapsed_ms": elapsed_ms,
         }
         trace = {
@@ -396,6 +453,11 @@ class V4Runtime:
             "synthesizer": synthesis.trace,
             "synth_usage": synth_usage,
             "gap_fill": _gap_fill_trace(gap_request, gap_execution),
+            "absence_context": {
+                "triggered": absence_request is not None,
+                "request": absence_request,
+                "execution": absence_execution.trace,
+            },
             "execution": {
                 **first_execution.trace,
                 "link_wave": linked_execution.trace,
@@ -412,6 +474,14 @@ class V4Runtime:
                 for citation in result.citations
             )
         )
+        next_state = _derive_session_state(
+            question,
+            plan,
+            results,
+            previous=session_state,
+        )
+        if self._state_store is not None:
+            self._state_store.save(session_id, next_state)
         return V4Answer(
             text=gated.text,
             sources=sources,
@@ -442,6 +512,179 @@ class V4Runtime:
                 self._session_results.popitem(last=False)
 
 
+def _call_with_state(
+    function: Callable[..., Any],
+    *args: Any,
+    state: SessionState | None,
+    **kwargs: Any,
+) -> Any:
+    if "state" in inspect.signature(function).parameters:
+        kwargs["state"] = state
+    return function(*args, **kwargs)
+
+
+def _derive_session_state(
+    question: str,
+    plan: Any,
+    results: Sequence[SourceResult],
+    *,
+    previous: SessionState | None,
+) -> SessionState:
+    previous = previous or SessionState()
+    entities = tuple(dict.fromkeys(_state_entities(results)))
+    topic_switched = bool(
+        entities
+        and previous.canonical_entities
+        and set(entities).isdisjoint(previous.canonical_entities)
+        and not _is_prior_result_reference(question)
+    )
+    retained_entities = () if topic_switched else previous.canonical_entities
+    canonical_entities = tuple(dict.fromkeys((*retained_entities, *entities)))[:16]
+    referenced = canonical_entities or previous.referenced_entity_set
+    numeric_facts = tuple(_state_numeric_facts(results))[:64]
+    record_ids = tuple(dict.fromkeys(_state_record_ids(results)))[:64]
+    return SessionState(
+        canonical_entities=canonical_entities,
+        requested_grain=_requested_grain(question) or previous.requested_grain,
+        referenced_entity_set=referenced,
+        active_filters=_active_filters(question) or (() if topic_switched else previous.active_filters),
+        time_window=_time_window(question) or (() if topic_switched else previous.time_window),
+        comparison_anchor=(canonical_entities[0] if canonical_entities else previous.comparison_anchor),
+        last_numeric_facts=numeric_facts or (() if topic_switched else previous.last_numeric_facts),
+        last_source_record_ids=record_ids or (() if topic_switched else previous.last_source_record_ids),
+    )
+
+
+def _results_from_session_state(state: SessionState) -> tuple[SourceResult, ...]:
+    facts_by_source: dict[str, list[dict[str, Any]]] = {}
+    for fact in state.last_numeric_facts:
+        source = str(fact.get("source") or "").strip()
+        if source not in SOURCE_NAMES:
+            continue
+        path = str(fact.get("path") or "").strip()
+        value = fact.get("value")
+        if not path or isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        facts_by_source.setdefault(source, []).append(
+            {"source": source, "path": path, "value": value}
+        )
+
+    results: list[SourceResult] = []
+    for source in SOURCE_NAMES:
+        numeric_facts = facts_by_source.get(source)
+        if not numeric_facts:
+            continue
+        results.append(
+            SourceResult(
+                source=source,
+                query="session state reuse",
+                status="ok",
+                payload={
+                    "session_state_reuse": True,
+                    "anchor_brand": state.comparison_anchor,
+                    "canonical_entities": state.canonical_entities,
+                    "referenced_entity_set": state.referenced_entity_set,
+                    "active_filters": state.active_filters,
+                    "time_window": state.time_window,
+                    "last_numeric_facts": tuple(numeric_facts),
+                    "last_source_record_ids": state.last_source_record_ids,
+                },
+                cache_hit=True,
+            )
+        )
+    return tuple(results)
+
+
+def _state_entities(results: Sequence[SourceResult]) -> list[str]:
+    entities: list[str] = []
+    entity_keys = {"brand", "anchor", "anchor_brand", "product", "product_name", "item_name"}
+    for result in results:
+        for path, value in _walk_state_values(result.payload):
+            if path.rsplit(".", 1)[-1].split("[")[0] not in entity_keys:
+                continue
+            text = str(value or "").strip()
+            if text:
+                entities.append(text)
+    return entities
+
+
+def _state_numeric_facts(results: Sequence[SourceResult]) -> list[dict[str, Any]]:
+    facts: list[dict[str, Any]] = []
+    for result in results:
+        if result.status != "ok":
+            continue
+        for path, value in _walk_state_values(result.payload):
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            facts.append(
+                {
+                    "source": result.source,
+                    "path": path,
+                    "column": path.rsplit(".", 1)[-1].split("[", 1)[0],
+                    "row_path": path.rsplit(".", 1)[0] if "." in path else "",
+                    "value": value,
+                }
+            )
+            if len(facts) >= 64:
+                return facts
+    return facts
+
+
+def _state_record_ids(results: Sequence[SourceResult]) -> list[str]:
+    record_ids: list[str] = []
+    for result in results:
+        for path, value in _walk_state_values(result.payload):
+            key = path.rsplit(".", 1)[-1].casefold()
+            if key not in {"query_result_id", "record_id", "study_id", "item_seq"}:
+                continue
+            text = str(value or "").strip()
+            if text:
+                record_ids.append(text)
+    return record_ids
+
+
+def _walk_state_values(value: Any, prefix: str = ""):
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            path = f"{prefix}.{key}" if prefix else str(key)
+            yield from _walk_state_values(item, path)
+    elif isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            yield from _walk_state_values(item, f"{prefix}[{index}]")
+    else:
+        yield prefix, value
+
+
+def _requested_grain(question: str) -> str | None:
+    normalized = question.casefold()
+    if "진료과" in normalized:
+        return "specialty"
+    if "채널" in normalized:
+        return "channel"
+    if "시장" in normalized:
+        return "market"
+    if any(marker in normalized for marker in ("브랜드", "제품", "그 중", "아까")):
+        return "brand"
+    return None
+
+
+def _active_filters(question: str) -> tuple[str, ...]:
+    normalized = question.casefold()
+    return tuple(
+        marker
+        for marker in ("국내", "진행 중", "모집 중", "완료", "급여", "허가")
+        if marker in normalized
+    )
+
+
+def _time_window(question: str) -> tuple[str, ...]:
+    periods = re.findall(r"20\d{2}(?:-(?:0[1-9]|1[0-2]))?", question)
+    recent = re.search(r"최근\s*(\d{1,2})\s*년", question)
+    if recent:
+        periods.append(f"recent_{recent.group(1)}y")
+    return tuple(dict.fromkeys(periods))
+
+
 def build_default_runtime() -> V4Runtime:
     return V4Runtime(
         planner=V4Planner(planner_client()),
@@ -451,6 +694,7 @@ def build_default_runtime() -> V4Runtime:
             total_timeout_s=50.0,
         ),
         synthesizer=V4Synthesizer(synthesizer_client()),
+        state_store=SessionStateStore.from_env(),
     )
 
 
@@ -754,6 +998,66 @@ def _gap_fill_request(
     return None
 
 
+def _absence_context_request(
+    plan: Any,
+    results: Sequence[SourceResult],
+) -> dict[str, Any] | None:
+    lowered = plan.resolved_question.casefold()
+    requested: tuple[str, str] | None = None
+    if "급여" in lowered:
+        requested = ("hira", "reimbursement")
+    elif "허가" in lowered:
+        requested = ("nedrug", "approval")
+    if requested is None or requested[0] not in plan.answer_sources:
+        return None
+    official = tuple(result for result in results if result.source == requested[0])
+    if not official or any(result.status == "ok" for result in official):
+        return None
+    if not all(result.status == "empty" for result in official):
+        return None
+    return {
+        "source": requested[0],
+        "document": requested[1],
+        "query": plan.resolved_question,
+    }
+
+
+def _tag_absence_context(
+    result: SourceResult,
+    request: Mapping[str, Any],
+) -> SourceResult:
+    payload = result.payload if isinstance(result.payload, Mapping) else {"value": result.payload}
+    filtered, usable = _official_gap_payload(payload)
+    return result.model_copy(
+        update={
+            "status": result.status if usable else "empty",
+            "payload": {
+                **filtered,
+                "absence_context": {
+                    "source": request["source"],
+                    "document": request["document"],
+                    "official_absence": True,
+                    "reported_context_only": True,
+                    "separate_from_official_fact": True,
+                },
+            },
+        }
+    )
+
+
+def _absence_context_plan(plan: Any, request: Mapping[str, Any]) -> Any:
+    query = f"{request['query']} 공식 문서 부재 협상 경과 보도자료"
+    queries = plan.tool_queries.model_copy(update={"web": (query,)})
+    return plan.model_copy(
+        update={
+            "tool_queries": queries,
+            "answer_sources": ("web",),
+            "needs_second_hop": False,
+            "linking_plan": "typed official absence context via one web query",
+        }
+    )
+
+
 def _gap_fill_plan(plan: Any, request: Mapping[str, Any]) -> Any:
     periods = " ".join(str(period) for period in request["missing_periods"])
     query = f"{request['query']} {periods} 공식 통계 발표 보도자료"
@@ -788,6 +1092,10 @@ def _tag_gap_result(result: SourceResult, request: Mapping[str, Any]) -> SourceR
 
 
 def _official_gap_payload(payload: Mapping[str, Any]) -> tuple[dict[str, Any], bool]:
+    direct_items = payload.get("items")
+    if isinstance(direct_items, list):
+        kept_items = _trusted_web_items(direct_items)
+        return {**payload, "items": kept_items}, bool(kept_items)
     calls = payload.get("calls")
     if not isinstance(calls, list):
         return dict(payload), False
@@ -799,25 +1107,30 @@ def _official_gap_payload(payload: Mapping[str, Any]) -> tuple[dict[str, Any], b
         copied_call = dict(call)
         render_data = call.get("render_data")
         if isinstance(render_data, Mapping) and isinstance(render_data.get("items"), list):
-            kept_items: list[dict[str, Any]] = []
-            for raw_item in render_data["items"]:
-                if not isinstance(raw_item, Mapping):
-                    continue
-                tier = _official_web_tier(str(raw_item.get("url") or ""))
-                if tier is None:
-                    continue
-                kept_items.append({**raw_item, "trust_tier": tier})
+            kept_items = _trusted_web_items(render_data["items"])
             copied_call["render_data"] = {**render_data, "items": kept_items}
             usable = usable or bool(kept_items)
         kept_calls.append(copied_call)
     return {**payload, "calls": kept_calls}, usable
 
 
+def _trusted_web_items(items: Sequence[Any]) -> list[dict[str, Any]]:
+    kept_items: list[dict[str, Any]] = []
+    for raw_item in items:
+        if not isinstance(raw_item, Mapping):
+            continue
+        tier = _official_web_tier(str(raw_item.get("url") or ""))
+        if tier is None:
+            continue
+        kept_items.append({**raw_item, "trust_tier": tier})
+    return kept_items
+
+
 def _official_web_tier(url: str) -> str | None:
     host = (urlparse(url).hostname or "").casefold()
     if host.endswith(".go.kr") or host in {"korea.kr", "hira.or.kr", "www.hira.or.kr"}:
         return "TIER1"
-    if host.endswith(".ac.kr") or host.endswith(".or.kr"):
+    if host.endswith(".ac.kr") or host.endswith(".or.kr") or host in {"yna.co.kr", "www.yna.co.kr"}:
         return "TIER2"
     return None
 

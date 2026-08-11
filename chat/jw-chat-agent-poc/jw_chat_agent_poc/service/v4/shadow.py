@@ -12,7 +12,7 @@ from typing import Any, Literal
 from jw_chat_agent_poc.service.v4.contracts import SourceResult
 
 
-FactKind = Literal["number", "date", "identifier", "name"]
+FactKind = Literal["number", "period", "date", "identifier", "name"]
 _NUMBER_RE = re.compile(r"(?<![\w.])-?\d[\d,]*(?:\.\d+)?")
 _DATE_RE = re.compile(r"\b20\d{2}(?:-(?:0[1-9]|1[0-2])(?:-\d{2})?)?\b")
 _IDENTIFIER_RE = re.compile(r"\b(?:NCT\d{8}|[A-Z]\d{2}(?:\.\d)?)\b", re.IGNORECASE)
@@ -30,6 +30,7 @@ _NAME_KEYS = frozenset(
         "disease_name",
     }
 )
+_DEFAULT_MAX_FACTS = 1_600
 
 
 @dataclass(frozen=True)
@@ -44,17 +45,18 @@ class CanonicalFact:
 def build_canonical_ledger(
     results: Sequence[SourceResult],
     *,
-    max_facts: int = 1_200,
+    max_facts: int = _DEFAULT_MAX_FACTS,
 ) -> tuple[CanonicalFact, ...]:
     facts: list[CanonicalFact] = []
-    seen: set[tuple[str, str, str, str]] = set()
+    seen: set[tuple[str, str, str, str, str]] = set()
     for result in results:
         if result.status != "ok":
             continue
         grain = result.evidence.subject_grain if result.evidence else "unknown"
         for path, value in _walk_scalars(result.payload):
             for kind, canonical in _canonical_values(path, value):
-                key = (result.source, kind, canonical, grain)
+                fact_grain = _path_grain(path, grain)
+                key = (result.source, path, kind, canonical, fact_grain)
                 if key in seen:
                     continue
                 seen.add(key)
@@ -64,7 +66,7 @@ def build_canonical_ledger(
                         path=path,
                         kind=kind,
                         canonical=canonical,
-                        subject_grain=grain,
+                        subject_grain=fact_grain,
                     )
                 )
                 if len(facts) >= max_facts:
@@ -85,8 +87,11 @@ def build_grounding_shadow(
             numeric_index.setdefault(fact.canonical, []).append(fact)
 
     findings: list[dict[str, Any]] = []
-    counts = Counter({"grounded": 0, "ungrounded": 0, "unknown": 0, "grain_mismatch": 0})
+    counts = Counter({"grounded": 0, "ungrounded": 0, "unknown": 0, "period": 0, "grain_mismatch": 0})
     for match in tuple(_NUMBER_RE.finditer(answer))[:256]:
+        if _is_period_token(answer, match.start(), match.end()):
+            counts["period"] += 1
+            continue
         canonical = _canonical_number(match.group(0))
         sentence = _sentence_at(answer, match.start())
         if canonical is None:
@@ -141,7 +146,7 @@ def build_grounding_shadow(
             "sha256": hashlib.sha256(serialized_ledger.encode()).hexdigest(),
             "by_source": dict(Counter(fact.source for fact in canonical_ledger)),
             "by_kind": dict(Counter(fact.kind for fact in canonical_ledger)),
-            "truncated": len(canonical_ledger) >= 1_200,
+            "truncated": len(canonical_ledger) >= _DEFAULT_MAX_FACTS,
         },
     }
 
@@ -163,7 +168,7 @@ def _canonical_values(path: str, value: Any) -> tuple[tuple[FactKind, str], ...]
     if not text or len(text) > 200:
         return ()
     if _DATE_RE.fullmatch(text):
-        output.append(("date", text))
+        output.append(("period" if _is_period_path(path) else "date", text))
     if _IDENTIFIER_RE.fullmatch(text):
         output.append(("identifier", text.upper()))
     leaf = re.split(r"[.\[]", path)[-1].rstrip("]").casefold()
@@ -204,6 +209,26 @@ def _numeric_display_variants(path: str, value: Decimal) -> tuple[str, ...]:
     return tuple(dict.fromkeys(variants))
 
 
+def _path_grain(path: str, fallback: str) -> str:
+    lowered = path.casefold()
+    for marker, grain in (
+        ("specialty", "specialty"),
+        ("진료과", "specialty"),
+        ("channel", "channel"),
+        ("채널", "channel"),
+        ("company", "company"),
+        ("회사", "company"),
+        ("market", "market"),
+        ("시장", "market"),
+        ("brand", "brand"),
+        ("product", "brand"),
+        ("브랜드", "brand"),
+    ):
+        if marker in lowered:
+            return grain
+    return fallback
+
+
 def _rounded_text(value: Decimal, quantum: Decimal) -> str:
     return _decimal_text(value.quantize(quantum, rounding=ROUND_HALF_UP))
 
@@ -242,6 +267,25 @@ def _sentence_at(text: str, offset: int) -> str:
     end_candidates = [index for index in (text.find(".", offset), text.find("\n", offset)) if index >= 0]
     end = min(end_candidates) + 1 if end_candidates else len(text)
     return " ".join(text[start:end].split())
+
+
+def _is_period_token(text: str, start: int, end: int) -> bool:
+    token = text[start:end].replace(",", "")
+    suffix = text[end : end + 3]
+    if re.fullmatch(r"20\d{2}", token):
+        if suffix.startswith(("년", "-")):
+            return True
+        surrounding = text[max(0, start - 6) : min(len(text), end + 6)]
+        if re.search(r"20\d{2}\s*[~～-]\s*20\d{2}년?", surrounding):
+            return True
+    if suffix.startswith(("년", "월", "분기")):
+        return True
+    return False
+
+
+def _is_period_path(path: str) -> bool:
+    leaf = re.split(r"[.\[]", path)[-1].rstrip("]").casefold()
+    return any(marker in leaf for marker in ("period", "year", "month", "quarter", "yyyymm"))
 
 
 def _sentence_grain(sentence: str) -> str:

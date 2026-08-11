@@ -15,6 +15,7 @@ from jw_chat_agent_poc.service.v4.gates import (
     render_mart_dimension_facts,
 )
 from jw_chat_agent_poc.service.v4.llm import CompletionResult, GenOSV4Client
+from jw_chat_agent_poc.service.v4.session_state import SessionState
 
 
 _INTERNAL_SURFACE_RE = re.compile(
@@ -114,12 +115,14 @@ class V4Synthesizer:
         turns: Sequence[ConversationTurn],
         *,
         budget_s: float = 60.0,
+        state: SessionState | None = None,
     ) -> str:
         return self.synthesize_with_trace(
             plan,
             results,
             turns,
             budget_s=budget_s,
+            state=state,
         ).text
 
     def synthesize_with_trace(
@@ -129,6 +132,7 @@ class V4Synthesizer:
         turns: Sequence[ConversationTurn],
         *,
         budget_s: float = 60.0,
+        state: SessionState | None = None,
     ) -> SynthesisOutcome:
         usable = _select_usable_results(plan, tuple(
             result
@@ -148,7 +152,7 @@ class V4Synthesizer:
                 },
             )
 
-        messages = _synthesis_messages(plan, usable, turns)
+        messages = _synthesis_messages(plan, usable, turns, state=state)
         completion: CompletionResult | None = None
         error_type: str | None = None
         try:
@@ -265,6 +269,7 @@ class V4Synthesizer:
             answer,
             tuple(usable),
         )
+        answer = _append_required_adverse_signal(answer, usable)
         answer = _finalize_answer(answer, usable)
         return SynthesisOutcome(
             text=answer,
@@ -341,6 +346,8 @@ def _synthesis_messages(
     plan: PlannerOutput,
     results: Sequence[SourceResult],
     turns: Sequence[ConversationTurn],
+    *,
+    state: SessionState | None = None,
 ) -> list[dict[str, str]]:
     mart = tuple(result for result in results if result.source == "mart")
     external = tuple(result for result in results if result.source != "mart")
@@ -372,9 +379,24 @@ def _synthesis_messages(
             "출처는 본문 문장 끝에 [출처: 이름]으로 표시",
         ],
     }
+    if any("entity_bundle" in _mart_block(result) for result in mart):
+        prompt["entity_bundle_contract"] = {
+            "same_period_and_denominator_only": True,
+            "symmetric_observations": True,
+            "competitor_movement_is_hypothesis_without_movement_evidence": True,
+            "adverse_signal_must_be_explicit": True,
+        }
+    if any(_is_absence_context_result(result) for result in external):
+        prompt["absence_context_contract"] = {
+            "official_absence_is_confirmed": True,
+            "web_context_uses_reported_language": True,
+            "separate_official_and_reported_claims": True,
+            "do_not_replace_absent_document_with_other_document": True,
+        }
     required_hira_surface = _required_hira_surface(plan.resolved_question, results)
     if required_hira_surface:
         prompt["required_hira_surface"] = required_hira_surface
+    prompt["session_state"] = state.public_dict() if state else None
     if asks_cause:
         prompt["cause_answer_contract"] = {
             "layers": ["관측", "날짜가 확인된 외부 사건", "가설"],
@@ -416,6 +438,17 @@ def _synthesis_messages(
             "content": json.dumps(prompt, ensure_ascii=False, default=str),
         },
     ]
+
+
+def _is_absence_context_result(result: SourceResult) -> bool:
+    if result.source != "web" or not isinstance(result.payload, Mapping):
+        return False
+    context = result.payload.get("absence_context")
+    return bool(
+        isinstance(context, Mapping)
+        and context.get("official_absence") is True
+        and context.get("reported_context_only") is True
+    )
 
 
 def _evidence_packet(result: SourceResult) -> dict[str, Any]:
@@ -717,6 +750,7 @@ def _evidence_fallback(
     paragraphs: list[str] = []
     for result in results:
         if result.source == "mart":
+            entity_bundle = _entity_bundle_fallback(result.payload)
             dimensions = render_mart_dimension_facts(
                 (result,),
                 question=question or result.query,
@@ -725,8 +759,10 @@ def _evidence_fallback(
                 result.payload,
                 question=question or result.query,
             )
-            if dimensions or history:
-                paragraphs.extend(block for block in (dimensions, history) if block)
+            if entity_bundle or dimensions or history:
+                paragraphs.extend(
+                    block for block in (entity_bundle, dimensions, history) if block
+                )
                 continue
         if result.source == "hira":
             patient_facts = _hira_patient_facts(result.payload)
@@ -746,6 +782,110 @@ def _evidence_fallback(
     if not paragraphs:
         return "조회는 완료됐지만 답변 본문에 제시할 수 있는 상세 근거를 확인하지 못했습니다."
     return "\n\n".join(paragraphs)
+
+
+def _entity_bundle_fallback(payload: Any) -> str:
+    calls: list[Any]
+    if isinstance(payload, Mapping) and isinstance(payload.get("calls"), list):
+        calls = payload["calls"]
+    else:
+        calls = [payload]
+    for call in calls:
+        if not isinstance(call, Mapping):
+            continue
+        bundle = call.get("entity_bundle")
+        if not isinstance(bundle, Mapping) or bundle.get("same_period_and_denominator") is not True:
+            continue
+        period_start = str(bundle.get("period_start") or "").strip()
+        period_end = str(bundle.get("period_end") or "").strip()
+        members = bundle.get("members")
+        if not period_start or not period_end or not isinstance(members, list):
+            continue
+        rows: list[str] = []
+        for member in members:
+            if not isinstance(member, Mapping):
+                continue
+            brand = str(member.get("brand") or "").strip()
+            render = member.get("render_data")
+            if not brand or not isinstance(render, Mapping):
+                continue
+            series = render.get("brand_value_series_10pt") or render.get("series")
+            if not isinstance(series, list):
+                continue
+            by_period = {
+                str(point.get("period")): point.get("value_억원")
+                for point in series
+                if isinstance(point, Mapping)
+                and point.get("period") not in (None, "")
+                and point.get("value_억원") not in (None, "")
+            }
+            if period_start not in by_period or period_end not in by_period:
+                continue
+            role = {
+                "target": "대상",
+                "family": "패밀리",
+                "competitor": "경쟁",
+            }.get(str(member.get("role") or ""), "비교")
+            company = str(member.get("company") or "-").strip() or "-"
+            rank = member.get("rank")
+            rank_text = str(rank) if rank not in (None, "") else "-"
+            rows.append(
+                f"| {role} | {brand} | {company} | {rank_text} | "
+                f"{by_period[period_start]} | {by_period[period_end]} |"
+            )
+        if rows:
+            return "\n".join(
+                (
+                    f"## 동일 기간 브랜드 비교 ({period_start}~{period_end})",
+                    "| 구분 | 브랜드 | 회사 | 순위 | 시작 매출(억원) | 종료 매출(억원) |",
+                    "| --- | --- | --- | ---: | ---: | ---: |",
+                    *rows,
+                    "[출처: 내부 데이터마트]",
+                )
+            )
+    return ""
+
+
+def _append_required_adverse_signal(
+    answer: str,
+    results: Sequence[SourceResult],
+) -> str:
+    if re.search(r"점유율[^.\n]{0,30}하락", answer):
+        return answer
+    for result in results:
+        if result.source != "mart" or not isinstance(result.payload, Mapping):
+            continue
+        calls = result.payload.get("calls")
+        candidates = calls if isinstance(calls, list) else [result.payload]
+        for call in candidates:
+            if not isinstance(call, Mapping):
+                continue
+            bundle = call.get("entity_bundle")
+            if not isinstance(bundle, Mapping):
+                continue
+            members = bundle.get("members")
+            if not isinstance(members, list):
+                continue
+            for member in members:
+                if not isinstance(member, Mapping) or member.get("role") != "target":
+                    continue
+                delta = _decimal_value(member.get("share_delta_pctp"))
+                brand = str(member.get("brand") or bundle.get("anchor") or "대상 브랜드").strip()
+                if delta is None or delta >= 0:
+                    continue
+                shown = format(abs(delta).normalize(), "f")
+                return (
+                    f"{answer.rstrip()}\n\n같은 기간 {brand}의 점유율은 "
+                    f"{shown}%p 하락했습니다. [출처: 내부 데이터마트]"
+                )
+    return answer
+
+
+def _decimal_value(value: Any) -> Decimal | None:
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
 
 
 def _mart_history_fallback(payload: Any, *, question: str) -> str:

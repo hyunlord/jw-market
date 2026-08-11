@@ -174,21 +174,34 @@ def apply_v4_gates(
 
     mart_numeric_question = any(term in question.casefold() for term in _MART_TERMS)
     metric_fields = _requested_metric_fields(question)
+    asks_cause = any(marker in question.casefold() for marker in ("원인", "왜 ", "이유"))
     allowed = _payload_numbers(
         mart_results if mart_numeric_question else results,
-        allowed_fields=metric_fields if mart_numeric_question else (),
+        allowed_fields=(
+            () if asks_cause else metric_fields
+        ) if mart_numeric_question else (),
     )
     answer_numbers = _answer_mart_metric_numbers(text, question)
     invented = sorted(token for token in answer_numbers if _normalize_number(token) not in allowed)
     if invented and mart_results and mart_numeric_question:
-        text = _render_mart_facts(
-            mart_results,
-            question=question,
-            allowed_fields=metric_fields,
+        text = _redact_invented_metric_values(text, invented)
+        remaining = sorted(
+            token
+            for token in _answer_mart_metric_numbers(text, question)
+            if _normalize_number(token) not in allowed
         )
-        trace["mart_numeric_copy_only"] = {"blocked": True, "tokens": invented}
+        trace["mart_numeric_copy_only"] = {
+            "blocked": True,
+            "tokens": invented,
+            "remaining_tokens": remaining,
+            "full_fallback": False,
+        }
     else:
-        trace["mart_numeric_copy_only"] = {"blocked": False, "tokens": []}
+        trace["mart_numeric_copy_only"] = {
+            "blocked": False,
+            "tokens": [],
+            "full_fallback": False,
+        }
 
     requested_display_numbers = _requested_display_numbers(
         mart_results,
@@ -219,7 +232,6 @@ def apply_v4_gates(
         dict.fromkeys(item.source for item in timed_out)
     )
 
-    asks_cause = any(marker in question.casefold() for marker in ("원인", "왜 ", "이유"))
     usable_evidence = tuple(
         item.evidence for item in results if item.status == "ok" and item.evidence is not None
     )
@@ -393,6 +405,23 @@ def _answer_mart_metric_numbers(text: str, question: str) -> set[str]:
     return numbers
 
 
+def _redact_invented_metric_values(text: str, invented: list[str]) -> str:
+    blocked = {_normalize_number(token) for token in invented}
+
+    def replace(match: re.Match[str]) -> str:
+        if _normalize_number(match.group(0)) not in blocked:
+            return match.group(0)
+        return "확인된 수치"
+
+    repaired = _NUMBER_RE.sub(replace, text)
+    return re.sub(
+        r"확인된 수치\s*(?:억원?|원|KRW|%(?:p)?|퍼센트|Rx|건|개|위)",
+        "확인된 수치",
+        repaired,
+        flags=re.IGNORECASE,
+    )
+
+
 def _payload_numbers(
     results: tuple[SourceResult, ...],
     *,
@@ -400,6 +429,12 @@ def _payload_numbers(
 ) -> set[str]:
     tokens: set[str] = set()
     for result in results:
+        tokens.update(
+            _session_state_numeric_tokens(
+                result.payload,
+                allowed_fields=allowed_fields,
+            )
+        )
         if allowed_fields:
             values = (
                 value
@@ -409,15 +444,57 @@ def _payload_numbers(
             serialized = json.dumps(tuple(values), ensure_ascii=False, default=str)
         else:
             serialized = json.dumps(result.payload, ensure_ascii=False, default=str)
-        tokens.update(_normalize_number(token) for token in _NUMBER_RE.findall(serialized))
+        for token in _NUMBER_RE.findall(serialized):
+            tokens.update(_numeric_copy_variants(token))
     tokens.update(
         _mart_dimension_payload_numbers(results, allowed_fields=allowed_fields)
     )
     return tokens
 
 
+def _session_state_numeric_tokens(
+    payload: Any,
+    *,
+    allowed_fields: tuple[str, ...],
+) -> set[str]:
+    if not isinstance(payload, Mapping):
+        return set()
+    facts = payload.get("last_numeric_facts")
+    if not isinstance(facts, (list, tuple)):
+        return set()
+    tokens: set[str] = set()
+    for fact in facts:
+        if not isinstance(fact, Mapping):
+            continue
+        path = str(fact.get("path") or "").casefold()
+        value = fact.get("value")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        if allowed_fields and not any(field in path for field in allowed_fields):
+            continue
+        tokens.add(_normalize_number(str(value)))
+    return tokens
+
+
 def _normalize_number(value: str) -> str:
     return value.replace(",", "").lstrip("+")
+
+
+def _numeric_copy_variants(value: str) -> set[str]:
+    normalized = _normalize_number(value)
+    variants = {normalized}
+    try:
+        decimal_value = Decimal(normalized)
+    except InvalidOperation:
+        return variants
+    variants.add(format(decimal_value.normalize(), "f"))
+    variants.add(
+        format(
+            decimal_value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
+            "f",
+        )
+    )
+    return variants
 
 
 def _mart_dimension_payload_numbers(
