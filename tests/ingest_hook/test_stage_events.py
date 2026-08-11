@@ -117,8 +117,8 @@ def test_status_exposes_deterministic_expected_stage_contract(client, bucket):
         "post_gate",
         "mart_publish",
         "refresh",
-        "signal",
         "dashboard",
+        "signal",
     ]
     assert all(item["applicable"] is True for item in status["expected_stages"])
 

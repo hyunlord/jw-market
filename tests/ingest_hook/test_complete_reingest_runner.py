@@ -280,6 +280,7 @@ def test_numeric_reingest_runs_core_stages_without_weekly_agent_path(
         "post_gate",
         "mart_publish",
         "refresh",
+        "dashboard",
         "signal",
     ]
     assert [stage for stage in _complete_stage_names(ledger) if stage.startswith("agent")] == []
@@ -361,6 +362,7 @@ def test_iqvia_numeric_reingest_uses_attempt_raw_build_and_real_refresh(
         "post_gate",
         "mart_publish",
         "refresh",
+        "dashboard",
         "signal",
     ]
 
@@ -437,6 +439,10 @@ def test_refresh_failure_restores_numeric_publication_under_writer_lock(
     ]
     assert ledger.stage_records[-1]["stage"] == "refresh"
     assert ledger.stage_records[-1]["status"] == "failed"
+    assert not any(
+        record["stage"] == "dashboard" and record["status"] == "complete"
+        for record in ledger.stage_records
+    )
     assert ledger.terminals[-1]["status"] == "failed"
 
 
@@ -530,6 +536,12 @@ def test_csd_reingest_records_only_source_core_stages(
 
     # Then: only the source-owned CSD core stage chain is recorded.
     assert _complete_stage_names(ledger) == expected_stages
+    dashboard = next(
+        record for record in ledger.stage_records if record["stage"] == "dashboard"
+    )
+    assert "target_schema=stage_live" in str(dashboard["reason"])
+    assert "raw_rows=10" in str(dashboard["reason"])
+    assert "stage_rows=8" in str(dashboard["reason"])
     assert not {"agent_refresh", "agent2", "agent3"}.intersection(_complete_stage_names(ledger))
     assert ledger.terminals[-1]["status"] == "complete"
 

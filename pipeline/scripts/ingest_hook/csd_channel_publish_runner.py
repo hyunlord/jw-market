@@ -15,21 +15,22 @@ from pipeline.scripts.ingest_hook.ledger import STATUS_PUBLISH_RUNNING, Ledger
 from pipeline.scripts.ingest_hook.ubist_mart_activation import acquire_writer_lock
 
 
-def _record_downstream(ledger: Ledger, identity: tuple[str, str, str], run_id: str) -> None:
-    for seq, stage in ((4, "context_bridge"), (5, "dashboard")):
-        stamp = _stamp()
-        ledger.record_stage(
-            *identity,
-            run_id=run_id,
-            seq=seq,
-            stage=stage,
-            status="complete",
-            reason="live CSD stage table is queryable after atomic publish",
-            started_at=stamp,
-            finished_at=stamp,
-            duration_ms=0,
-        )
-        print(f"[stage] {stage} end rc=0")
+def _record_context_bridge(
+    ledger: Ledger, identity: tuple[str, str, str], run_id: str
+) -> None:
+    stamp = _stamp()
+    ledger.record_stage(
+        *identity,
+        run_id=run_id,
+        seq=4,
+        stage="context_bridge",
+        status="complete",
+        reason="activated CSD channel stage is the context source",
+        started_at=stamp,
+        finished_at=stamp,
+        duration_ms=0,
+    )
+    print("[stage] context_bridge end rc=0")
 
 
 def run(
@@ -110,9 +111,18 @@ def run(
         if verdict is not csd_channel_activation.SwapVerdict.APPLIED:
             raise RuntimeError(f"CSD publish was not applied: {verdict}")
         published_at = _stamp()
-        tracker.done()
+        publish_execution = tracker.done()
         tracker.skip("refresh", "CSD channel API reads the activated stage table directly")
-        _record_downstream(ledger, identity, publish_run_id)
+        _record_context_bridge(ledger, identity, publish_run_id)
+        tracker.complete_from(
+            "dashboard",
+            publish_execution,
+            reason=(
+                "dashboard reads atomically activated CSD channel stage directly; "
+                f"target_schema={stage_schema}; raw_rows={current.raw.row_count}; "
+                f"stage_rows={current.stage.row_count}"
+            ),
+        )
         row_counts = {
             plan.raw.live.table: current.raw.row_count,
             plan.stage.live.table: current.stage.row_count,

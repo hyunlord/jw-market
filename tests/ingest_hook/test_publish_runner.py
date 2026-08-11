@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -161,6 +162,10 @@ def test_publish_failure_recovers_candidate_with_build_run_identity(
     assert ("publish_run_id", "build-run") in calls
     assert calls.index("recover") < calls.index("recovery-complete")
     assert sqlite_ledger.status(*IDENTITY).status == "failed"
+    assert not any(
+        event.stage == "dashboard" and event.status == "complete"
+        for event in sqlite_ledger.stage_events(*IDENTITY)
+    )
 
 
 def test_publish_marks_corpus_promotion_started_before_rename(
@@ -252,3 +257,83 @@ def test_publish_marks_corpus_promotion_started_before_rename(
     assert result == 1
     assert phases[0] == "corpus_promotion_started"
     assert recovered == ["recover"]
+
+
+def test_production_publish_binds_dashboard_to_real_refresh(
+    sqlite_ledger, monkeypatch, tmp_path
+) -> None:
+    live_root = tmp_path / "ubist"
+    candidate_root = tmp_path / ".ubist_candidate_build-run"
+    backup_root = tmp_path / ".ubist_backup_build-run"
+    journal = tmp_path / ".ubist_activation_build-run.json"
+    sqlite_ledger.receive(*IDENTITY, manifest_path="/x/manifest.json")
+    sqlite_ledger.mark_running(*IDENTITY, job_name="build-job", run_id="build-run")
+    sqlite_ledger.mark_awaiting_approval(
+        *IDENTITY,
+        run_id="build-run",
+        candidate={
+            "mode": "production",
+            "source_db": "source_db",
+            "target_db": "target_db",
+            "build_db": "build_db",
+            "live_root": str(live_root),
+            "candidate_root": str(candidate_root),
+            "backup_root": str(backup_root),
+            "activation_journal": str(journal),
+            "baseline_manifest_sha": "f" * 64,
+            "baseline_live_snapshot": [],
+            "row_counts": {"mart_general_brand_metric": 10},
+            "periods": ["2026-07"],
+        },
+        prepared_at="2026-08-04T00:00:00+00:00",
+        expires_at="2026-08-05T00:00:00+00:00",
+    )
+    publish_job = publish_job_name("ubist", IDENTITY[2], "publish-run")
+    assert sqlite_ledger.mark_publish_running(
+        *IDENTITY,
+        build_run_id="build-run",
+        publish_job_name=publish_job,
+        approved_by="pl@example.com",
+        approved_at="2026-08-04T01:00:00+00:00",
+    )
+
+    connection = SimpleNamespace(close=lambda: None)
+    refresh_calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(publish_runner.config, "open_mart_connection", lambda *_args: connection)
+    monkeypatch.setattr(publish_runner, "acquire_writer_lock", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(publish_runner, "_verify_publish_integrity", lambda *_args: None)
+    monkeypatch.setattr(publish_runner, "_release_writer_lock_preserving_primary", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(publish_runner, "require_corpus_manifest", lambda *_args: None)
+    monkeypatch.setattr(
+        publish_runner,
+        "fingerprint_untouched_sources",
+        lambda *_args, **_kwargs: publish_runner._snapshot([]),
+    )
+    monkeypatch.setattr(publish_runner, "promote_candidate_corpus", lambda *_args: None)
+    monkeypatch.setattr(publish_runner, "publish_shadow", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(publish_runner, "update_activation_journal", lambda *_args: None)
+    monkeypatch.setattr(
+        publish_runner,
+        "_run_commands_with_writer_lock",
+        lambda _label, argv, **_kwargs: refresh_calls.append(argv),
+    )
+    monkeypatch.setattr(publish_runner, "_emit_completion_signal", lambda **_kwargs: None)
+
+    assert publish_runner.run(
+        ledger=sqlite_ledger,
+        epoch=IDENTITY[0],
+        category=IDENTITY[1],
+        manifest_sha=IDENTITY[2],
+        build_run_id="build-run",
+        publish_run_id="publish-run",
+    ) == 0
+
+    events = sqlite_ledger.stage_events(*IDENTITY)
+    refresh = next(event for event in events if event.stage == "refresh")
+    dashboard = next(event for event in events if event.stage == "dashboard")
+    assert refresh_calls
+    assert dashboard.status == "complete"
+    assert dashboard.started_at == refresh.started_at
+    assert dashboard.finished_at == refresh.finished_at
+    assert dashboard.duration_ms == refresh.duration_ms
+    assert "target_schema=target_db" in str(dashboard.reason)

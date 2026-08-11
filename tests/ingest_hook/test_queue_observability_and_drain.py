@@ -1132,8 +1132,8 @@ def test_terminal_callback_promotes_next_only_after_slot_release(
         "post_gate",
         "mart_publish",
         "refresh",
-        "signal",
         "dashboard",
+        "signal",
     ]
 
 

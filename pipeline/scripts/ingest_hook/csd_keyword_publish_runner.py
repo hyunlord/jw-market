@@ -87,22 +87,6 @@ def _record_topic_assignment(
     print("[stage] topic_extraction end rc=0")
 
 
-def _record_dashboard(ledger: Ledger, identity: tuple[str, str, str], run_id: str) -> None:
-    stamp = _stamp()
-    ledger.record_stage(
-        *identity,
-        run_id=run_id,
-        seq=5,
-        stage="dashboard",
-        status="complete",
-        reason="live keyword stage is queryable after atomic publish",
-        started_at=stamp,
-        finished_at=stamp,
-        duration_ms=None,
-    )
-    print("[stage] dashboard end rc=0")
-
-
 def run(
     *,
     ledger: Ledger,
@@ -184,14 +168,22 @@ def run(
             activation_connection, plan, current
         )
         published_at = _stamp()
-        tracker.done()
+        publish_execution = tracker.done()
         _record_topic_assignment(
             ledger=ledger,
             identity=identity,
             run_id=publish_run_id,
             affected_scope=affected_scope,
         )
-        _record_dashboard(ledger, identity, publish_run_id)
+        tracker.complete_from(
+            "dashboard",
+            publish_execution,
+            reason=(
+                "dashboard reads atomically activated CSD keyword stage directly; "
+                f"target_schema={stage_schema}; raw_rows={current.raw_rows}; "
+                f"stage_rows={current.stage_rows}"
+            ),
+        )
         ledger.mark_complete(
             *identity,
             row_counts={

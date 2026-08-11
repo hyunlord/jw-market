@@ -244,6 +244,7 @@ class _StageTracker:
         "post_gate",
         "mart_publish",
         "refresh",
+        "dashboard",
         "signal",
     )
 
@@ -255,6 +256,7 @@ class _StageTracker:
         self._n = len(self.STAGES)
         self._current: str | None = None
         self._t0: float | None = None
+        self._started_at: str | None = None
 
     def _record(self, name: str, status: str, *, reason: str | None = None,
                 started: str | None = None, finished: str | None = None, duration_ms: int | None = None) -> None:
@@ -266,17 +268,50 @@ class _StageTracker:
     def enter(self, name: str) -> None:
         self._current = name
         self._t0 = time.monotonic()
-        self._record(name, "running", started=_stamp())
+        self._started_at = _stamp()
+        self._record(name, "running", started=self._started_at)
         print(f"[stage] {name} start({self._seq[name]}/{self._n})")
 
-    def done(self, rc: int = 0, *, reason: str | None = None) -> None:
+    def done(self, rc: int = 0, *, reason: str | None = None) -> tuple[str, str, int | None] | None:
         if self._current is None:
-            return
+            return None
         name, dur = self._current, self._elapsed_ms()
-        self._record(name, "complete", reason=reason, finished=_stamp(), duration_ms=dur)
+        finished_at = _stamp()
+        started_at = self._started_at or finished_at
+        self._record(
+            name,
+            "complete",
+            reason=reason,
+            started=started_at,
+            finished=finished_at,
+            duration_ms=dur,
+        )
         print(f"[stage] {name} end rc={rc}")
         self._current = None
         self._t0 = None
+        self._started_at = None
+        return started_at, finished_at, dur
+
+    def complete_from(
+        self,
+        name: str,
+        execution: tuple[str, str, int | None] | None,
+        *,
+        reason: str,
+    ) -> None:
+        """Bind a derived stage to the exact operation that made it true."""
+        if execution is None:
+            raise RuntimeError(f"cannot complete {name} without execution evidence")
+        started_at, finished_at, duration_ms = execution
+        self._record(
+            name,
+            "complete",
+            reason=reason,
+            started=started_at,
+            finished=finished_at,
+            duration_ms=duration_ms,
+        )
+        print(f"[stage] {name} end rc=0")
 
     def complete(self, name: str, reason: str | None = None) -> None:
         """Record a stage that ran inside a helper (load_verify inside _real_load;
@@ -312,6 +347,7 @@ class _StageTracker:
         print(f"[stage] {name} end rc=1")
         self._current = None
         self._t0 = None
+        self._started_at = None
 
     def _elapsed_ms(self) -> int | None:
         return int((time.monotonic() - self._t0) * 1000) if self._t0 is not None else None
@@ -328,8 +364,8 @@ _SOURCE_STAGE_CONTRACTS: dict[str, tuple[str, ...]] = {
         "post_gate",
         "mart_publish",
         "refresh",
-        "signal",
         "dashboard",
+        "signal",
     ),
     "iqvia_nsa": (
         "job_submit",
@@ -341,8 +377,8 @@ _SOURCE_STAGE_CONTRACTS: dict[str, tuple[str, ...]] = {
         "post_gate",
         "mart_publish",
         "refresh",
-        "signal",
         "dashboard",
+        "signal",
     ),
     "iqvia_csd_channel": (
         "job_submit",
@@ -394,6 +430,7 @@ def expected_stages(spec: CategorySpec) -> list[dict[str, str | int | bool]]:
         "post_gate": (supports_mart and bool(spec.sigma_source)) or supports_source_activation,
         "mart_publish": supports_mart or supports_source_activation,
         "refresh": bool(spec.refresh_argv) and spec.production_load_supported,
+        "dashboard": bool(spec.refresh_argv) and spec.production_load_supported,
         "signal": True,
     }
     return [

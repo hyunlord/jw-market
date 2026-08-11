@@ -99,6 +99,14 @@ def test_channel_complete_signal_identifies_published_schema_and_time(monkeypatc
         "count": 0,
         "values": [],
     }
+    dashboard = next(
+        call.kwargs
+        for call in ledger.record_stage.call_args_list
+        if call.kwargs["stage"] == "dashboard"
+    )
+    assert "target_schema=jw_brand_activity_stage" in dashboard["reason"]
+    assert "raw_rows=397146" in dashboard["reason"]
+    assert "stage_rows=397146" in dashboard["reason"]
 
 
 def test_keyword_complete_signal_identifies_published_schema_and_time(monkeypatch) -> None:
@@ -184,3 +192,7 @@ def test_keyword_complete_signal_identifies_published_schema_and_time(monkeypatc
     }
     recorded_stages = [call.kwargs["stage"] for call in ledger.record_stage.call_args_list]
     assert recorded_stages[-2:] == ["topic_extraction", "dashboard"]
+    dashboard = ledger.record_stage.call_args_list[-1].kwargs
+    assert "target_schema=jw_brand_activity_stage" in dashboard["reason"]
+    assert "raw_rows=9512" in dashboard["reason"]
+    assert "stage_rows=9512" in dashboard["reason"]

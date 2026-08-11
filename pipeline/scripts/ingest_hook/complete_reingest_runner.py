@@ -40,6 +40,7 @@ STAGE_SEQUENCES = {
         "post_gate",
         "mart_publish",
         "refresh",
+        "dashboard",
         "signal",
     ),
     "iqvia_nsa": (
@@ -51,6 +52,7 @@ STAGE_SEQUENCES = {
         "post_gate",
         "mart_publish",
         "refresh",
+        "dashboard",
         "signal",
     ),
     "iqvia_csd_channel": (
@@ -100,6 +102,10 @@ class RequestContext:
 class Publication:
     target_db: str
     actions: tuple[object, ...]
+    dashboard_reason: str | None = None
+    dashboard_started_at: str | None = None
+    dashboard_finished_at: str | None = None
+    dashboard_duration_ms: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,9 +153,18 @@ def run(
             case "iqvia_nsa":
                 prepared = _recompute_iqvia_mart(context, active_ledger)
             case "iqvia_csd_channel":
-                _recompute_publish_csd_channel(context, active_ledger)
+                publication = _recompute_publish_csd_channel(context, active_ledger)
                 _record_external_stage_chain(
-                    active_ledger, context, ("context_bridge", "dashboard")
+                    active_ledger, context, ("context_bridge",)
+                )
+                _record_stage(
+                    active_ledger,
+                    context,
+                    "dashboard",
+                    reason=publication.dashboard_reason,
+                    started_at=publication.dashboard_started_at,
+                    finished_at=publication.dashboard_finished_at,
+                    duration_ms=publication.dashboard_duration_ms,
                 )
                 return _complete_terminal(
                     active_ledger,
@@ -157,9 +172,18 @@ def run(
                     "recomputed CSD channel stage candidate and atomically published",
                 )
             case "iqvia_csd_keyword":
-                _recompute_publish_csd_keyword(context, active_ledger)
+                publication = _recompute_publish_csd_keyword(context, active_ledger)
                 _record_external_stage_chain(
-                    active_ledger, context, ("topic_extraction", "dashboard")
+                    active_ledger, context, ("topic_extraction",)
+                )
+                _record_stage(
+                    active_ledger,
+                    context,
+                    "dashboard",
+                    reason=publication.dashboard_reason,
+                    started_at=publication.dashboard_started_at,
+                    finished_at=publication.dashboard_finished_at,
+                    duration_ms=publication.dashboard_duration_ms,
                 )
                 return _complete_terminal(
                     active_ledger,
@@ -215,13 +239,25 @@ def _record_stage(
     stage: str,
     status: str = "complete",
     reason: str | None = None,
+    *,
+    started_at: str | None = None,
+    finished_at: str | None = None,
+    duration_ms: int | None = None,
 ) -> None:
     stamp = _stamp()
+    effective_started_at = started_at or stamp
+    effective_finished_at = finished_at
+    effective_duration_ms = duration_ms
+    if status != "running":
+        effective_finished_at = effective_finished_at or stamp
+        if effective_duration_ms is None:
+            effective_duration_ms = 0
     seq = _stage_seq(context, stage)
     _emit_stage_marker(stage, status, reason)
     ledger.record_stage(
         *context.identity, run_id=context.run_id, seq=seq, stage=stage,
-        status=status, reason=reason, started_at=stamp, finished_at=stamp, duration_ms=0,
+        status=status, reason=reason, started_at=effective_started_at,
+        finished_at=effective_finished_at, duration_ms=effective_duration_ms,
     )
 
 
@@ -533,8 +569,16 @@ def _publish_and_refresh_numeric(
             ),
         )
 
+        refresh_started_at = _stamp()
+        refresh_started_monotonic = time.monotonic()
         try:
-            _record_stage(ledger, context, "refresh", "running")
+            _record_stage(
+                ledger,
+                context,
+                "refresh",
+                "running",
+                started_at=refresh_started_at,
+            )
             _run_refresh_argv(
                 spec.refresh_argv,
                 connection=writer_conn,
@@ -554,11 +598,31 @@ def _publish_and_refresh_numeric(
                     f"{_reason(restore_exc)}"
                 ) from exc
             raise
+        refresh_finished_at = _stamp()
+        refresh_duration_ms = int(
+            (time.monotonic() - refresh_started_monotonic) * 1000
+        )
         _record_stage(
             ledger,
             context,
             "refresh",
             reason=f"executed refresh_argv: {' '.join(spec.refresh_argv)}",
+            started_at=refresh_started_at,
+            finished_at=refresh_finished_at,
+            duration_ms=refresh_duration_ms,
+        )
+        _record_stage(
+            ledger,
+            context,
+            "dashboard",
+            reason=(
+                "dashboard serving refresh completed; "
+                f"target_schema={prepared.target_db}; "
+                f"refresh_argv={' '.join(spec.refresh_argv)}"
+            ),
+            started_at=refresh_started_at,
+            finished_at=refresh_finished_at,
+            duration_ms=refresh_duration_ms,
         )
         return publication
     except Exception as exc:
@@ -617,7 +681,15 @@ def _recompute_publish_csd_channel(
             lock_name=csd_channel_activation.WRITER_LOCK_NAME,
         )
         lock_acquired = True
-        _record_stage(ledger, context, "mart_publish", "running")
+        publish_started_at = _stamp()
+        publish_started_monotonic = time.monotonic()
+        _record_stage(
+            ledger,
+            context,
+            "mart_publish",
+            "running",
+            started_at=publish_started_at,
+        )
         evidence = csd_channel_activation.prepare_candidate(
             conn,
             plan,
@@ -627,13 +699,39 @@ def _recompute_publish_csd_channel(
         verdict = csd_channel_activation.publish_candidate(conn, plan, evidence)
         if verdict is not csd_channel_activation.SwapVerdict.APPLIED:
             raise RuntimeError(f"CSD channel publish was not applied: {verdict}")
+        publish_finished_at = _stamp()
+        publish_duration_ms = int(
+            (time.monotonic() - publish_started_monotonic) * 1000
+        )
         _record_stage(
             ledger,
             context,
             "mart_publish",
             reason="atomically published CSD channel raw/stage candidate",
+            started_at=publish_started_at,
+            finished_at=publish_finished_at,
+            duration_ms=publish_duration_ms,
         )
-        return Publication(stage_schema, ())
+        raw_rows = int(getattr(evidence, "raw_rows", 0))
+        stage_rows = int(getattr(evidence, "stage_rows", 0))
+        raw_fingerprint = getattr(evidence, "raw", None)
+        stage_fingerprint = getattr(evidence, "stage", None)
+        if raw_fingerprint is not None:
+            raw_rows = int(getattr(raw_fingerprint, "row_count", raw_rows))
+        if stage_fingerprint is not None:
+            stage_rows = int(getattr(stage_fingerprint, "row_count", stage_rows))
+        return Publication(
+            stage_schema,
+            (),
+            (
+                "dashboard reads atomically activated CSD channel stage directly; "
+                f"target_schema={stage_schema}; raw_rows={raw_rows}; "
+                f"stage_rows={stage_rows}"
+            ),
+            publish_started_at,
+            publish_finished_at,
+            publish_duration_ms,
+        )
     except Exception as exc:
         primary_failure_reason = _reason(exc)
         _record_stage(ledger, context, "mart_publish", "failed", primary_failure_reason)
@@ -679,15 +777,41 @@ def _recompute_publish_csd_keyword(
             "post_gate",
             reason="recomputed CSD keyword candidate from live raw",
         )
-        _record_stage(ledger, context, "mart_publish", "running")
+        publish_started_at = _stamp()
+        publish_started_monotonic = time.monotonic()
+        _record_stage(
+            ledger,
+            context,
+            "mart_publish",
+            "running",
+            started_at=publish_started_at,
+        )
         csd_keyword_activation.publish_candidate(activation_conn, plan, evidence)
+        publish_finished_at = _stamp()
+        publish_duration_ms = int(
+            (time.monotonic() - publish_started_monotonic) * 1000
+        )
         _record_stage(
             ledger,
             context,
             "mart_publish",
             reason="atomically published CSD keyword raw/stage candidate",
+            started_at=publish_started_at,
+            finished_at=publish_finished_at,
+            duration_ms=publish_duration_ms,
         )
-        return Publication(stage_schema, ())
+        return Publication(
+            stage_schema,
+            (),
+            (
+                "dashboard reads atomically activated CSD keyword stage directly; "
+                f"target_schema={stage_schema}; raw_rows={evidence.raw_rows}; "
+                f"stage_rows={evidence.stage_rows}"
+            ),
+            publish_started_at,
+            publish_finished_at,
+            publish_duration_ms,
+        )
     except Exception as exc:
         primary_failure_reason = _reason(exc)
         stage = "mart_publish" if any(

@@ -220,7 +220,19 @@ def run(
                 lock_name=writer_lock_name,
             )
         update_activation_journal(activation_journal, "refresh_succeeded")
-        tracker.done()
+        refresh_execution = tracker.done()
+        if mode == "shadow":
+            tracker.skip("dashboard", "shadow validation does not update live dashboard serving")
+        else:
+            tracker.complete_from(
+                "dashboard",
+                refresh_execution,
+                reason=(
+                    "dashboard serving refresh completed; "
+                    f"target_schema={activation.target_db}; "
+                    f"refresh_argv={' '.join(spec.refresh_argv)}"
+                ),
+            )
         row_counts = {
             str(key): int(value)
             for key, value in dict(payload.get("row_counts") or {}).items()
