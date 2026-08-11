@@ -330,7 +330,7 @@ def load_density_worklist(
             db_conn,
             """
             SELECT brand_id, canonical_name, is_jw, is_target,
-                   is_excluded, is_class_excluded, ml_market_id, cd_market_id
+                   is_excluded, is_class_excluded, ml_id, cd_id
             FROM catalog_strategic_brand
             ORDER BY brand_id
             """,

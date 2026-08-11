@@ -9,6 +9,7 @@ from agent2_density_worklist import (
     build_brand_identities,
     build_evidence_counts_from_rows,
     route_density_worklist,
+    load_density_worklist,
 )
 
 
@@ -107,6 +108,35 @@ def test_weekly_opt_in_records_alias_and_all_non_jw_exclusions() -> None:
             "source_event_count": 3,
         }
     ]
+
+
+def test_weekly_loader_uses_live_strategic_catalog_column_names() -> None:
+    class Cursor:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+
+        def execute(self, sql: str) -> None:
+            self.queries.append(sql)
+
+        def fetchall(self) -> list[dict[str, object]]:
+            return []
+
+    class Connection:
+        def __init__(self) -> None:
+            self.cursor_instance = Cursor()
+
+        def cursor(self) -> Cursor:
+            return self.cursor_instance
+
+    connection = Connection()
+
+    load_density_worklist(connection, weekly_global=True)
+
+    catalog_query = connection.cursor_instance.queries[-1]
+    assert "ml_id" in catalog_query
+    assert "cd_id" in catalog_query
+    assert "ml_market_id" not in catalog_query
+    assert "cd_market_id" not in catalog_query
 
 
 def test_brand_identity_uses_agent3_canonical_name_rule() -> None:
