@@ -12,14 +12,13 @@ from jw_chat_agent_poc.service.v4.llm import CompletionResult, GenOSV4Client
 
 
 _INTERNAL_SURFACE_RE = re.compile(
-    r"MCP(?:[^가-힣\n]{0,80})?(?:에서|returned|결과)|\btotalCount\b|\bslot[_ -]?id\b|"
-    r"\b(?:sickCd|ptntCnt|value)\b|"
+    r"(?i:MCP(?:[^가-힣\n]{0,80})?(?:에서|returned|결과)|\btotalCount\b|"
+    r"\bslot[_ -]?id\b|\b(?:sickCd|ptntCnt|value)\b|"
     r"\b\d{7,}(?:\.\d+)?\s*KRW(?![A-Za-z])|"
     r"\b\d{7,}(?:\.\d+)?\s*원(?:은|는|이|가|을|를|으로|에서|의)?|"
-    r"\b[A-Z][A-Z0-9_]{2,}\s*[:=]\s*[^\s,;]+|"
     r"\b(?:hira|clinicaltrials|mfds|openfda|tavily)_[a-z0-9_]+\b|"
-    r"(?:\bNCT\d{8}\b\s*[,/]\s*)+\bNCT\d{8}\b",
-    re.IGNORECASE,
+    r"(?:\bNCT\d{8}\b\s*[,/]\s*)+\bNCT\d{8}\b)|"
+    r"\b[A-Z][A-Z0-9_]{2,}\s*[:=]\s*[^\s,;]+",
 )
 _PUBLIC_SOURCE = {
     "mart": "내부 데이터마트",
@@ -68,6 +67,12 @@ _PUBLIC_FIELD_ALIASES = {
     "ITEM_PERMIT_DATE": "permit_date",
     "REEXAM_DATE": "reexamination_period",
     "REEXAM_TARGET": "reexamination_target",
+    "sickCd": "상병코드",
+    "ptntCnt": "환자수(명)",
+    "specCnt": "명세서건수(건)",
+    "vstDdcnt": "방문일수(일)",
+    "rvdInsupBrdnAmt": "보험자부담금(원)",
+    "rvdRpeTamtAmt": "요양급여비용총액(원)",
 }
 _BOUNDED_PRIORITY_KEYS = (
     "brand",
@@ -98,7 +103,7 @@ class V4Synthesizer:
         results: Sequence[SourceResult],
         turns: Sequence[ConversationTurn],
         *,
-        budget_s: float = 15.0,
+        budget_s: float = 60.0,
     ) -> str:
         return self.synthesize_with_trace(
             plan,
@@ -113,7 +118,7 @@ class V4Synthesizer:
         results: Sequence[SourceResult],
         turns: Sequence[ConversationTurn],
         *,
-        budget_s: float = 24.0,
+        budget_s: float = 60.0,
     ) -> SynthesisOutcome:
         usable = _select_usable_results(plan, tuple(
             result
@@ -279,6 +284,8 @@ def _synthesis_messages(
                 "그 근거를 사용하지 않는다. 관찰연구, 기기 연구, 인접 질환, 질문과 다른 모집상태의 연구는 핵심 답이 "
                 "아니라 `참고: 인접 연구` 구획에만 둔다. causal=false 근거만으로 원인을 확인했다고 쓰지 말고 관찰 사실과 "
                 "가설을 분리한다. HIRA 입원과 외래 환자수는 중복 가능하므로 합산하거나 비율을 계산하지 않는다. "
+                "HIRA 환자수는 `환자수(명)` 값만 사용한다. `명세서건수(건)`이나 `방문일수(일)`를 환자수로 "
+                "바꾸어 쓰지 않고, 금액은 `(원)` 라벨이 붙은 값과 단위를 그대로 쓴다. "
                 "반드시 `## 핵심 답`, `## 근거와 맥락`, "
                 "`## 종합 인사이트`, `## 미확인 요소`, `## 출처`의 마크다운 소제목으로 구성한다. 한 문단은 최대 4문장으로 "
                 "쓰고, 고시·허가사항은 투여대상·제외기준·투여방법·투여횟수처럼 의미 단위 불릿으로 요약한다. "
@@ -610,8 +617,8 @@ def _hira_patient_facts(payload: Any) -> tuple[str, ...]:
     yearly: dict[str, list[str]] = {}
     public_fields = (
         ("ptntCnt", "환자수는", "명(청구 실인원)"),
-        ("rvdInsupBrdnAmt", "보험자부담금", "천원"),
-        ("rvdRpeTamtAmt", "요양급여비용총액", "천원"),
+        ("rvdInsupBrdnAmt", "보험자부담금", "원"),
+        ("rvdRpeTamtAmt", "요양급여비용총액", "원"),
         ("specCnt", "명세서건수", "건"),
         ("vstDdcnt", "내원일수", "일"),
     )
@@ -641,8 +648,17 @@ def _hira_patient_facts(payload: Any) -> tuple[str, ...]:
                 raw_value = row.get(field)
                 if raw_value in (None, ""):
                     continue
+                source_units = row.get("units")
+                source_unit = (
+                    str(source_units.get(field) or "")
+                    if isinstance(source_units, Mapping)
+                    else ""
+                )
                 try:
-                    display = f"{int(str(raw_value).replace(',', '')):,}"
+                    numeric = int(str(raw_value).replace(",", ""))
+                    if field in {"rvdInsupBrdnAmt", "rvdRpeTamtAmt"} and source_unit != "원":
+                        numeric *= 1000
+                    display = f"{numeric:,}"
                 except ValueError:
                     display = str(raw_value)
                 values.append(f"{label} {display}{unit}")

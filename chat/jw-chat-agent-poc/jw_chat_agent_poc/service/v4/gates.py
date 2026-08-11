@@ -442,6 +442,23 @@ def _render_mart_history(results: tuple[SourceResult, ...]) -> str:
             if len(selected) < 2:
                 continue
             brand = str(render_data.get("brand") or "브랜드")
+            first = selected[0]
+            last = selected[-1]
+            first_period = str(first["period"])
+            last_period = str(last["period"])
+            first_value = first["value_억원"]
+            last_value = last["value_억원"]
+            duration = _history_year_span(first_period, last_period)
+            direction = _history_direction(first_value, last_value)
+            prose = (
+                f"{brand} 매출은 {_display_history_period(first_period)} {first_value}억원에서 "
+                f"{_display_history_period(last_period)} {last_value}억원으로 "
+                f"{duration}년간 {direction}했습니다. [출처: 내부 데이터마트]"
+            )
+            yearly = "연도별: " + " · ".join(
+                f"{_display_history_period(str(item['period']))} {item['value_억원']}억원"
+                for item in selected
+            )
             lines = [f"| 기간 | {brand} 매출 | 시장 규모 |", "| --- | ---: | ---: |"]
             for item in selected:
                 period = str(item["period"])
@@ -449,8 +466,34 @@ def _render_mart_history(results: tuple[SourceResult, ...]) -> str:
                 market_value = market_by_period.get(period)
                 market_display = f"{market_value}억원" if market_value is not None else "확인되지 않음"
                 lines.append(f"| {period} | {brand_value}억원 | {market_display} |")
-            return "확인된 기존 시계열 값은 다음과 같습니다.\n\n" + "\n".join(lines)
+            return prose + "\n\n" + yearly + "\n\n" + "\n".join(lines)
     return ""
+
+
+def _display_history_period(period: str) -> str:
+    match = re.fullmatch(r"(\d{4})-(\d{2})", period)
+    if match is None:
+        return period
+    return f"{match.group(1)}년 {int(match.group(2))}월"
+
+
+def _history_year_span(first_period: str, last_period: str) -> int:
+    first_year = int(first_period[:4]) if first_period[:4].isdigit() else 0
+    last_year = int(last_period[:4]) if last_period[:4].isdigit() else first_year
+    return max(0, last_year - first_year)
+
+
+def _history_direction(first_value: Any, last_value: Any) -> str:
+    try:
+        first = float(str(first_value).replace(",", ""))
+        last = float(str(last_value).replace(",", ""))
+    except ValueError:
+        return "변화"
+    if last > first:
+        return "증가"
+    if last < first:
+        return "감소"
+    return "유지"
 
 
 def _walk_scalars(value: Any, prefix: str = ""):

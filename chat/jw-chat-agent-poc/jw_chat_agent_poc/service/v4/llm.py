@@ -141,8 +141,8 @@ def synthesizer_client() -> GenOSV4Client:
             "GENOS_SYNTH_MODEL",
             os.environ.get("V4_SYNTHESIZER_MODEL", SYNTHESIZER_MODEL),
         ),
-        timeout_s=int(os.environ.get("V4_SYNTHESIZER_TIMEOUT_S", "24")),
-        total_budget_s=int(os.environ.get("V4_SYNTHESIZER_BUDGET_S", "28")),
+        timeout_s=int(os.environ.get("V4_SYNTHESIZER_TIMEOUT_S", "60")),
+        total_budget_s=int(os.environ.get("V4_SYNTHESIZER_BUDGET_S", "64")),
     )
 
 

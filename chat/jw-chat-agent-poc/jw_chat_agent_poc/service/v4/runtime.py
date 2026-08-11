@@ -50,7 +50,7 @@ class V4Runtime:
         self._planner = planner
         self._executor = executor
         self._synthesizer = synthesizer
-        self._total_timeout_s = 96.0
+        self._total_timeout_s = 150.0
         self._session_results: OrderedDict[str, tuple[SourceResult, ...]] = OrderedDict()
         self._session_results_lock = threading.Lock()
         self._max_session_results = 1024
@@ -227,7 +227,7 @@ class V4Runtime:
                 plan,
                 results,
                 selected_turns,
-                budget_s=min(24.0, _remaining(deadline)),
+                budget_s=min(60.0, _remaining(deadline)),
             )
         else:
             synthesis = SynthesisOutcome(
@@ -235,7 +235,7 @@ class V4Runtime:
                     plan,
                     results,
                     selected_turns,
-                    budget_s=min(24.0, _remaining(deadline)),
+                    budget_s=min(60.0, _remaining(deadline)),
                 ),
                 trace={},
             )

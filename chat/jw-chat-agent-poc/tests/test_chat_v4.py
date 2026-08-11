@@ -268,8 +268,8 @@ def test_v4_fallback_preserves_all_hira_additive_fields() -> None:
     answer = _evidence_fallback((result,))
 
     assert "환자수는 1,606명(청구 실인원)" in answer
-    assert "보험자부담금 7,193,144천원" in answer
-    assert "요양급여비용총액 8,697,604천원" in answer
+    assert "보험자부담금 7,193,144,000원" in answer
+    assert "요양급여비용총액 8,697,604,000원" in answer
     assert "명세서건수 2,547건" in answer
     assert "내원일수 12,879일" in answer
     assert all(
@@ -481,6 +481,43 @@ def test_v4_synthesis_projects_reexamination_fields_with_public_names() -> None:
     assert "REEXAM_DATE" not in serialized
 
 
+def test_v4_synthesis_labels_hira_patient_fields_and_units_in_korean() -> None:
+    result = SourceResult(
+        source="hira",
+        query="D693 상병 환자수",
+        status="ok",
+        payload={
+            "calls": [
+                {
+                    "render_data": {
+                        "items": [
+                            {
+                                "sickCd": "D693",
+                                "ptntCnt": "1606",
+                                "specCnt": "3301",
+                                "vstDdcnt": "12152",
+                                "rvdRpeTamtAmt": "9986518000",
+                            }
+                        ]
+                    }
+                }
+            ]
+        },
+    )
+
+    messages = v4_synthesizer._synthesis_messages(_plan(), (result,), ())
+    serialized = messages[-1]["content"]
+    system = messages[0]["content"]
+
+    assert '"상병코드": "D693"' in serialized
+    assert '"환자수(명)": "1606"' in serialized
+    assert '"명세서건수(건)": "3301"' in serialized
+    assert '"방문일수(일)": "12152"' in serialized
+    assert '"요양급여비용총액(원)": "9986518000"' in serialized
+    assert all(field not in serialized for field in ("sickCd", "ptntCnt", "specCnt", "vstDdcnt"))
+    assert "환자수는 `환자수(명)` 값만 사용" in system
+
+
 def test_v4_synthesis_does_not_truncate_source_text() -> None:
     source_text = "허가사항 본문 " * 200
     result = SourceResult(
@@ -569,22 +606,22 @@ def test_v4_hira_aggregates_every_additive_field_by_patient_type() -> None:
         "sickCd": "D693",
         "sickNm": "특발성 혈소판감소성 자반",
         "ptntCnt": "1606",
-        "rvdInsupBrdnAmt": "4000",
-        "rvdRpeTamtAmt": "6000",
+        "rvdInsupBrdnAmt": "4000000",
+        "rvdRpeTamtAmt": "6000000",
         "specCnt": "80",
         "vstDdcnt": "100",
         "units": {
             "ptntCnt": "명",
-            "rvdInsupBrdnAmt": "천원",
-            "rvdRpeTamtAmt": "천원",
+            "rvdInsupBrdnAmt": "원",
+            "rvdRpeTamtAmt": "원",
             "specCnt": "건",
             "vstDdcnt": "일",
         },
         "sexBreakdown": None,
     }
     assert aggregated[1]["ptntCnt"] == "9231"
-    assert aggregated[1]["rvdInsupBrdnAmt"] == "12000"
-    assert aggregated[1]["rvdRpeTamtAmt"] == "14000"
+    assert aggregated[1]["rvdInsupBrdnAmt"] == "12000000"
+    assert aggregated[1]["rvdRpeTamtAmt"] == "14000000"
     assert aggregated[1]["specCnt"] == "160"
     assert aggregated[1]["vstDdcnt"] == "180"
     assert all(item["sex"] is None for item in aggregated)
@@ -957,6 +994,8 @@ def test_v4_clients_use_their_scoped_genos_endpoints_and_tokens(monkeypatch) -> 
     assert synthesizer.base_url.endswith("/serving/202")
     assert synthesizer.token == "synthesizer-token"
     assert synthesizer.model == "gemini-3.1-pro-preview"
+    assert synthesizer.timeout_s == 60
+    assert synthesizer.total_budget_s == 64
 
 
 def test_v4_synthesizer_defaults_to_pro_202_and_warns_when_env_is_missing(
@@ -1443,6 +1482,7 @@ def test_runtime_exposes_synthesizer_usage_metadata() -> None:
 
     class Synthesizer:
         def synthesize_with_trace(self, _plan, _results, _turns, *, budget_s):
+            assert budget_s >= 59.0
             return v4_synthesizer.SynthesisOutcome(
                 text="근거 기반 답변",
                 trace={
@@ -1463,6 +1503,12 @@ def test_runtime_exposes_synthesizer_usage_metadata() -> None:
     assert answer.trace["synthesizer"]["usage"]["completion_tokens"] == 20
     assert answer.trace["synth_serving"] == "202"
     assert answer.trace["synth_model"] == "gemini-3.1-pro-preview"
+
+
+def test_runtime_reserves_total_budget_for_a_complete_synthesis() -> None:
+    runtime = V4Runtime(planner=object(), executor=object(), synthesizer=object())
+
+    assert runtime._total_timeout_s == 150.0
 
 
 def test_runtime_exposes_normalized_usage_and_stage_breakdown() -> None:
@@ -2193,6 +2239,14 @@ def test_v4_gates_render_existing_mart_history_points_when_synthesis_is_blocked(
     )
 
     assert "| 기간 | 리바로 매출 | 시장 규모 |" in gated.text
+    assert (
+        "리바로 매출은 2021년 7월 69.24억원에서 2026년 6월 85.87억원으로 "
+        "5년간 증가했습니다."
+    ) in gated.text
+    assert (
+        "연도별: 2021년 7월 69.24억원 · 2021년 12월 75.34억원 · "
+        "2022년 12월 77.73억원 · 2026년 6월 85.87억원"
+    ) in gated.text
     assert "| 2021-07 | 69.24억원 | 1446.74억원 |" in gated.text
     assert "| 2026-06 | 85.87억원 | 2308.33억원 |" in gated.text
     assert "99.99" not in gated.text
@@ -2200,6 +2254,88 @@ def test_v4_gates_render_existing_mart_history_points_when_synthesis_is_blocked(
 
 def test_v4_base_query_removes_patent_planner_suffix() -> None:
     assert v4_adapters._base_query("리바로정 특허권 등재 현황") == "리바로정"
+
+
+def test_v4_base_query_removes_reexamination_suffix() -> None:
+    assert v4_adapters._base_query("리바로젯정 재심사 종료일") == "리바로젯정"
+
+
+def test_v4_nedrug_patent_query_calls_mfds_without_brand_resolution(monkeypatch) -> None:
+    from jw_chat_agent_poc.agent_loop import factory
+    from jw_chat_agent_poc.service import general_view_routing
+    from jw_chat_agent_poc.tools.external.client import ExternalCall
+
+    called: list[tuple[str, str]] = []
+
+    def external_call(tool: str, *, render_data: dict | None = None) -> ExternalCall:
+        return ExternalCall(
+            tool=tool,
+            source="식품의약품안전처",
+            status="live",
+            summary_text=f"{tool} 상세 근거",
+            render_data=render_data or {"items": [{"result": "확인"}]},
+            safe_url="https://example.test/mfds",
+        )
+
+    class Resolver:
+        def resolve(self, _query, *, allow_default):
+            assert allow_default is False
+            raise LookupError("brand not in mart resolver")
+
+    class External:
+        def mfds_permission_search(self, brand):
+            called.append(("search", brand))
+            return external_call("mfds_permission_search")
+
+        def mfds_patent(self, ingredient):
+            called.append(("patent", ingredient))
+            return external_call("mfds_patent")
+
+        def mfds_fda_orangebook(self, ingredient):
+            called.append(("orangebook", ingredient))
+            return external_call("mfds_fda_orangebook")
+
+    dependencies = SimpleNamespace(
+        external=External(),
+        resolver=Resolver(),
+        query_layer=None,
+    )
+    monkeypatch.setattr(factory, "build_chat_agent_dependencies", lambda **_kwargs: dependencies)
+    monkeypatch.setattr(
+        general_view_routing.GeneralViewService,
+        "from_env",
+        lambda _resolver: SimpleNamespace(),
+    )
+
+    result = v4_adapters.build_source_adapters()["nedrug"]("리바로정 특허권 등재 현황")
+
+    assert result.status == "ok"
+    assert ("search", "리바로정") in called
+    assert ("patent", "Pitavastatin") in called
+    assert ("orangebook", "Pitavastatin") in called
+
+
+def test_v4_reimbursement_summary_is_not_dropped_for_title_case_colons() -> None:
+    result = SourceResult(
+        source="hira",
+        query="아일리아 급여기준",
+        status="ok",
+        payload={
+            "calls": [
+                {
+                    "summary_text": (
+                        "Aflibercept 급여기준의 Neovascularization: Review 항목에서 "
+                        "투여대상과 투여횟수를 확인했습니다."
+                    )
+                }
+            ]
+        },
+    )
+
+    answer = _evidence_fallback((result,))
+
+    assert "Neovascularization: Review" in answer
+    assert "투여대상과 투여횟수" in answer
 
 
 def test_v4_gates_prepend_requested_mart_metric_when_synthesis_omits_it() -> None:

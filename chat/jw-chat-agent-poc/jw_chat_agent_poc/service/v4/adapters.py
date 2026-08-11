@@ -56,11 +56,12 @@ _REIMBURSEMENT_TERMS = re.compile(
 )
 _HIRA_ADDITIVE_UNITS = {
     "ptntCnt": "명",
-    "rvdInsupBrdnAmt": "천원",
-    "rvdRpeTamtAmt": "천원",
+    "rvdInsupBrdnAmt": "원",
+    "rvdRpeTamtAmt": "원",
     "specCnt": "건",
     "vstDdcnt": "일",
 }
+_HIRA_THOUSAND_WON_FIELDS = frozenset({"rvdInsupBrdnAmt", "rvdRpeTamtAmt"})
 _SOURCE_SCOPE = {
     "mart": "KR",
     "nedrug": "KR",
@@ -98,6 +99,15 @@ def _decimal_text(value: Decimal) -> str:
     return format(value.normalize(), "f")
 
 
+def _hira_additive_value(field: str, value: Any) -> str | None:
+    number = _decimal_value(value)
+    if number is None:
+        return None
+    if field in _HIRA_THOUSAND_WON_FIELDS:
+        number *= Decimal(1000)
+    return _decimal_text(number)
+
+
 def _aggregate_hira_items(items: Sequence[Any]) -> list[dict[str, Any]]:
     groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
     for item in items:
@@ -124,11 +134,18 @@ def _aggregate_hira_items(items: Sequence[Any]) -> list[dict[str, Any]]:
             values = [_decimal_value(row.get(field)) for row in rows]
             numeric = [value for value in values if value is not None]
             if numeric:
-                output[field] = _decimal_text(sum(numeric, Decimal(0)))
+                output[field] = _hira_additive_value(
+                    field,
+                    sum(numeric, Decimal(0)),
+                )
         output["units"] = dict(_HIRA_ADDITIVE_UNITS)
         output["sexBreakdown"] = [
             {
-                key: value
+                key: (
+                    _hira_additive_value(key, value)
+                    if key in _HIRA_ADDITIVE_UNITS
+                    else value
+                )
                 for key, value in row.items()
                 if key in {"sex", *_HIRA_ADDITIVE_UNITS}
             }
@@ -386,6 +403,10 @@ def _base_query(query: str) -> str:
         "clinical trials",
         "특허 만료 공식",
         "특허권 등재 현황",
+        "재심사 종료일",
+        "재심사 기간",
+        "재심사 대상",
+        "재심사",
     )
     changed = True
     while changed:
@@ -507,8 +528,13 @@ def build_source_adapters() -> dict[SourceName, Any]:
         item_seq = _find_value(search.render_data, "ITEM_SEQ", "item_seq")
         if item_seq:
             calls.append(external.mfds_permission_detail(str(item_seq)))
-        if "특허" in query and resolution is not None:
-            for molecule in resolution.molecule_en:
+        if "특허" in query:
+            molecules = (
+                resolution.molecule_en
+                if resolution is not None
+                else (_ingredient_query(base),)
+            )
+            for molecule in dict.fromkeys(molecules):
                 calls.extend((external.mfds_patent(molecule), external.mfds_fda_orangebook(molecule)))
         result = external_calls("nedrug", query, calls)
         requested_periods = _requested_hira_years(base)
