@@ -270,7 +270,7 @@ class V4Synthesizer:
             tuple(usable),
         )
         answer = _append_required_adverse_signal(answer, usable)
-        answer = _append_absence_context_surface(answer, usable)
+        answer = _append_absence_context_surface(answer, results)
         answer = _finalize_answer(answer, usable)
         return SynthesisOutcome(
             text=answer,
@@ -459,6 +459,12 @@ def _comparison_facts(results: Sequence[SourceResult]) -> dict[str, Any]:
             calls.extend(call for call in raw_calls if isinstance(call, Mapping))
         else:
             calls.append(result.payload)
+    call_index = 0
+    while call_index < len(calls):
+        nested_calls = calls[call_index].get("tool_calls")
+        if isinstance(nested_calls, list):
+            calls.extend(call for call in nested_calls if isinstance(call, Mapping))
+        call_index += 1
     bundle = next(
         (
             call.get("entity_bundle")
@@ -467,6 +473,68 @@ def _comparison_facts(results: Sequence[SourceResult]) -> dict[str, Any]:
         ),
         None,
     )
+    if not isinstance(bundle, Mapping):
+        for call in calls:
+            render_data = call.get("render_data")
+            if not isinstance(render_data, Mapping):
+                continue
+            anchor_brand = str(render_data.get("anchor_brand") or "").strip()
+            rows = render_data.get("competitor_rows")
+            if not anchor_brand or not isinstance(rows, list):
+                continue
+            points: list[tuple[str, Decimal, Decimal]] = []
+            for row in rows:
+                if not isinstance(row, Mapping):
+                    continue
+                if str(row.get("brand") or "").strip() != anchor_brand:
+                    continue
+                period = str(row.get("period") or "").strip()
+                sales_krw = _decimal_value(row.get("sales_krw"))
+                share_pct = _decimal_value(row.get("share_pct"))
+                if period and sales_krw is not None and share_pct is not None and share_pct > 0:
+                    points.append((period, sales_krw, share_pct))
+            points.sort(key=lambda point: point[0])
+            if len(points) < 2 or points[0][0] == points[-1][0]:
+                continue
+            period_start, sales_start, share_start = points[0]
+            period_end, sales_end, share_end = points[-1]
+            krw_per_eok = Decimal("100000000")
+            bundle = {
+                "anchor": anchor_brand,
+                "period_start": period_start,
+                "period_end": period_end,
+                "same_period_and_denominator": True,
+                "members": [
+                    {
+                        "brand": anchor_brand,
+                        "role": "target",
+                        "share_delta_pctp": share_end - share_start,
+                        "render_data": {
+                            "brand_value_series_10pt": [
+                                {"period": period_start, "value_억원": sales_start / krw_per_eok},
+                                {"period": period_end, "value_억원": sales_end / krw_per_eok},
+                            ]
+                        },
+                    }
+                ],
+            }
+            calls.append(
+                {
+                    "render_data": {
+                        "market_size_series": [
+                            {
+                                "period": period_start,
+                                "value_억원": sales_start * 100 / share_start / krw_per_eok,
+                            },
+                            {
+                                "period": period_end,
+                                "value_억원": sales_end * 100 / share_end / krw_per_eok,
+                            },
+                        ]
+                    }
+                }
+            )
+            break
     if not isinstance(bundle, Mapping):
         return {}
     period_start = str(bundle.get("period_start") or "").strip()
@@ -641,7 +709,7 @@ def _append_absence_context_surface(
         (
             result
             for result in results
-            if result.status == "ok" and _is_absence_context_result(result)
+            if _is_absence_context_result(result)
         ),
         None,
     )
