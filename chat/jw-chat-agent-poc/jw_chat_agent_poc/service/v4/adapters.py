@@ -548,6 +548,26 @@ def _reimbursement_subject(query: str) -> str:
     return value or _base_query(query)
 
 
+def _reimbursement_lookup_metadata(result: Any, subject: str) -> dict[str, Any]:
+    error_code = str(result.error_code or "") or None
+    cache_lookup_status = getattr(result.cache_lookup_status, "value", result.cache_lookup_status)
+    if result.ok and result.data is not None:
+        outcome = "found"
+    elif (
+        error_code == "REALTIME_NO_EVIDENCE"
+        and cache_lookup_status == "brand_unmatched"
+    ):
+        outcome = "confirmed_absent"
+    else:
+        outcome = "unavailable"
+    return {
+        "document": "reimbursement",
+        "outcome": outcome,
+        "subject": subject,
+        "error_code": error_code,
+    }
+
+
 def _clinical_query(query: str) -> tuple[str, str]:
     normalized = query.replace(" ", "")
     for alias, (_code, condition) in _DISEASE_ALIASES.items():
@@ -588,11 +608,19 @@ def build_source_adapters() -> dict[SourceName, Any]:
     from jw_chat_agent_poc.agent_loop.factory import build_chat_agent_dependencies
     from jw_chat_agent_poc.service.general_view_routing import GeneralRoute, GeneralViewService
     from jw_chat_agent_poc.tools.external.client import ExternalCall
-    from jw_chat_agent_poc.tools.external.hira_reimbursement import HiraReimbursementHttpClient
+    from jw_chat_agent_poc.tools.external.hira_reimbursement import (
+        HiraReimbursementHttpClient,
+        ReimbursementLookupService,
+        configured_reimbursement_store,
+    )
 
     dependencies = build_chat_agent_dependencies(external_mode="live")
     external = dependencies.external
     general_view = GeneralViewService.from_env(dependencies.resolver)
+    reimbursement = ReimbursementLookupService(
+        store=configured_reimbursement_store(),
+        realtime=HiraReimbursementHttpClient(timeout_s=7),
+    )
 
     def external_calls(source: SourceName, query: str, calls: list[ExternalCall]) -> SourceResult:
         started_at = datetime.now(UTC)
@@ -804,11 +832,19 @@ def build_source_adapters() -> dict[SourceName, Any]:
                 if subject_resolution is not None
                 else subject
             )
-            criterion = HiraReimbursementHttpClient(timeout_s=7).fetch(
-                brand
-            )
-            if criterion is None:
-                return external_calls("hira", query, [])
+            lookup = reimbursement.lookup(brand)
+            document_lookup = _reimbursement_lookup_metadata(lookup, brand)
+            criterion = lookup.data
+            if not lookup.ok or criterion is None:
+                result = external_calls("hira", query, [])
+                return result.model_copy(
+                    update={
+                        "payload": {
+                            **result.payload,
+                            "document_lookup": document_lookup,
+                        }
+                    }
+                )
             call = ExternalCall(
                 tool="hira_reimbursement_detail",
                 source="hira_reimbursement",
@@ -817,7 +853,15 @@ def build_source_adapters() -> dict[SourceName, Any]:
                 render_data=asdict(criterion),
                 safe_url=criterion.source_url,
             )
-            return external_calls("hira", query, [call])
+            result = external_calls("hira", query, [call])
+            return result.model_copy(
+                update={
+                    "payload": {
+                        **result.payload,
+                        "document_lookup": document_lookup,
+                    }
+                }
+            )
 
         return external_calls("hira", query, [external.hira_disease_name_code(base)])
 

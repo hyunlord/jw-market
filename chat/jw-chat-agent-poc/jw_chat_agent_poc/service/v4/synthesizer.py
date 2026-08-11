@@ -5,7 +5,7 @@ import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
 from jw_chat_agent_poc.service.conversation import ConversationTurn
@@ -357,6 +357,7 @@ def _synthesis_messages(
         for turn in tuple(turns)[-3:]
     ]
     asks_cause = any(marker in plan.resolved_question.casefold() for marker in _CAUSE_MARKERS)
+    comparison_facts = _comparison_facts(mart)
     prompt = {
         "internal_datamart": [_mart_block(result) for result in mart],
         "external_evidence": [_evidence_packet(result) for result in external],
@@ -380,12 +381,19 @@ def _synthesis_messages(
             "출처는 본문 문장 끝에 [출처: 이름]으로 표시",
         ],
     }
+    if comparison_facts:
+        prompt["COMPARISON_FACTS"] = comparison_facts
     if any("entity_bundle" in _mart_block(result) for result in mart):
         prompt["entity_bundle_contract"] = {
             "same_period_and_denominator_only": True,
-            "symmetric_observations": True,
+            "use_precomputed_comparison_facts": bool(comparison_facts),
+            "comparison_instruction": (
+                "COMPARISON_FACTS의 계산된 사실을 서술에 반영한다. "
+                "대칭 후보와 경쟁 브랜드 점유율 변화가 있으면 빠뜨리지 않는다"
+            ),
             "competitor_movement_is_hypothesis_without_movement_evidence": True,
             "adverse_signal_must_be_explicit": True,
+            "explicit_share_direction_sentence": True,
         }
     if any(_is_absence_context_result(result) for result in external):
         prompt["absence_context_contract"] = {
@@ -441,6 +449,179 @@ def _synthesis_messages(
     ]
 
 
+def _comparison_facts(results: Sequence[SourceResult]) -> dict[str, Any]:
+    calls: list[Mapping[str, Any]] = []
+    for result in results:
+        if result.source != "mart" or not isinstance(result.payload, Mapping):
+            continue
+        raw_calls = result.payload.get("calls")
+        if isinstance(raw_calls, list):
+            calls.extend(call for call in raw_calls if isinstance(call, Mapping))
+        else:
+            calls.append(result.payload)
+    bundle = next(
+        (
+            call.get("entity_bundle")
+            for call in calls
+            if isinstance(call.get("entity_bundle"), Mapping)
+        ),
+        None,
+    )
+    if not isinstance(bundle, Mapping):
+        return {}
+    period_start = str(bundle.get("period_start") or "").strip()
+    period_end = str(bundle.get("period_end") or "").strip()
+    members = bundle.get("members")
+    if not period_start or not period_end or not isinstance(members, list):
+        return {}
+
+    deltas: list[dict[str, Any]] = []
+    numeric_deltas: list[tuple[str, Decimal]] = []
+    target_values: tuple[str, Decimal, Decimal] | None = None
+    competitor_share_changes: list[dict[str, str]] = []
+    for member in members:
+        if not isinstance(member, Mapping):
+            continue
+        brand = str(member.get("brand") or "").strip()
+        role = str(member.get("role") or "").strip()
+        render_data = member.get("render_data")
+        if not brand or not isinstance(render_data, Mapping):
+            continue
+        series = render_data.get("brand_value_series_10pt") or render_data.get("series")
+        values = _period_values(series)
+        start = values.get(period_start)
+        end = values.get(period_end)
+        if start is not None and end is not None:
+            delta = end - start
+            deltas.append(
+                {
+                    "brand": brand,
+                    "role": role,
+                    "start": _fixed_display(start, "억원"),
+                    "end": _fixed_display(end, "억원"),
+                    "delta": _fixed_display(delta, "억원", signed=True),
+                }
+            )
+            numeric_deltas.append((brand, delta))
+            if role == "target":
+                target_values = (brand, start, end)
+        share_delta = _decimal_value(member.get("share_delta_pctp"))
+        if role == "competitor" and share_delta is not None:
+            competitor_share_changes.append(
+                {
+                    "brand": brand,
+                    "change": _fixed_display(share_delta, "%p", signed=True),
+                }
+            )
+
+    positives = [(brand, value) for brand, value in numeric_deltas if value > 0]
+    negatives = [(brand, value) for brand, value in numeric_deltas if value < 0]
+    symmetric_pairs: list[dict[str, str]] = []
+    remaining = list(negatives)
+    for increase_brand, increase in positives:
+        if not remaining:
+            break
+        decrease_brand, decrease = min(
+            remaining,
+            key=lambda item: abs(abs(increase) - abs(item[1])),
+        )
+        remaining.remove((decrease_brand, decrease))
+        symmetric_pairs.append(
+            {
+                "increase_brand": increase_brand,
+                "increase_delta": _fixed_display(increase, "억원", signed=True),
+                "decrease_brand": decrease_brand,
+                "decrease_delta": _fixed_display(decrease, "억원", signed=True),
+            }
+        )
+
+    market_values: dict[str, Decimal] = {}
+    for call in calls:
+        render_data = call.get("render_data")
+        if not isinstance(render_data, Mapping):
+            continue
+        market_values = _period_values(render_data.get("market_size_series"))
+        if period_start in market_values and period_end in market_values:
+            break
+    share_direction: dict[str, str] = {}
+    if target_values is not None:
+        brand, brand_start, brand_end = target_values
+        market_start = market_values.get(period_start)
+        market_end = market_values.get(period_end)
+        brand_growth = _growth_pct(brand_start, brand_end)
+        market_growth = (
+            _growth_pct(market_start, market_end)
+            if market_start is not None and market_end is not None
+            else None
+        )
+        if brand_growth is not None and market_growth is not None:
+            direction = (
+                "상승"
+                if brand_growth > market_growth
+                else "하락"
+                if brand_growth < market_growth
+                else "유지"
+            )
+            brand_growth_display = _fixed_display(brand_growth, "%", signed=True)
+            market_growth_display = _fixed_display(market_growth, "%", signed=True)
+            growth_comparison = (
+                f"시장 성장률 {market_growth_display}과 같아"
+                if direction == "유지"
+                else (
+                    f"시장 성장률 {market_growth_display}보다 "
+                    f"{'높아' if direction == '상승' else '낮아'}"
+                )
+            )
+            share_direction = {
+                "brand": brand,
+                "brand_growth": brand_growth_display,
+                "market_growth": market_growth_display,
+                "direction": direction,
+                "statement": (
+                    f"{brand} 성장률 {brand_growth_display}가 {growth_comparison} "
+                    f"점유율 방향은 {direction}입니다."
+                ),
+            }
+
+    return {
+        "period_start": period_start,
+        "period_end": period_end,
+        "brand_deltas": deltas,
+        "symmetric_pairs": symmetric_pairs,
+        "share_direction": share_direction,
+        "competitor_share_changes": competitor_share_changes,
+    }
+
+
+def _period_values(series: Any) -> dict[str, Decimal]:
+    if not isinstance(series, list):
+        return {}
+    values: dict[str, Decimal] = {}
+    for point in series:
+        if not isinstance(point, Mapping):
+            continue
+        period = str(point.get("period") or "").strip()
+        value = _decimal_value(point.get("value_억원"))
+        if period and value is not None:
+            values[period] = value
+    return values
+
+
+def _growth_pct(start: Decimal, end: Decimal) -> Decimal | None:
+    if start == 0:
+        return None
+    return ((end - start) / start * Decimal("100")).quantize(
+        Decimal("0.01"),
+        rounding=ROUND_HALF_UP,
+    )
+
+
+def _fixed_display(value: Decimal, suffix: str, *, signed: bool = False) -> str:
+    quantized = value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    prefix = "+" if signed and quantized > 0 else ""
+    return f"{prefix}{format(quantized, '.2f')}{suffix}"
+
+
 def _is_absence_context_result(result: SourceResult) -> bool:
     if result.source != "web" or not isinstance(result.payload, Mapping):
         return False
@@ -466,14 +647,27 @@ def _append_absence_context_surface(
     )
     if context_result is None or not isinstance(context_result.payload, Mapping):
         return answer
-    if "급여 협상" in answer and "보도" in answer:
-        return answer
     context = context_result.payload.get("absence_context")
     if not isinstance(context, Mapping):
         return answer
-    items = context_result.payload.get("items")
-    if not isinstance(items, list):
+    subject = str(context.get("subject") or "").strip()
+    source = str(context.get("source") or "")
+    document = str(context.get("document") or "")
+    if not subject or not source or not document:
         return answer
+    official_label = "HIRA" if source == "hira" else "식품의약품안전처"
+    if document == "reimbursement":
+        official_sentence = (
+            f"{subject}{_topic_particle(subject)} 현재 급여기준이 없습니다(비급여). "
+            f"[출처: {official_label}]"
+        )
+    else:
+        official_sentence = (
+            f"{subject}{_topic_particle(subject)} 현재 허가 문서를 확인할 수 없습니다. "
+            f"[출처: {official_label}]"
+        )
+    answer = _insert_core_first_paragraph(answer, official_sentence)
+    items = _absence_web_items(context_result.payload)
     event = next(
         (
             item
@@ -483,25 +677,53 @@ def _append_absence_context_surface(
         ),
         None,
     )
-    if event is None:
+    if event is None or ("급여 협상" in answer and "보도되고 있습니다" in answer):
         return answer
     title = " ".join(str(event.get("title") or "").split())
     if not title:
         return answer
-    source = str(context.get("source") or "")
-    document = str(context.get("document") or "")
-    official_label = "HIRA" if source == "hira" else "식품의약품안전처"
-    document_label = "급여기준" if document == "reimbursement" else "허가 문서"
-    section = (
-        f"## {document_label} 경과\n"
-        f"{official_label} 공식 {document_label} 조회에서 해당 문서를 확인하지 못했습니다 "
-        f"[출처: {official_label}]. 웹 자료에서는 \"{title}\"로 보도되고 있습니다 "
-        "[출처: 웹 자료]."
-    )
-    marker = "\n## 미확인 요소"
-    if marker in answer:
-        return answer.replace(marker, f"\n\n{section}{marker}", 1)
-    return f"{answer.rstrip()}\n\n{section}"
+    event_sentence = f"웹 자료에서는 \"{title}\"로 보도되고 있습니다 [출처: 웹 자료]."
+    first_break = answer.find("\n\n")
+    if first_break < 0:
+        return f"{answer.rstrip()}\n\n{event_sentence}"
+    return f"{answer[:first_break]}\n\n{event_sentence}\n\n{answer[first_break + 2:]}"
+
+
+def _absence_web_items(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    direct = payload.get("items")
+    if isinstance(direct, list):
+        return [item for item in direct if isinstance(item, Mapping)]
+    calls = payload.get("calls")
+    if not isinstance(calls, list):
+        return []
+    return [
+        item
+        for call in calls
+        if isinstance(call, Mapping)
+        for render_data in (call.get("render_data"),)
+        if isinstance(render_data, Mapping)
+        for items in (render_data.get("items"),)
+        if isinstance(items, list)
+        for item in items
+        if isinstance(item, Mapping)
+    ]
+
+
+def _insert_core_first_paragraph(answer: str, sentence: str) -> str:
+    cleaned = answer.replace(sentence, "").strip()
+    heading = "## 핵심 답"
+    if cleaned.startswith(heading):
+        remainder = cleaned[len(heading):].lstrip("\n")
+        return f"{heading}\n{sentence}" + (f"\n\n{remainder}" if remainder else "")
+    return f"{heading}\n{sentence}" + (f"\n\n{cleaned}" if cleaned else "")
+
+
+def _topic_particle(subject: str) -> str:
+    last = subject[-1]
+    code = ord(last)
+    if 0xAC00 <= code <= 0xD7A3:
+        return "은" if (code - 0xAC00) % 28 else "는"
+    return "는"
 
 
 def _evidence_packet(result: SourceResult) -> dict[str, Any]:
@@ -905,6 +1127,16 @@ def _append_required_adverse_signal(
 ) -> str:
     if re.search(r"점유율[^.\n]{0,30}하락", answer):
         return answer
+    share_direction = _comparison_facts(results).get("share_direction")
+    if (
+        isinstance(share_direction, Mapping)
+        and share_direction.get("direction") == "하락"
+        and share_direction.get("statement")
+    ):
+        return (
+            f"{answer.rstrip()}\n\n{share_direction['statement']} "
+            "[출처: 내부 데이터마트]"
+        )
     for result in results:
         if result.source != "mart" or not isinstance(result.payload, Mapping):
             continue

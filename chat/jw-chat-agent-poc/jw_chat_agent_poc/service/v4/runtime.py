@@ -1018,15 +1018,32 @@ def _absence_context_request(
     if requested is None or requested[0] not in plan.answer_sources:
         return None
     official = tuple(result for result in results if result.source == requested[0])
-    if not official or any(result.status == "ok" for result in official):
+    if not official:
         return None
-    if not all(result.status == "empty" for result in official):
+    document_lookups = []
+    for result in official:
+        if not isinstance(result.payload, Mapping):
+            continue
+        lookup = result.payload.get("document_lookup")
+        if (
+            isinstance(lookup, Mapping)
+            and lookup.get("document") == requested[1]
+        ):
+            document_lookups.append(lookup)
+    if not document_lookups or any(
+        lookup.get("outcome") != "confirmed_absent"
+        for lookup in document_lookups
+    ):
         return None
     if _has_official_document_reference(results, requested[0]):
+        return None
+    subject = str(document_lookups[0].get("subject") or "").strip()
+    if not subject:
         return None
     return {
         "source": requested[0],
         "document": requested[1],
+        "subject": subject,
         "query": plan.resolved_question,
     }
 
@@ -1067,6 +1084,7 @@ def _tag_absence_context(
                 "absence_context": {
                     "source": request["source"],
                     "document": request["document"],
+                    "subject": request["subject"],
                     "official_absence": True,
                     "reported_context_only": True,
                     "separate_from_official_fact": True,

@@ -176,6 +176,14 @@ def test_r10_absence_context_separates_official_absence_from_web_reporting() -> 
         source="hira",
         query="마운자로 급여기준",
         status="empty",
+        payload={
+            "document_lookup": {
+                "document": "reimbursement",
+                "outcome": "confirmed_absent",
+                "subject": "마운자로",
+                "error_code": "REALTIME_NO_EVIDENCE",
+            }
+        },
         notice="no_data",
     )
     plan = _plan("마운자로 급여기준").model_copy(update={"answer_sources": ("hira",)})
@@ -183,6 +191,7 @@ def test_r10_absence_context_separates_official_absence_from_web_reporting() -> 
     assert request == {
         "source": "hira",
         "document": "reimbursement",
+        "subject": "마운자로",
         "query": "마운자로 급여기준",
     }
 
@@ -255,6 +264,7 @@ def test_r10_absence_context_surface_keeps_official_absence_and_reported_event()
     request = {
         "source": "hira",
         "document": "reimbursement",
+        "subject": "마운자로",
         "query": "마운자로 급여기준",
     }
     result = _tag_absence_context(
@@ -276,7 +286,7 @@ def test_r10_absence_context_surface_keeps_official_absence_and_reported_event()
 
     answer = _append_absence_context_surface("## 핵심 답\n허가사항은 확인됐습니다.", (result,))
 
-    assert "HIRA 공식 급여기준 조회" in answer
+    assert "마운자로는 현재 급여기준이 없습니다(비급여). [출처: HIRA]" in answer
     assert "협상 결렬" in answer
     assert "보도되고 있습니다" in answer
 
@@ -717,7 +727,21 @@ def test_r10_runtime_runs_one_web_wave_after_confirmed_official_absence() -> Non
                     ),
                 )
             else:
-                results = (SourceResult(source="hira", query="마운자로 급여기준", status="empty"),)
+                results = (
+                    SourceResult(
+                        source="hira",
+                        query="마운자로 급여기준",
+                        status="empty",
+                        payload={
+                            "document_lookup": {
+                                "document": "reimbursement",
+                                "outcome": "confirmed_absent",
+                                "subject": "마운자로",
+                                "error_code": "REALTIME_NO_EVIDENCE",
+                            }
+                        },
+                    ),
+                )
             return SimpleNamespace(results=results, trace={"elapsed_ms": 1.0, "tools": []})
 
     class Synthesizer:
@@ -753,7 +777,19 @@ def test_r10_runtime_reuses_first_wave_web_when_absence_wave_is_empty() -> None:
                 results = (SourceResult(source="web", query="부재 경과", status="empty"),)
             else:
                 results = (
-                    SourceResult(source="hira", query="마운자로 급여기준", status="empty"),
+                    SourceResult(
+                        source="hira",
+                        query="마운자로 급여기준",
+                        status="empty",
+                        payload={
+                            "document_lookup": {
+                                "document": "reimbursement",
+                                "outcome": "confirmed_absent",
+                                "subject": "마운자로",
+                                "error_code": "REALTIME_NO_EVIDENCE",
+                            }
+                        },
+                    ),
                     SourceResult(
                         source="web",
                         query="마운자로 급여기준 최신",
