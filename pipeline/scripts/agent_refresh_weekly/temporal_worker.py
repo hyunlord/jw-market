@@ -49,7 +49,9 @@ class WeeklyAgentRefreshWorkflow:
                 run_stage_activity,
                 {"stage": stage, "workflow_id": workflow_id},
                 start_to_close_timeout=(
-                    timedelta(hours=7) if stage == "agent2" else timedelta(hours=3)
+                    timedelta(hours=7)
+                    if stage in {"agent2-short", "agent2-long"}
+                    else timedelta(hours=3)
                 ),
                 heartbeat_timeout=timedelta(minutes=2),
                 retry_policy=retry,
@@ -57,7 +59,12 @@ class WeeklyAgentRefreshWorkflow:
             stages.append(result)
             if result["status"] == "skipped":
                 return {"status": "skipped", "preflight": preflight, "stages": stages}
-        return {"status": "complete", "preflight": preflight, "stages": stages}
+        finalizer = next(
+            (item for item in stages if item["stage"] == "agent2-finalize"),
+            None,
+        )
+        verdict = ((finalizer or {}).get("output") or {}).get("verdict", "complete")
+        return {"status": verdict, "preflight": preflight, "stages": stages}
 
 
 async def _main() -> None:

@@ -28,7 +28,7 @@ if str(PHASE_ZETA_ROOT) not in sys.path:
     sys.path.insert(0, str(PHASE_ZETA_ROOT))
 
 from bundle_builder import BundleConfig, build_brand_bundle, build_general_brand_bundle
-from bundle_builder.agent2_density_router import ProcessingMode
+from bundle_builder.agent2_density_router import ProcessingMode, RouteDecision
 from bundle_builder.agent2_zero_template import render_zero_template
 from bundle_builder.hash_util import compute_bundle_hash
 from bundle_builder.zero_kpi_provider import (
@@ -351,6 +351,7 @@ class Agent2RegenOrchestrator:
         zero_kpi_provider: ZeroKpiSnapshotProvider | None = None,
         dry_run: bool = True,
         fail_threshold: int = 5,
+        continue_on_quality_failure: bool = False,
     ):
         self.workflow_revision_id = workflow_revision_id
         self.formatter_version = formatter_version
@@ -359,6 +360,7 @@ class Agent2RegenOrchestrator:
         self.zero_kpi_provider = zero_kpi_provider or EmptyZeroKpiSnapshotProvider()
         self.dry_run = dry_run
         self.fail_threshold = fail_threshold
+        self.continue_on_quality_failure = continue_on_quality_failure
 
     def run(self, brands: list[str], analysis_variant: str = "legacy") -> dict[str, Any]:
         variant = require_analysis_variant(analysis_variant)
@@ -418,14 +420,21 @@ class Agent2RegenOrchestrator:
                 case unreachable:
                     assert_never(unreachable)
             manifest["brands"][item.brand_key] = record
+            record["tier"] = item.tier
+            record["cohort"] = item.cohort
+            record["latest_sales"] = item.latest_sales
             if record["status"] in ("validated", "template_zero", "skipped"):
                 swap_candidates.append(item.brand_key)
             elif record["status"] == "failed":
                 failures += 1
-            if failures > self.fail_threshold:
+            if failures > self.fail_threshold and not self.continue_on_quality_failure:
                 manifest["abort_reason"] = f"failures exceeded threshold {self.fail_threshold}"
                 break
 
+        manifest["failure_threshold"] = self.fail_threshold
+        manifest["quality_failures_continue"] = self.continue_on_quality_failure
+        manifest["failure_count"] = failures
+        manifest["cohort_metrics"] = _cohort_metrics(worklist, manifest["brands"])
         manifest["swap_plan"] = self._swap_plan(swap_candidates, failures)
         manifest["finished_at"] = datetime.now(timezone.utc).isoformat()
         return manifest
@@ -763,6 +772,9 @@ def _route_metadata(item: RoutedAgent2Brand) -> dict[str, Any]:
         "mode": item.route.mode.value,
         "evidence_count": item.route.evidence_count,
         "included_processors": list(item.route.included_processors),
+        "tier": item.tier,
+        "cohort": item.cohort,
+        "latest_sales": item.latest_sales,
     }
 
 
@@ -775,6 +787,59 @@ def _route_plan_manifest(worklist: list[RoutedAgent2Brand], diagnostics: dict[st
         "brand_count": len(worklist),
         "routes": [_route_metadata(item) for item in worklist],
     }
+
+
+def _worklist_from_snapshot(path: Path) -> list[RoutedAgent2Brand]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("status") != "route_plan_only" or not isinstance(payload.get("routes"), list):
+        raise ValueError("worklist snapshot must be a route_plan_only manifest")
+    result = []
+    for raw in payload["routes"]:
+        route = RouteDecision(
+            brand=str(raw["brand_key"]),
+            evidence_count=int(raw["evidence_count"]),
+            bucket=str(raw["bucket"]),
+            mode=ProcessingMode(str(raw["mode"])),
+            included_processors=tuple(str(value) for value in raw.get("included_processors") or ()),
+        )
+        result.append(
+            RoutedAgent2Brand(
+                brand_key=str(raw["brand_key"]),
+                canonical_brand_name=str(raw["canonical_brand_name"]),
+                route=route,
+                tier=int(raw["tier"]),
+                cohort=str(raw["cohort"]),
+                latest_sales=float(raw.get("latest_sales") or 0.0),
+            )
+        )
+    return result
+
+
+def _cohort_metrics(
+    worklist: list[RoutedAgent2Brand],
+    records: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    metrics: dict[str, Any] = {}
+    for cohort in ("jw", "strategic", "nonstrategic"):
+        eligible = [item for item in worklist if item.cohort == cohort]
+        reached = [records[item.brand_key] for item in eligible if item.brand_key in records]
+        template_zero = sum(record.get("status") == "template_zero" for record in reached)
+        validated = sum(record.get("status") in {"validated", "skipped"} for record in reached)
+
+        def ratio(numerator: int, denominator: int) -> dict[str, Any]:
+            return {
+                "numerator": numerator,
+                "denominator": denominator,
+                "ratio": (numerator / denominator) if denominator else None,
+            }
+
+        metrics[cohort] = {
+            "cohort_coverage": ratio(len(reached), len(eligible)),
+            "template_zero_over_reached": ratio(template_zero, len(reached)),
+            "validated_over_reached": ratio(validated, len(reached)),
+            "validated_over_eligible": ratio(validated, len(eligible)),
+        }
+    return metrics
 
 
 def _write_json(path: Path, payload: Any) -> None:
@@ -919,6 +984,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "that exactly match a mart brand_key. The default remains fail-closed."
         ),
     )
+    parser.add_argument(
+        "--weekly-global",
+        action="store_true",
+        help="Enable the approved weekly Tier and exclusion contract.",
+    )
+    parser.add_argument("--worklist-snapshot", help="Consume an immutable route-plan manifest.")
+    parser.add_argument(
+        "--continue-on-quality-failure",
+        action="store_true",
+        help="Record brand failures without stopping later weekly cohorts.",
+    )
     parser.add_argument("--runner-config", default=str(PHASE_ZETA_ROOT / "configs" / "genos_runner_v1.yaml"))
     parser.add_argument("--bundle-config", default=str(PHASE_ZETA_ROOT / "configs" / "phase_zeta_v1_1.yaml"))
     parser.add_argument("--catalog", default="docs/crawl/_catalog.json")
@@ -942,6 +1018,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if args.seed_idempotency_from_run_db and args.snapshot_at is None:
         parser.error("--seed-idempotency-from-run-db requires --snapshot-at")
+    if args.weekly_global and not args.accept_canonical_brand_keys:
+        parser.error("--weekly-global requires --accept-canonical-brand-keys")
+    if args.worklist_snapshot and (args.brands or args.route_plan_only):
+        parser.error("--worklist-snapshot cannot be combined with --brands or --route-plan-only")
     return args
 
 
@@ -967,7 +1047,11 @@ def main(argv: list[str] | None = None) -> int:
             _write_json(work_dir / "run_manifest.json", {"status": "aborted", "diagnostics": diagnostics})
             print(_json_dumps({"status": "aborted", "reason": "upstream_freshness_failed", "diagnostics": diagnostics}))
             return 2
-        if args.brands:
+        if args.worklist_snapshot:
+            routed_worklist = _worklist_from_snapshot(Path(args.worklist_snapshot))
+            brands = [item.canonical_brand_name for item in routed_worklist]
+            diagnostics["worklist_snapshot"] = str(Path(args.worklist_snapshot))
+        elif args.brands:
             if args.bundle_kind == "general":
                 raise ValueError("--bundle-kind general requires --brand-source general-density for brand_key identity")
             brands = args.brands
@@ -982,6 +1066,7 @@ def main(argv: list[str] | None = None) -> int:
                     density_worklist = load_density_worklist(
                         brand_conn,
                         accept_canonical_brand_keys=args.accept_canonical_brand_keys,
+                        weekly_global=args.weekly_global,
                     )
                     routed_worklist = list(density_worklist.routed)
                     if args.brand_keys_file:
@@ -999,6 +1084,8 @@ def main(argv: list[str] | None = None) -> int:
                         "unmatched_unknown": list(density_worklist.evidence.unmatched_unknown),
                         "skipped_unknown_count": len(density_worklist.evidence.unmatched_unknown),
                         "max_unknown_ratio": MAX_UNKNOWN_EVENT_BRAND_RATIO,
+                        "aliases": [list(item) for item in density_worklist.evidence.aliases],
+                        "excluded": [item.to_dict() for item in density_worklist.evidence.excluded],
                     }
                 else:
                     brands = _load_brand_list(brand_conn, bundle_config.pilot_brands)
@@ -1037,6 +1124,7 @@ def main(argv: list[str] | None = None) -> int:
             zero_kpi_provider=zero_kpi_provider,
             dry_run=dry_run,
             fail_threshold=args.fail_threshold,
+            continue_on_quality_failure=args.continue_on_quality_failure,
         )
         manifest = (
             orchestrator.run_routed(routed_worklist, analysis_variant=args.analysis_variant)

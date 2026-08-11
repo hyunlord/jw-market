@@ -8,7 +8,13 @@ import re
 from typing import Any, Final, Iterable
 
 
-STAGE_ORDER: Final = ("agent2", "agent3")
+STAGE_ORDER: Final = (
+    "agent2-plan",
+    "agent2-short",
+    "agent2-long",
+    "agent2-finalize",
+    "agent3-reuse",
+)
 SCHEDULE_ID: Final = "jw-agent2-agent3-weekly-v1"
 WORKFLOW_TYPE: Final = "jw_agent2_agent3_weekly_v1"
 TASK_QUEUE: Final = "jw-agent-refresh-weekly-v1"
@@ -131,6 +137,46 @@ def unknown_brand_skip_reason(logs: str) -> str | None:
     return f"skipped_unknown={len(ordered)} names={','.join(ordered)}"
 
 
+def last_json_object(logs: str) -> dict[str, Any] | None:
+    for line in reversed(logs.splitlines()):
+        candidate = line.strip()
+        if not candidate.startswith("{"):
+            continue
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return None
+
+
+def weekly_verdict(records: list[dict[str, Any]]) -> dict[str, Any]:
+    failures = [
+        {
+            "brand": str(record.get("brand") or record.get("brand_key") or ""),
+            "cohort": str(record.get("cohort") or "nonstrategic"),
+            "failure_type": str(record.get("failure_type") or record.get("reason") or "unknown"),
+            "reason": str(record.get("reason") or "unknown"),
+        }
+        for record in records
+        if record.get("status") == "failed"
+    ]
+    failures.sort(key=lambda item: (item["cohort"], item["brand"], item["failure_type"]))
+    if any(item["cohort"] in {"jw", "strategic"} for item in failures):
+        verdict = "critical_failed"
+    elif failures:
+        verdict = "completed_with_failures"
+    else:
+        verdict = "complete"
+    return {
+        "verdict": verdict,
+        "continue_execution": True,
+        "failure_count": len(failures),
+        "failures": failures,
+    }
+
+
 def _secret_env(name: str, key: str) -> dict[str, Any]:
     return {
         "name": name,
@@ -168,36 +214,51 @@ def _common_env(run_token: str) -> list[dict[str, Any]]:
 
 def _stage_script(stage: str) -> str:
     root = "/market-output/agent-refresh-weekly/${WEEKLY_RUN_ID}"
-    if stage == "agent2":
+    if stage == "agent2-plan":
         return f"""set -euo pipefail
 cd /app
-mkdir -p \"{root}/short\" \"{root}/long\"
+mkdir -p \"{root}/plan\"
 python -m pipeline.scripts.ai_analysis.agent2_regen_orchestrator \\
   --brand-source general-density \\
   --bundle-kind general \\
   --accept-canonical-brand-keys \\
-  --dry-run \\
-  --analysis-variant short \\
-  --work-dir \"{root}/short\"
-python -m pipeline.scripts.ai_analysis.agent2_regen_orchestrator \\
-  --brand-source general-density \\
-  --bundle-kind general \\
-  --accept-canonical-brand-keys \\
-  --dry-run \\
-  --analysis-variant long \\
-  --work-dir \"{root}/long\"
+  --weekly-global \\
+  --route-plan-only \\
+  --work-dir \"{root}/plan\"
+cp \"{root}/plan/run_manifest.json\" \"{root}/worklist.json\"
+sha256sum \"{root}/worklist.json\" > \"{root}/worklist.sha256\"
+cat \"{root}/worklist.sha256\"
 """
-    if stage == "agent3":
+    if stage in {"agent2-short", "agent2-long"}:
+        variant = stage.removeprefix("agent2-")
         return f"""set -euo pipefail
 cd /app
-mkdir -p \"{root}\"
-python -m pipeline.scripts.agent3.run_source \\
-  --brand-source general_all \\
-  --mode full \\
-  --source all \\
-  --expected-workflow-rev 5692 \\
-  --output \"{root}/agent3.json\"
-cat \"{root}/agent3.json\"
+cd \"{root}\" && sha256sum -c worklist.sha256
+mkdir -p \"{root}/{variant}\"
+python -m pipeline.scripts.ai_analysis.agent2_regen_orchestrator \\
+  --bundle-kind general \\
+  --dry-run \\
+  --analysis-variant {variant} \\
+  --worklist-snapshot \"{root}/worklist.json\" \\
+  --continue-on-quality-failure \\
+  --work-dir \"{root}/{variant}\"
+"""
+    if stage == "agent2-finalize":
+        return f"""set -euo pipefail
+cd /app
+python -m pipeline.scripts.agent_refresh_weekly.finalize \\
+  --root \"{root}\" \\
+  --failure-threshold 5
+cat \"{root}/weekly_verdict.json\"
+"""
+    if stage == "agent3-reuse":
+        return f"""set -euo pipefail
+cd /app
+# Read-only attestation: reused_existing_artifact from agent3_brand_strength.
+python -m pipeline.scripts.agent_refresh_weekly.finalize \\
+  --root \"{root}\" \\
+  --reuse-agent3
+cat \"{root}/agent3_reuse.json\"
 """
     raise ValueError(f"unsupported stage: {stage}")
 
@@ -214,13 +275,13 @@ def render_stage_job(
         raise ValueError("agent Job image must use an immutable digest")
     name = make_job_name(workflow_id, stage)
     run_token = _run_token(workflow_id)
-    deadline = 23_400 if stage == "agent2" else 10_800
+    deadline = 23_400 if stage in {"agent2-short", "agent2-long"} else 10_800
     resources = (
         {
             "requests": {"cpu": "2", "memory": "12Gi"},
             "limits": {"cpu": "2", "memory": "12Gi"},
         }
-        if stage == "agent2"
+        if stage in {"agent2-plan", "agent2-short", "agent2-long", "agent2-finalize"}
         else {
             "requests": {"cpu": "500m", "memory": "1Gi"},
             "limits": {"cpu": "2", "memory": "4Gi"},

@@ -3,12 +3,110 @@ from __future__ import annotations
 import pytest
 
 from agent2_density_worklist import (
+    JW_BRANDS,
     KNOWN_UNMATCHED_EVENT_BRANDS,
     UnknownEventBrandError,
     build_brand_identities,
     build_evidence_counts_from_rows,
     route_density_worklist,
 )
+
+
+def test_weekly_worklist_orders_jw_then_strategic_then_other_deterministically() -> None:
+    jw_rows = [
+        {
+            "brand_key": f"jw-{index:02d}",
+            "brand_name": "위너프에이플러스" if brand == "위너프A+" else brand,
+            "raw_value_history": {"2026-06": 1000 - index},
+        }
+        for index, brand in enumerate(sorted(JW_BRANDS))
+    ]
+    brand_rows = jw_rows + [
+        {"brand_key": "strategy-low", "brand_name": "전략저매출", "raw_value_history": {"2026-06": 10}},
+        {"brand_key": "strategy-high", "brand_name": "전략고매출", "raw_value_history": {"2026-06": 20}},
+        {"brand_key": "other", "brand_name": "기타", "raw_value_history": {"2026-06": 9999}},
+    ]
+    strategic_rows = [
+        {"canonical_name": "전략저매출", "is_jw": 0, "is_target": 1},
+        {"canonical_name": "전략고매출", "is_jw": 0, "is_target": 1},
+    ]
+
+    first = route_density_worklist(
+        brand_rows,
+        [],
+        weekly_global=True,
+        strategic_rows=strategic_rows,
+    )
+    second = route_density_worklist(
+        list(reversed(brand_rows)),
+        [],
+        weekly_global=True,
+        strategic_rows=list(reversed(strategic_rows)),
+    )
+
+    first_keys = [item.brand_key for item in first.routed]
+    assert first_keys == [item.brand_key for item in second.routed]
+    assert len(first.routed[:25]) == 25
+    assert all(item.tier == 0 for item in first.routed[:25])
+    assert first_keys[25:27] == ["strategy-high", "strategy-low"]
+    assert first_keys[-1] == "other"
+    assert [item.cohort for item in first.routed[:27]] == ["jw"] * 25 + ["strategic"] * 2
+
+
+def test_weekly_opt_in_records_alias_and_all_non_jw_exclusions() -> None:
+    brand_rows = [
+        {
+            "brand_key": "종근당자누비아",
+            "brand_name": "종근당 자누비아",
+            "raw_value_history": {"2026-Q1": 10},
+        }
+    ]
+    score_rows = [
+        {
+            "brand_canonical": "종근당자누비아",
+            "source_processor": "tier2_llm_v1",
+            "derivation": "llm_direct",
+            "tag": "신약/R&D",
+            "score": 99,
+        },
+        *[
+            {
+                "brand_canonical": "노보믹스",
+                "source_processor": "tier2_llm_v1",
+                "derivation": "llm_direct",
+                "tag": "신약/R&D",
+                "score": 99,
+            }
+            for _ in range(3)
+        ],
+    ]
+
+    worklist = route_density_worklist(
+        brand_rows,
+        score_rows,
+        weekly_global=True,
+        strategic_rows=[
+            {
+                "canonical_name": "종근당 자누비아",
+                "is_jw": 0,
+                "is_target": 1,
+                "ml_market_id": "ml_003",
+                "cd_market_id": "cd_003",
+            }
+        ],
+    )
+
+    assert worklist.evidence.unmatched_unknown == ()
+    assert worklist.evidence.aliases == (
+        ("종근당자누비아", "종근당자누비아", "ml_003", "cd_003"),
+    )
+    assert [item.to_dict() for item in worklist.evidence.excluded] == [
+        {
+            "brand": "노보믹스",
+            "reason": "excluded_non_jw_market",
+            "source_event_count": 3,
+        }
+    ]
 
 
 def test_brand_identity_uses_agent3_canonical_name_rule() -> None:

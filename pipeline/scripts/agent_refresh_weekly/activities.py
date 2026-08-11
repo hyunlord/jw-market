@@ -17,6 +17,7 @@ from pipeline.scripts.agent_refresh_weekly.contract import (
     make_job_name,
     make_preflight_result,
     make_stage_skip_result,
+    last_json_object,
     render_stage_job,
     unknown_brand_skip_reason,
 )
@@ -195,11 +196,14 @@ async def _run_stage(stage: str, workflow_id: str) -> dict[str, Any]:
                     "started_at": (job.get("status") or {}).get("startTime"),
                     "completed_at": (job.get("status") or {}).get("completionTime"),
                 }
-                if stage == "agent2":
+                if stage in {"agent2-plan", "agent2-short", "agent2-long", "agent2-finalize", "agent3-reuse"}:
                     logs = await asyncio.to_thread(_job_logs, name)
                     reason = unknown_brand_skip_reason(logs)
                     if reason is not None:
                         result["reason"] = reason
+                    payload = last_json_object(logs)
+                    if payload is not None:
+                        result["output"] = payload
                 return result
             if status == "Failed":
                 logs = await asyncio.to_thread(_job_logs, name)

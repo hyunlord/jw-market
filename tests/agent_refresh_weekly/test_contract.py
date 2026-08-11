@@ -18,6 +18,7 @@ from pipeline.scripts.agent_refresh_weekly.contract import (
     make_stage_skip_result,
     render_stage_job,
     unknown_brand_skip_reason,
+    weekly_verdict,
 )
 
 
@@ -57,23 +58,29 @@ def _import_activities(monkeypatch: pytest.MonkeyPatch):
     return activities
 
 
-def test_stage_order_runs_agent2_then_agent3() -> None:
-    assert STAGE_ORDER == ("agent2", "agent3")
+def test_stage_order_uses_one_plan_and_independent_variant_jobs() -> None:
+    assert STAGE_ORDER == (
+        "agent2-plan",
+        "agent2-short",
+        "agent2-long",
+        "agent2-finalize",
+        "agent3-reuse",
+    )
 
 
 def test_job_name_is_deterministic_and_dns_bounded() -> None:
-    first = make_job_name("schedule/weekly run with a very long id" * 4, "agent2")
-    second = make_job_name("schedule/weekly run with a very long id" * 4, "agent2")
+    first = make_job_name("schedule/weekly run with a very long id" * 4, "agent2-short")
+    second = make_job_name("schedule/weekly run with a very long id" * 4, "agent2-short")
 
     assert first == second
-    assert first.startswith("jw-agent-refresh-weekly-agent2-")
+    assert first.startswith("jw-agent-refresh-weekly-agent2-short-")
     assert len(first) <= 63
-    assert first != make_job_name("schedule/weekly run with a very long id" * 4, "agent3")
+    assert first != make_job_name("schedule/weekly run with a very long id" * 4, "agent3-reuse")
 
 
-def test_agent2_job_is_global_staging_only_and_visible_to_ingest_cap() -> None:
+def test_agent2_jobs_share_one_immutable_worklist_snapshot() -> None:
     body = render_stage_job(
-        stage="agent2",
+        stage="agent2-short",
         workflow_id="weekly-test",
         image=IMAGE,
         namespace="llmops",
@@ -85,11 +92,14 @@ def test_agent2_job_is_global_staging_only_and_visible_to_ingest_cap() -> None:
     assert body["metadata"]["labels"]["app"] == "jw-agent-refresh"
     assert body["spec"]["backoffLimit"] == 0
     assert body["spec"]["template"]["spec"]["automountServiceAccountToken"] is False
-    assert script.count("pipeline.scripts.ai_analysis.agent2_regen_orchestrator") == 2
-    assert script.count("--dry-run") == 2
+    assert script.count("pipeline.scripts.ai_analysis.agent2_regen_orchestrator") == 1
+    assert script.count("--dry-run") == 1
     assert "--analysis-variant short" in script
-    assert "--analysis-variant long" in script
-    assert script.count("--accept-canonical-brand-keys") == 2
+    assert "--analysis-variant long" not in script
+    assert script.count("--worklist-snapshot") == 1
+    assert "worklist.sha256" in script
+    assert script.count("--continue-on-quality-failure") == 1
+    assert script.count("--accept-canonical-brand-keys") == 0
     assert "--brands" not in script
     assert "affected_scope" not in script
     assert "/market-output/agent-refresh-weekly/${WEEKLY_RUN_ID}" in script
@@ -125,9 +135,9 @@ def test_ingest_agent2_commands_keep_fail_closed_default() -> None:
     )
 
 
-def test_agent3_job_is_global_and_keeps_revision_pin() -> None:
+def test_agent3_job_reuses_existing_artifact_without_recomputation() -> None:
     body = render_stage_job(
-        stage="agent3",
+        stage="agent3-reuse",
         workflow_id="weekly-test",
         image=IMAGE,
         namespace="llmops",
@@ -136,17 +146,41 @@ def test_agent3_job_is_global_and_keeps_revision_pin() -> None:
     container = body["spec"]["template"]["spec"]["containers"][0]
     script = container["args"][0]
 
-    assert "pipeline.scripts.agent3.run_source" in script
-    assert "--source all" in script
-    assert "--expected-workflow-rev 5692" in script
-    assert "--brands" not in script
-    assert "affected_scope" not in script
+    assert "pipeline.scripts.agent3.run_source" not in script
+    assert "agent3_brand_strength" in script
+    assert "reused_existing_artifact" in script
+
+
+def test_critical_verdict_does_not_mean_stop() -> None:
+    result = weekly_verdict(
+        [
+            {"brand": "리바로", "cohort": "jw", "status": "failed", "reason": "forced"},
+            {"brand": "기타", "cohort": "nonstrategic", "status": "validated"},
+        ]
+    )
+
+    assert result["verdict"] == "critical_failed"
+    assert result["continue_execution"] is True
+    assert result["failure_count"] == 1
+
+
+def test_nonstrategic_failures_are_visible_and_continue() -> None:
+    result = weekly_verdict(
+        [
+            {"brand": "기타1", "cohort": "nonstrategic", "status": "failed", "reason": "forced"},
+            {"brand": "기타2", "cohort": "nonstrategic", "status": "failed", "reason": "forced"},
+        ]
+    )
+
+    assert result["verdict"] == "completed_with_failures"
+    assert result["continue_execution"] is True
+    assert [item["brand"] for item in result["failures"]] == ["기타1", "기타2"]
 
 
 def test_job_image_must_be_an_immutable_digest() -> None:
     with pytest.raises(ValueError, match="immutable digest"):
         render_stage_job(
-            stage="agent2",
+            stage="agent2-short",
             workflow_id="weekly-test",
             image="example.invalid/agent:latest",
             namespace="llmops",
@@ -173,7 +207,7 @@ def test_active_conflict_detection_covers_ingest_and_all_agent_paths() -> None:
 
 
 def test_active_conflict_detection_excludes_the_owned_stage_job() -> None:
-    owned = make_job_name("weekly-test", "agent2")
+    owned = make_job_name("weekly-test", "agent2-short")
     assert find_active_conflicts([_job(owned)], owned_job=owned) == ()
 
 
@@ -256,13 +290,13 @@ def test_preflight_conflict_is_a_skip() -> None:
 
 def test_stage_conflict_result_distinguishes_cleanup() -> None:
     assert make_stage_skip_result(
-        stage="agent2",
-        job="jw-agent-refresh-weekly-agent2-token",
+        stage="agent2-short",
+        job="jw-agent-refresh-weekly-agent2-short-token",
         conflicts=("jw-ingest-ubist-active",),
         owned_job_deleted=False,
     ) == {
-        "stage": "agent2",
-        "job": "jw-agent-refresh-weekly-agent2-token",
+        "stage": "agent2-short",
+        "job": "jw-agent-refresh-weekly-agent2-short-token",
         "status": "skipped",
         "reason": "active_job_conflict",
         "active_conflicts": ["jw-ingest-ubist-active"],
@@ -284,7 +318,7 @@ def test_stage_start_conflict_skips_without_creating_job(monkeypatch: pytest.Mon
             raise AssertionError("a conflicting stage must not create a Job")
 
     monkeypatch.setattr(activities, "KubernetesApi", FakeApi)
-    result = asyncio.run(activities._run_stage("agent2", "weekly-test"))
+    result = asyncio.run(activities._run_stage("agent2-short", "weekly-test"))
 
     assert result["status"] == "skipped"
     assert result["owned_job_deleted"] is False
@@ -296,7 +330,7 @@ def test_running_stage_conflict_deletes_owned_job_then_skips(
 ) -> None:
     activities = _import_activities(monkeypatch)
 
-    owned_name = make_job_name("weekly-test", "agent2")
+    owned_name = make_job_name("weekly-test", "agent2-short")
     owned = _job(owned_name)
     owned["metadata"].update({"uid": "owned-uid", "resourceVersion": "17"})
 
@@ -328,7 +362,7 @@ def test_running_stage_conflict_deletes_owned_job_then_skips(
     monkeypatch.setattr(activities, "_AGENT_JOB_IMAGE", IMAGE)
     monkeypatch.setattr(activities.activity, "heartbeat", lambda details: None)
 
-    result = asyncio.run(activities._run_stage("agent2", "weekly-test"))
+    result = asyncio.run(activities._run_stage("agent2-short", "weekly-test"))
 
     assert result["status"] == "skipped"
     assert result["owned_job_deleted"] is True

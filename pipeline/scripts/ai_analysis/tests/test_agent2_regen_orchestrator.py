@@ -803,3 +803,44 @@ def test_routed_run_uses_canonical_name_for_nonzero_work(tmp_path) -> None:
     assert calls["brand_centric"] == 3
     assert manifest["brands"]["capital-key"]["status"] == "validated"
     assert manifest["brands"]["capital-key"]["density_route"]["mode"] == "llm_compact"
+
+
+def test_weekly_quality_failures_do_not_stop_later_tiers(tmp_path) -> None:
+    orchestrator = Agent2RegenOrchestrator(
+        workflow_revision_id=3727,
+        formatter_version="wf217-order2-v10.3",
+        run_store=JsonRunStore(tmp_path / "manifest.json"),
+        ports=DependencyPorts(lambda _brand: {}, lambda _bundle: None, lambda _a, _b: None, lambda *_args: {}),
+        dry_run=True,
+        fail_threshold=5,
+        continue_on_quality_failure=True,
+    )
+    calls: list[str] = []
+
+    def forced_result(brand: str, *_args, **_kwargs):
+        calls.append(brand)
+        return (
+            {"brand": brand, "status": "failed", "reason": "forced_failure"}
+            if brand != "tier2-tail"
+            else {"brand": brand, "status": "validated"}
+        )
+
+    orchestrator._run_brand = forced_result  # type: ignore[method-assign]
+    worklist = [
+        RoutedAgent2Brand(
+            brand_key=f"key-{index}",
+            canonical_brand_name=("tier2-tail" if index == 7 else f"failed-{index}"),
+            route=RouteDecision(f"key-{index}", 10, "full", ProcessingMode.LLM_FULL, ()),
+            tier=0 if index == 0 else 2,
+            cohort="jw" if index == 0 else "nonstrategic",
+        )
+        for index in range(8)
+    ]
+
+    manifest = orchestrator.run_routed(worklist, analysis_variant="short")
+
+    assert len(calls) == 8
+    assert calls[-1] == "tier2-tail"
+    assert manifest["failure_count"] == 7
+    assert "abort_reason" not in manifest
+    assert manifest["brands"]["key-7"]["status"] == "validated"
