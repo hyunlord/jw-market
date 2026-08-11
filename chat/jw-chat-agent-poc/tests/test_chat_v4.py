@@ -447,6 +447,104 @@ def test_v4_synthesizer_replaces_repeated_internal_block_and_adds_hira_footnote(
     assert "주상병 기준 청구 실인원" in answer
 
 
+def test_v4_synthesizer_retries_once_when_requested_hira_value_is_missing() -> None:
+    class Client:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.messages = []
+
+        def complete(self, messages, *, budget_s=None, max_tokens=None) -> str:
+            self.calls += 1
+            self.messages.append(messages)
+            if self.calls == 1:
+                return "D693 환자 통계가 확인되었습니다. [출처: HIRA]"
+            return "D693 2024년 입원 환자수는 1,606명입니다. [출처: HIRA]"
+
+    plan = _plan(hira=("D693 환자수 2024년",)).model_copy(
+        update={"resolved_question": "D693 2024년 환자수 알려줘"}
+    )
+    result = SourceResult(
+        source="hira",
+        query="D693 환자수 2024년",
+        status="ok",
+        payload={
+            "calls": [
+                {
+                    "render_data": {
+                        "request": {"sickCd": "D693", "year": "2024"},
+                        "items": [{"inpatOpat": "입원", "ptntCnt": "1606"}],
+                    }
+                }
+            ]
+        },
+    )
+    client = Client()
+
+    outcome = V4Synthesizer(client).synthesize_with_trace(
+        plan, (result,), (), budget_s=30.0
+    )
+
+    assert client.calls == 2
+    assert "입원 환자수는 1,606명" in outcome.text
+    assert outcome.trace["requested_hira_surface_retry"]["attempted"] is True
+    assert outcome.trace["requested_hira_surface_retry"]["missing_after"] == []
+    retry_prompt = client.messages[1][-1]["content"]
+    assert '"metric": "환자수"' in retry_prompt
+    assert '"value": "1,606명"' in retry_prompt
+
+
+def test_v4_synthesizer_does_not_accept_claim_count_as_patient_count_on_retry() -> None:
+    class Client:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def complete(self, _messages, *, budget_s=None, max_tokens=None) -> str:
+            self.calls += 1
+            if self.calls == 1:
+                return "H360 환자 통계가 확인되었습니다. [출처: HIRA]"
+            return "H360 2024년 입원 환자수는 2,901명입니다. [출처: HIRA]"
+
+    plan = _plan(hira=("H360 환자수 2024년",)).model_copy(
+        update={"resolved_question": "H360 2024년 환자수 알려줘"}
+    )
+    result = SourceResult(
+        source="hira",
+        query="H360 환자수 2024년",
+        status="ok",
+        payload={
+            "calls": [
+                {
+                    "render_data": {
+                        "request": {"sickCd": "H360", "year": "2024"},
+                        "items": [
+                            {
+                                "inpatOpat": "입원",
+                                "ptntCnt": "2402",
+                                "specCnt": "2901",
+                            }
+                        ],
+                    }
+                }
+            ]
+        },
+    )
+    client = Client()
+
+    outcome = V4Synthesizer(client).synthesize_with_trace(
+        plan, (result,), (), budget_s=30.0
+    )
+
+    assert client.calls == 2
+    assert outcome.trace["requested_hira_surface_retry"]["missing_after"] == [
+        {
+            "year": "2024",
+            "care_type": "입원",
+            "metric": "환자수",
+            "value": "2,402명",
+        }
+    ]
+
+
 @pytest.mark.parametrize(
     "leak",
     (
@@ -1140,6 +1238,67 @@ def test_v4_claim_eligibility_guard_does_not_let_notice_mask_unsupported_claim()
     assert "2030년에 만료" not in gated.text
     assert gated.trace["claim_eligibility_guard"]["blocked"] is True
     assert gated.trace["claim_eligibility_guard"]["unsupported_claims"] == ["patent"]
+
+
+def test_v4_claim_eligibility_guard_removes_only_the_unsupported_sentence() -> None:
+    result = SourceResult(
+        source="hira",
+        query="D693 환자수",
+        status="ok",
+        payload={"calls": [{"render_data": {"items": [{"ptntCnt": "1606"}]}}]},
+        evidence=EvidenceEnvelope(
+            kind="hira",
+            entity_match="EXACT",
+            source_scope="KR",
+            time_match="MATCH",
+            eligible_claims=("patient_count",),
+            causal=False,
+        ),
+    )
+
+    gated = apply_v4_gates(
+        "D693 환자수 알려줘",
+        (
+            "## 핵심 답\n"
+            "D693 2024년 입원 환자수는 1,606명입니다. [출처: HIRA] "
+            "관련 특허는 2030년에 만료됩니다. [출처: HIRA]"
+        ),
+        (result,),
+    )
+
+    assert "입원 환자수는 1,606명" in gated.text
+    assert "2030년에 만료" not in gated.text
+    assert gated.trace["claim_eligibility_guard"]["blocked_sentences"] == 1
+
+
+def test_v4_claim_eligibility_guard_keeps_reimbursement_sentence_in_mixed_block() -> None:
+    result = SourceResult(
+        source="hira",
+        query="아일리아 급여기준",
+        status="ok",
+        payload={"calls": [{"render_data": {"criteria": "투여대상 및 투여횟수"}}]},
+        evidence=EvidenceEnvelope(
+            kind="hira",
+            entity_match="EXACT",
+            source_scope="KR",
+            time_match="NOT_REQUESTED",
+            eligible_claims=("reimbursement",),
+            causal=False,
+        ),
+    )
+
+    gated = apply_v4_gates(
+        "아일리아 급여기준 알려줘",
+        (
+            "## 핵심 답\n"
+            "아일리아 급여기준은 투여대상과 투여횟수를 명시합니다. [출처: HIRA] "
+            "효능효과는 망막질환 전반입니다. [출처: HIRA]"
+        ),
+        (result,),
+    )
+
+    assert "급여기준은 투여대상과 투여횟수" in gated.text
+    assert "효능효과는 망막질환 전반" not in gated.text
 
 
 def test_v4_trend_query_requests_history_from_query_layer() -> None:
@@ -2750,6 +2909,267 @@ def test_v4_gate_replaces_unsupported_raw_mart_percentages_with_display_summary(
     assert "3.7201985208381596%" not in gated.text
     assert "0.5774%p" not in gated.text
     assert gated.trace["surface_mart_percentage"]["blocked"] is True
+
+
+def test_v4_gate_detects_parenthesized_raw_mart_units() -> None:
+    results = (
+        SourceResult(
+            source="mart",
+            query="리바로 매출",
+            status="ok",
+            payload={
+                "calls": [
+                    {
+                        "summary_text": "리바로 매출은 85.87억원이고 점유율은 3.72%입니다.",
+                        "render_data": {
+                            "value": 8587458961.25,
+                            "sales_억원": 85.87,
+                            "ms_pct": 3.7201985208381596,
+                        },
+                    }
+                ]
+            },
+        ),
+    )
+
+    gated = apply_v4_gates(
+        "리바로 매출 알려줘",
+        (
+            "리바로 매출은 8587458961.25(원)입니다.\n\n"
+            "리바로 점유율은 3.7201985208381596(%)입니다."
+        ),
+        results,
+    )
+
+    assert "8587458961.25" not in gated.text
+    assert "3.7201985208381596" not in gated.text
+    assert gated.trace["surface_raw_won"]["blocked"] is True
+    assert gated.trace["surface_mart_percentage"]["blocked"] is True
+
+
+def test_v4_gate_does_not_duplicate_verified_market_history_during_surface_repair() -> None:
+    results = (
+        SourceResult(
+            source="mart",
+            query="리바로 추이",
+            status="ok",
+            payload={
+                "calls": [
+                    {
+                        "render_data": {
+                            "brand": "리바로",
+                            "brand_value_series_10pt": [
+                                {"period": "2022-12", "value_억원": 1743.44},
+                                {"period": "2026-06", "value_억원": 2308.33},
+                            ],
+                        }
+                    }
+                ]
+            },
+        ),
+    )
+    verified = (
+        "리바로 매출은 2022년 12월 1743.44억원에서 "
+        "2026년 6월 2308.33억원으로 4년간 증가했습니다. [출처: 내부 데이터마트]\n\n"
+        "연도별: 2022년 12월 1743.44억원 · 2026년 6월 2308.33억원\n\n"
+        "| 기간 | 리바로 매출 | 시장 규모 |\n"
+        "| --- | ---: | ---: |\n"
+        "| 2022-12 | 1743.44억원 | 확인되지 않음 |\n"
+        "| 2026-06 | 2308.33억원 | 확인되지 않음 |"
+    )
+
+    gated = apply_v4_gates(
+        "리바로가 어떻게 변해왔어?",
+        f"{verified}\n\n원시 값은 230833352390.9699원입니다.",
+        results,
+    )
+
+    assert gated.text.count("리바로 매출은 2022년 12월") == 1
+    assert gated.text.count("연도별: 2022년 12월") == 1
+    assert "230833352390.9699원" not in gated.text
+
+
+def test_v4_gate_binds_requested_hira_values_and_never_uses_claim_count_as_patient_count() -> None:
+    result = SourceResult(
+        source="hira",
+        query="D693 환자수와 진료비, 방문일수 2024년",
+        status="ok",
+        payload={
+            "calls": [
+                {
+                    "render_data": {
+                        "request": {"sickCd": "D693", "year": "2024"},
+                        "items": [
+                            {
+                                "inpatOpat": "입원",
+                                "ptntCnt": "1606",
+                                "specCnt": "2547",
+                                "rvdInsupBrdnAmt": "7193144000",
+                                "rvdRpeTamtAmt": "8697604000",
+                                "vstDdcnt": "12879",
+                                "units": {
+                                    "ptntCnt": "명",
+                                    "specCnt": "건",
+                                    "rvdInsupBrdnAmt": "원",
+                                    "rvdRpeTamtAmt": "원",
+                                    "vstDdcnt": "일",
+                                },
+                            },
+                            {
+                                "inpatOpat": "외래",
+                                "ptntCnt": "9231",
+                                "specCnt": "44193",
+                                "rvdInsupBrdnAmt": "5112850000",
+                                "rvdRpeTamtAmt": "6475810000",
+                                "vstDdcnt": "43938",
+                                "units": {
+                                    "ptntCnt": "명",
+                                    "specCnt": "건",
+                                    "rvdInsupBrdnAmt": "원",
+                                    "rvdRpeTamtAmt": "원",
+                                    "vstDdcnt": "일",
+                                },
+                            },
+                        ],
+                    }
+                }
+            ]
+        },
+        evidence=EvidenceEnvelope(
+            kind="hira",
+            entity_match="EXACT",
+            source_scope="KR",
+            time_match="MATCH",
+            eligible_claims=("patient_count", "cost"),
+            causal=False,
+        ),
+    )
+
+    gated = apply_v4_gates(
+        "D693 2024년 환자수와 진료비, 방문일수 알려줘",
+        "D693 2024년 입원 환자수는 2,547명입니다. [출처: HIRA]",
+        (result,),
+    )
+
+    assert "입원 환자수 1,606명" in gated.text
+    assert "보험자부담금 7,193,144,000원" in gated.text
+    assert "요양급여비용총액 8,697,604,000원" in gated.text
+    assert "방문일수 12,879일" in gated.text
+    assert "외래 환자수 9,231명" in gated.text
+    assert "요양급여비용총액 6,475,810,000원" in gated.text
+    assert "방문일수 43,938일" in gated.text
+    assert "환자수는 2,547명" not in gated.text
+    assert gated.trace["requested_hira_surface"]["repaired"] is True
+    assert gated.trace["requested_hira_surface"]["missing_after_repair"] == []
+
+
+def test_v4_gate_binds_h360_inpatient_and_outpatient_raw_values() -> None:
+    result = SourceResult(
+        source="hira",
+        query="H360 환자수와 진료비 2024년",
+        status="ok",
+        payload={
+            "calls": [
+                {
+                    "render_data": {
+                        "request": {"sickCd": "H360", "year": "2024"},
+                        "items": [
+                            {
+                                "inpatOpat": "입원",
+                                "ptntCnt": "2402",
+                                "specCnt": "2901",
+                                "rvdInsupBrdnAmt": "6281000000",
+                                "rvdRpeTamtAmt": "7583990000",
+                                "units": {
+                                    "ptntCnt": "명",
+                                    "specCnt": "건",
+                                    "rvdInsupBrdnAmt": "원",
+                                    "rvdRpeTamtAmt": "원",
+                                },
+                            },
+                            {
+                                "inpatOpat": "외래",
+                                "ptntCnt": "385530",
+                                "specCnt": "1056591",
+                                "rvdInsupBrdnAmt": "105711400000",
+                                "rvdRpeTamtAmt": "126707143000",
+                                "units": {
+                                    "ptntCnt": "명",
+                                    "specCnt": "건",
+                                    "rvdInsupBrdnAmt": "원",
+                                    "rvdRpeTamtAmt": "원",
+                                },
+                            },
+                        ],
+                    }
+                }
+            ]
+        },
+        evidence=EvidenceEnvelope(
+            kind="hira",
+            entity_match="EXACT",
+            source_scope="KR",
+            time_match="MATCH",
+            eligible_claims=("patient_count", "cost"),
+            causal=False,
+        ),
+    )
+
+    gated = apply_v4_gates(
+        "H360 2024년 환자수와 진료비 알려줘",
+        "H360 환자 통계가 확인되었습니다. [출처: HIRA]",
+        (result,),
+    )
+
+    assert "입원 환자수 2,402명" in gated.text
+    assert "외래 환자수 385,530명" in gated.text
+    assert "요양급여비용총액 7,583,990,000원" in gated.text
+    assert "요양급여비용총액 126,707,143,000원" in gated.text
+    assert "환자수 2,901명" not in gated.text
+    assert "환자수 1,056,591명" not in gated.text
+    assert gated.trace["requested_hira_surface"]["missing_after_repair"] == []
+
+
+def test_v4_gate_rejects_inpatient_value_bound_to_outpatient_request() -> None:
+    result = SourceResult(
+        source="hira",
+        query="D693 외래 환자수 2024년",
+        status="ok",
+        payload={
+            "calls": [
+                {
+                    "render_data": {
+                        "request": {"sickCd": "D693", "year": "2024"},
+                        "items": [
+                            {"inpatOpat": "입원", "ptntCnt": "1606"},
+                            {"inpatOpat": "외래", "ptntCnt": "9231"},
+                        ],
+                    }
+                }
+            ]
+        },
+        evidence=EvidenceEnvelope(
+            kind="hira",
+            entity_match="EXACT",
+            source_scope="KR",
+            time_match="MATCH",
+            eligible_claims=("patient_count",),
+            causal=False,
+        ),
+    )
+
+    gated = apply_v4_gates(
+        "D693 2024년 외래 환자수 알려줘",
+        "D693 2024년 외래 환자수는 1,606명입니다. [출처: HIRA]",
+        (result,),
+    )
+
+    assert "외래 환자수 9,231명" in gated.text
+    assert "외래 환자수는 1,606명" not in gated.text
+    assert len(gated.trace["requested_hira_surface"]["expected"]) == 1
+    assert gated.trace["requested_hira_surface"]["misbound_patient_values"] == [
+        "1606"
+    ]
 
 
 def test_v4_gates_do_not_treat_unrelated_payload_numbers_as_rank_evidence() -> None:

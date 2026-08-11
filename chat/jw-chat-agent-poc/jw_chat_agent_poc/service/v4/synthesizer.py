@@ -9,6 +9,7 @@ from typing import Any
 
 from jw_chat_agent_poc.service.conversation import ConversationTurn
 from jw_chat_agent_poc.service.v4.contracts import PlannerOutput, SourceResult
+from jw_chat_agent_poc.service.v4.gates import inspect_requested_hira_surface
 from jw_chat_agent_poc.service.v4.llm import CompletionResult, GenOSV4Client
 
 
@@ -16,7 +17,7 @@ _INTERNAL_SURFACE_RE = re.compile(
     r"(?i:MCP(?:[^가-힣\n]{0,80})?(?:에서|returned|결과)|\btotalCount\b|"
     r"\bslot[_ -]?id\b|\b(?:sickCd|ptntCnt|value)\b|"
     r"\b\d{7,}(?:\.\d+)?\s*KRW(?![A-Za-z])|"
-    r"\b\d{7,}(?:\.\d+)?\s*원(?:은|는|이|가|을|를|으로|에서|의)?|"
+    r"\b\d{7,}(?:\.\d+)?\s*(?:\(\s*원\s*\)|원)(?:은|는|이|가|을|를|으로|에서|의)?|"
     r"\b(?:hira|clinicaltrials|mfds|openfda|tavily)_[a-z0-9_]+\b|"
     r"(?:\bNCT\d{8}\b\s*[,/]\s*)+\bNCT\d{8}\b)|"
     r"\b[A-Z][A-Z0-9_]{2,}\s*[:=]\s*[^\s,;]+",
@@ -163,6 +164,64 @@ class V4Synthesizer:
             )
         elif _INTERNAL_SURFACE_RE.search(answer):
             answer = _replace_internal_blocks(answer, usable)
+
+        hira_surface = inspect_requested_hira_surface(
+            plan.resolved_question,
+            answer,
+            tuple(usable),
+        )
+        hira_retry_attempted = bool(hira_surface["missing"] and completion is not None)
+        hira_retry_error_type: str | None = None
+        if hira_retry_attempted:
+            retry_messages = [
+                *messages,
+                {"role": "assistant", "content": answer},
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "instruction": (
+                                "HIRA 요청 지표 결속 검사에서 누락이 발견됐다. 원형 detail을 다시 읽고 "
+                                "요청 연도와 입원/외래 구분마다 아래 값을 정확히 본문에 써라. "
+                                "환자수는 환자수(명) 값만 쓰고 명세서건수(건)를 환자수로 쓰지 마라. "
+                                "금액과 방문일수도 표시된 단위를 유지하라."
+                            ),
+                            "missing": [
+                                {
+                                    "year": fact.year,
+                                    "care_type": fact.care_type,
+                                    "metric": fact.label,
+                                    "value": fact.display,
+                                }
+                                for fact in hira_surface["missing"]
+                            ],
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ]
+            try:
+                retried = _complete_detailed(
+                    self._client,
+                    retry_messages,
+                    budget_s=min(30.0, budget_s),
+                    max_tokens=8192,
+                )
+                retried_answer = retried.text.strip()
+                if retried_answer and retried.finish_reason != "length":
+                    answer = (
+                        _replace_internal_blocks(retried_answer, usable)
+                        if _INTERNAL_SURFACE_RE.search(retried_answer)
+                        else retried_answer
+                    )
+                    completion = retried
+            except Exception as exc:  # noqa: BLE001 - deterministic gate repairs remaining omission
+                hira_retry_error_type = type(exc).__name__
+        hira_after_retry = inspect_requested_hira_surface(
+            plan.resolved_question,
+            answer,
+            tuple(usable),
+        )
         answer = _finalize_answer(answer, usable)
         return SynthesisOutcome(
             text=answer,
@@ -177,6 +236,28 @@ class V4Synthesizer:
                     for result in usable
                 ),
                 "coverage_notices": list(_coverage_notices(usable)),
+                "requested_hira_surface_retry": {
+                    "attempted": hira_retry_attempted,
+                    "error_type": hira_retry_error_type,
+                    "missing_before": [
+                        {
+                            "year": fact.year,
+                            "care_type": fact.care_type,
+                            "metric": fact.label,
+                            "value": fact.display,
+                        }
+                        for fact in hira_surface["missing"]
+                    ],
+                    "missing_after": [
+                        {
+                            "year": fact.year,
+                            "care_type": fact.care_type,
+                            "metric": fact.label,
+                            "value": fact.display,
+                        }
+                        for fact in hira_after_retry["missing"]
+                    ],
+                },
                 "fallback_reason": fallback_reason,
                 "error_type": error_type,
                 "serving_id": completion.serving_id if completion else "not_applicable",
