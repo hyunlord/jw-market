@@ -1301,6 +1301,36 @@ def test_v4_claim_eligibility_guard_keeps_reimbursement_sentence_in_mixed_block(
     assert "효능효과는 망막질환 전반" not in gated.text
 
 
+def test_v4_claim_eligibility_guard_keeps_hira_reimbursement_exclusion_criteria() -> None:
+    result = SourceResult(
+        source="hira",
+        query="아일리아 급여기준",
+        status="ok",
+        payload={"calls": [{"render_data": {"criteria": "투여대상 및 제외기준"}}]},
+        evidence=EvidenceEnvelope(
+            kind="hira",
+            entity_match="EXACT",
+            source_scope="KR",
+            time_match="NOT_REQUESTED",
+            eligible_claims=("reimbursement",),
+            causal=False,
+        ),
+    )
+
+    gated = apply_v4_gates(
+        "아일리아 급여기준 알려줘",
+        (
+            "## 근거와 맥락\n"
+            "초기 3회 투여 후 효과가 없는 경우는 제외기준에 해당합니다. [출처: HIRA] "
+            "효능효과는 망막질환 전반입니다. [출처: HIRA]"
+        ),
+        (result,),
+    )
+
+    assert "초기 3회 투여 후 효과가 없는 경우는 제외기준" in gated.text
+    assert "효능효과는 망막질환 전반" not in gated.text
+
+
 def test_v4_trend_query_requests_history_from_query_layer() -> None:
     calls: list[tuple[str, str, str, int]] = []
 

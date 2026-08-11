@@ -622,10 +622,13 @@ def _enforce_claim_eligibility(
     for result in results:
         if result.status != "ok" or result.evidence is None:
             continue
+        claims = set(result.evidence.eligible_claims)
+        if result.source == "hira" and "reimbursement" in claims:
+            claims.add("eligibility")
         source_claims.append(
             (
                 tuple(alias.casefold() for alias in _SOURCE_TAG_ALIASES[result.source]),
-                set(result.evidence.eligible_claims),
+                claims,
             )
         )
     available_claims = set().union(*(claims for _, claims in source_claims))
