@@ -141,6 +141,33 @@ class ScanSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class SourceSetEvidence:
+    """Content-bound identity of the exact files passed to a loader or publisher."""
+
+    sha256: str
+    relative_paths: tuple[str, ...]
+    rows: int
+    periods: tuple[str, ...]
+
+
+def source_set_evidence(files: Iterable[FileObservation]) -> SourceSetEvidence:
+    """Hash sorted relative paths and workbook digests without host-specific roots."""
+    selected = tuple(sorted(files, key=lambda item: item.relative_path))
+    digest = hashlib.sha256()
+    for item in selected:
+        digest.update(item.relative_path.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(item.sha256.encode("ascii"))
+        digest.update(b"\n")
+    return SourceSetEvidence(
+        sha256=digest.hexdigest(),
+        relative_paths=tuple(item.relative_path for item in selected),
+        rows=sum(item.rows or 0 for item in selected),
+        periods=tuple(sorted({period for item in selected for period in item.periods})),
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class PeriodGate:
     name: str
     status: GateStatus
@@ -176,6 +203,11 @@ class ScanOutcome:
     gates: PeriodGateResult
     rebuild_result: Mapping[str, object]
     commissioning_warnings: tuple[str, ...] = ()
+    source_set: SourceSetEvidence = SourceSetEvidence(
+        hashlib.sha256(b"").hexdigest(), (), 0, ()
+    )
+    window_excluded: tuple[FileObservation, ...] = ()
+    source_paths: tuple[Path, ...] = ()
 
 
 def _sha256(path: Path) -> str:
@@ -787,9 +819,8 @@ def run_full_scan(
     classify: Callable[[Path], str] = detect_workbook_source,
     summarize: Callable[[str, Path, str], WorkbookSummary] = summarize_inventory,
     permissive: bool = False,
-    bootstrap_files: tuple[Path, ...] | None = None,
-    rebuild_all_current: bool = False,
     row_floor_ratio: float | None = None,
+    allow_period_shrink: bool = False,
 ) -> ScanOutcome:
     """Scan, gate, rebuild, then publish one immutable successful inventory.
 
@@ -817,6 +848,51 @@ def run_full_scan(
             previous=previous,
         )
         diff = compare_snapshots(previous, current) if previous is not None else None
+        selected_files = tuple(item for item in current.files if item.state == "classified")
+        window_excluded: tuple[FileObservation, ...] = ()
+        if policy.rebuild_periods is not None:
+            if policy.rebuild_periods < 1:
+                raise SourceInventoryError("rebuild_periods must be positive")
+            newest = _period_index(epoch, policy.period_unit)
+            oldest = newest - policy.rebuild_periods + 1
+            window_excluded = tuple(
+                item
+                for item in selected_files
+                if not any(
+                    oldest <= _period_index(period, policy.period_unit) <= newest
+                    for period in item.periods
+                )
+            )
+            selected_files = tuple(
+                item for item in selected_files if item not in window_excluded
+            )
+        selected_evidence = source_set_evidence(selected_files)
+        if previous is not None:
+            previous_files = tuple(
+                item for item in previous.files if item.state == "classified"
+            )
+            if policy.rebuild_periods is not None:
+                previous_files = tuple(
+                    item
+                    for item in previous_files
+                    if any(
+                        oldest <= _period_index(period, policy.period_unit) <= newest
+                        for period in item.periods
+                    )
+                )
+            previous_periods = {
+                period for item in previous_files for period in item.periods
+            }
+            current_periods = set(selected_evidence.periods)
+            missing = tuple(sorted(previous_periods - current_periods))
+            if missing and current_periods < previous_periods and not allow_period_shrink:
+                affected = ",".join(
+                    f"{period}(rows={sum(item.rows or 0 for item in previous_files if period in item.periods)})"
+                    for period in missing
+                )
+                raise SourceInventoryError(
+                    f"{current.category}: unapproved period shrink missing={affected}"
+                )
         gates = enforce_scan_gates(
             previous,
             current,
@@ -826,47 +902,6 @@ def run_full_scan(
             row_floor_ratio=row_floor_ratio,
         )
         materialized = dict(archive_candidates)
-        if rebuild_all_current:
-            selected_files = tuple(
-                item for item in current.files if item.state == "classified"
-            )
-        elif previous is None and bootstrap_files is not None:
-            bootstrap_resolved = {path.resolve() for path in bootstrap_files}
-            selected_files = tuple(
-                item
-                for item in current.files
-                if item.state == "classified"
-                and (
-                    materialized.get(item.relative_path, root / item.relative_path).resolve()
-                    in bootstrap_resolved
-                )
-            )
-        elif diff is not None:
-            changed_paths = {
-                item.relative_path for item in (*diff.added_files, *diff.changed_files)
-            }
-            selected_files = tuple(
-                item
-                for item in current.files
-                if item.state == "classified" and item.relative_path in changed_paths
-            )
-        else:
-            selected_files = tuple(
-                item for item in current.files if item.state == "classified"
-            )
-        if policy.rebuild_periods is not None:
-            if policy.rebuild_periods < 1:
-                raise SourceInventoryError("rebuild_periods must be positive")
-            newest = _period_index(epoch, policy.period_unit)
-            oldest = newest - policy.rebuild_periods + 1
-            selected_files = tuple(
-                item
-                for item in selected_files
-                if any(
-                    oldest <= _period_index(period, policy.period_unit) <= newest
-                    for period in item.periods
-                )
-            )
         selected = replace(current, files=selected_files)
         source_paths = classified_source_paths(
             selected,
@@ -924,7 +959,17 @@ def run_full_scan(
         if permissive
         else ()
     )
-    return ScanOutcome(current, snapshot_path, diff, gates, rebuild_result, warnings)
+    return ScanOutcome(
+        current,
+        snapshot_path,
+        diff,
+        gates,
+        rebuild_result,
+        warnings,
+        selected_evidence,
+        window_excluded,
+        source_paths,
+    )
 
 
 def inventory_snapshot_path(

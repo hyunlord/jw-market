@@ -64,6 +64,49 @@ def test_uploaded_rows_are_read_from_workbooks_not_selected_from_staging(
     assert list(activation._uploaded_batches((Path("a.xlsx"),))) == [[{"row": row}]]
 
 
+def test_prepare_candidate_never_seeds_from_live_tables(monkeypatch) -> None:
+    assert not hasattr(activation, "_seed_live_raw")
+    fingerprint_rows = [
+        {"candidate_kind": "raw", "row_count": 2, "crc_sum": 3, "crc_xor": 4},
+        {"candidate_kind": "stage", "row_count": 1, "crc_sum": 5, "crc_xor": 6},
+    ]
+    monkeypatch.setattr(activation, "_call_rows", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        activation,
+        "validate_live",
+        lambda *_args: (
+            activation.TableFingerprint(10, 11, 12),
+            activation.TableFingerprint(8, 9, 10),
+        ),
+    )
+    monkeypatch.setattr(activation, "_uploaded_batches", lambda _paths: iter(([{"row": 1}],)))
+    monkeypatch.setattr(activation, "_read_stage_source", lambda *_args: [object()])
+    monkeypatch.setattr(
+        activation,
+        "stage_gate_evidence",
+        lambda *_args, **_kwargs: (
+            activation.PeriodContract(36, (), ()),
+            activation.ChannelGateResult(1),
+        ),
+    )
+    monkeypatch.setattr(activation, "_stage_json", lambda _rows: [{"stage": 1}])
+    monkeypatch.setattr(activation, "batches", lambda rows: (rows,))
+
+    def load_action(_conn, _plan, action, *, rows=None):
+        if action == "validate":
+            return fingerprint_rows
+        return [{"affected_rows": len(rows or ())}]
+
+    monkeypatch.setattr(activation, "_load_action", load_action)
+
+    evidence = activation.prepare_candidate(
+        object(), _plan(), source_paths=(Path("Dec.23.xlsx"),)
+    )
+
+    assert evidence.raw.row_count == 2
+    assert evidence.stage.row_count == 1
+
+
 def test_period_gate_accepts_boundary_partial_quarters_only() -> None:
     periods = activation.month_range("2023-06", "2026-05")
 

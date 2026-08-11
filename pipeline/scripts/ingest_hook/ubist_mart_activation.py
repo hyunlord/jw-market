@@ -14,7 +14,7 @@ import duckdb
 
 from pipeline.etl.io.mart.general_utils import extract_atc4
 from pipeline.etl.io.catalog.paths import (
-    CATALOG_ROOT_ENV,
+    CATALOG_ROOT_ENV as CATALOG_ROOT_ENV,
     resolve_catalog_root,
 )
 from pipeline.scripts.deploy.mart_load_ops import (
@@ -595,7 +595,7 @@ def affected_atc4_codes(
 
 
 def prepare_candidate_corpus(live_root: Path, *, run_id: str) -> CorpusCandidate:
-    """Clone the current corpus so loaders never mutate the serving root in place."""
+    """Create an empty candidate so the NFS workbook set is the only source."""
 
     safe_run_id = re.sub(r"[^A-Za-z0-9_]", "_", run_id)
     candidate = live_root.parent / f".{live_root.name}_candidate_{safe_run_id}"
@@ -604,7 +604,7 @@ def prepare_candidate_corpus(live_root: Path, *, run_id: str) -> CorpusCandidate
         raise RuntimeError(f"live UBIST corpus is missing: {live_root}")
     if candidate.exists() or backup.exists():
         raise RuntimeError(f"corpus scratch path already exists for run_id={run_id}")
-    shutil.copytree(live_root, candidate)
+    candidate.mkdir(parents=False)
     return CorpusCandidate(live_root, candidate, backup)
 
 

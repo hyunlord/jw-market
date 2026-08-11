@@ -22,6 +22,7 @@ from pipeline.scripts.ingest_hook.source_inventory import (
     PeriodGateResult,
     ScanOutcome,
     ScanSnapshot,
+    SourceSetEvidence,
 )
 from pipeline.scripts.ingest_hook.category_map import ActivationKind, resolve_category
 from pipeline.scripts.ingest_hook.contract import load_manifest
@@ -252,14 +253,12 @@ def test_full_scan_load_publishes_snapshot_only_after_loader_succeeds(
     classified = tmp_path / "operating.xlsx"
     classified.write_bytes(b"xlsx")
     calls: list[str] = []
-    rebuild_modes: list[bool] = []
 
     class Policy:
         root = tmp_path
 
     def fake_run_full_scan(policy, **kwargs):
         calls.append("scan")
-        rebuild_modes.append(kwargs["rebuild_all_current"])
         result = kwargs["rebuild"]((classified,))
         calls.append("snapshot")
         return type("Outcome", (), {"rebuild_result": result})()
@@ -288,10 +287,9 @@ def test_full_scan_load_publishes_snapshot_only_after_loader_succeeds(
     assert result["rows_loaded"] == 1
     assert outcome is not None
     assert calls == ["scan", "load:operating.xlsx", "snapshot"]
-    assert rebuild_modes == [True]
 
 
-def test_full_scan_load_rebuilds_all_current_files_for_fresh_target_database(
+def test_full_scan_load_uses_one_contract_for_fresh_target_database(
     staging_env,
     bucket,
     monkeypatch,
@@ -321,23 +319,25 @@ def test_full_scan_load_rebuilds_all_current_files_for_fresh_target_database(
         required=True,
     )
 
-    assert observed["rebuild_all_current"] is True
+    assert "rebuild_all_current" not in observed
 
 
-def test_ubist_upload_and_reingest_share_full_current_inventory_contract(
+def test_ubist_upload_uses_full_current_inventory_contract(
     staging_env,
     bucket,
     monkeypatch,
     tmp_path,
 ):
     manifest = _manifest(bucket, category="ubist", epoch="2026-03")
-    observed_modes: list[bool] = []
+    calls = 0
 
     class Policy:
         root = tmp_path
 
     def fake_run_full_scan(_policy, **kwargs):
-        observed_modes.append(kwargs["rebuild_all_current"])
+        nonlocal calls
+        calls += 1
+        assert "rebuild_all_current" not in kwargs
         return type("Outcome", (), {"rebuild_result": {"epoch_rows": 1}})()
 
     monkeypatch.setattr(job_runner, "load_scan_policy", lambda category, required: Policy())
@@ -352,17 +352,7 @@ def test_ubist_upload_and_reingest_share_full_current_inventory_contract(
         target_dir_override=None,
         required=True,
     )
-    job_runner._load_with_source_inventory(
-        manifest,
-        resolve_category("ubist"),
-        bucket,
-        run_id="complete-reingest-run",
-        target_dir_override=None,
-        required=True,
-        rebuild_all_current=True,
-    )
-
-    assert observed_modes == [True, True]
+    assert calls == 1
 
 
 def test_automatic_publish_contract_carries_pg4_pg5_and_warnings(tmp_path):
@@ -381,7 +371,10 @@ def test_automatic_publish_contract_carries_pg4_pg5_and_warnings(tmp_path):
         pg6=PeriodGate("PG-6", "warning", (), "value drift"),
         pg7=PeriodGate("PG-7", "warning", (), "newest drift"),
     )
-    outcome = ScanOutcome(snapshot, tmp_path / "snapshot.json", None, gates, {})
+    source_set = SourceSetEvidence("c" * 64, ("source.xlsx",), 10, ("2026-06",))
+    outcome = ScanOutcome(
+        snapshot, tmp_path / "snapshot.json", None, gates, {}, source_set=source_set
+    )
 
     contract = job_runner._automatic_publish_contract(outcome)
 
@@ -393,6 +386,22 @@ def test_automatic_publish_contract_carries_pg4_pg5_and_warnings(tmp_path):
         "PG-5": "pass",
     }
     assert contract["warnings"] == {"PG-6": "warning", "PG-7": "warning"}
+    assert contract["source_sets"] == {
+        "load": {
+            "sha256": "c" * 64,
+            "file_count": 1,
+            "relative_paths": ["source.xlsx"],
+            "rows": 10,
+            "periods": ["2026-06"],
+        },
+        "publish": {
+            "sha256": "c" * 64,
+            "file_count": 1,
+            "relative_paths": ["source.xlsx"],
+            "rows": 10,
+            "periods": ["2026-06"],
+        },
+    }
 
 
 def test_automatic_publish_request_uses_exact_identity_and_timeout(monkeypatch):

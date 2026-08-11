@@ -813,7 +813,6 @@ def _load_with_source_inventory(
     target_dir_override: Path | None,
     target_db_override: str | None = None,
     required: bool,
-    rebuild_all_current: bool = False,
 ) -> tuple[dict, ScanOutcome | None]:
     """Run a source-wide scan and publish its immutable anchor after load."""
     policy = load_scan_policy(manifest.category, required=required)
@@ -836,18 +835,9 @@ def _load_with_source_inventory(
         run_id=run_id,
         output_root=DEFAULT_INVENTORY_ROOT,
         previous=previous,
-        bootstrap_files=tuple(
-            (input_root / entry.path).resolve() for entry in manifest.files
-        ),
-        # UBIST upload and reingest rebuild the same current corpus. Run-scoped
-        # databases also need every current source file because they start empty.
-        rebuild_all_current=(
-            manifest.category == "ubist"
-            or target_db_override is not None
-            or rebuild_all_current
-        ),
         row_floor_ratio=spec.row_floor_ratio,
         permissive=config.e2e_commissioning(),
+        allow_period_shrink=config.allow_period_shrink(),
         rebuild=lambda source_files: _real_load(
             manifest,
             spec,
@@ -864,6 +854,13 @@ def _automatic_publish_contract(outcome: ScanOutcome) -> dict[str, object]:
     """Serialize the approved hard-gate and warning contract for the hook."""
     gates = outcome.gates
     permissive = bool(outcome.commissioning_warnings)
+    source_set = {
+        "sha256": outcome.source_set.sha256,
+        "file_count": len(outcome.source_set.relative_paths),
+        "relative_paths": list(outcome.source_set.relative_paths),
+        "rows": outcome.source_set.rows,
+        "periods": list(outcome.source_set.periods),
+    }
     return {
         "hard_gates": {
             "PG-1": "pass",
@@ -882,6 +879,17 @@ def _automatic_publish_contract(outcome: ScanOutcome) -> dict[str, object]:
             "PG-5": gates.pg5.status,
         },
         "commissioning_warnings": list(outcome.commissioning_warnings),
+        "source_sets": {"load": source_set, "publish": source_set},
+        "window_excluded": [
+            {
+                "relative_path": item.relative_path,
+                "rows": item.rows,
+                "periods": list(item.periods),
+                "reason": "outside configured analysis window",
+            }
+            for item in outcome.window_excluded
+        ],
+        "period_shrink_approved": config.allow_period_shrink(),
     }
 
 
@@ -1371,12 +1379,25 @@ def run(
                         else None
                     ),
                 ),
-                rebuild_all_current=isinstance(ledger, _ReingestAttemptLedger),
             )
             rows_before = int(load_result.get("rows_before") or 0)
             rows_after = int(load_result.get("epoch_rows") or 0)
             rows_loaded = int(load_result.get("rows_loaded") or 0)
-            tracker.done()
+            load_reason = None
+            if scan_outcome is not None:
+                load_reason = (
+                    f"source_set_sha256={scan_outcome.source_set.sha256}; "
+                    f"files={len(scan_outcome.source_set.relative_paths)}; "
+                    f"window_excluded={len(scan_outcome.window_excluded)}"
+                )
+                print(f"stage=load {load_reason}")
+                for item in scan_outcome.window_excluded:
+                    print(
+                        "source_window_excluded "
+                        f"file={item.relative_path!r} rows={item.rows or 0} "
+                        f"periods={','.join(item.periods)}"
+                    )
+            tracker.done(reason=load_reason)
             if load_result.get("load_verify_complete"):
                 tracker.complete("load_verify", load_result.get("load_verify_warning"))
             else:
@@ -1407,6 +1428,10 @@ def run(
                     stage_schema=stage_schema,
                 )
                 csd_conn = config.open_csd_channel_connection()
+                if scan_outcome is None:
+                    raise RuntimeError(
+                        "CSD channel source inventory is required for source-only publish"
+                    )
                 csd_lock_acquired = False
                 csd_failure_reason = None
                 try:
@@ -1422,10 +1447,7 @@ def run(
                     csd_evidence = csd_channel_activation.prepare_candidate(
                         csd_conn,
                         csd_plan,
-                        source_paths=tuple(
-                            (input_root / entry.path).resolve()
-                            for entry in manifest.files
-                        ),
+                        source_paths=scan_outcome.source_paths,
                         enforce_post_gate=not commissioning,
                     )
                 except Exception as exc:

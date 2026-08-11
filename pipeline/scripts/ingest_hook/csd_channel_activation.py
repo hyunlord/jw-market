@@ -343,22 +343,6 @@ def _fingerprints_from_validate(rows: Sequence[dict[str, object]]) -> tuple[Tabl
     return value("raw"), value("stage")
 
 
-def _seed_live_raw(conn: Any, plan: ActivationPlan) -> int:
-    commits = 0
-    after_id = 0
-    while True:
-        result = _load_action(conn, plan, "seed_live_raw", after_id=after_id)
-        row = result[0]
-        affected = int(row["affected_rows"])
-        next_id = int(row["next_id"])
-        if affected == 0:
-            return commits
-        if next_id <= after_id:
-            raise CandidateValidationError("seed_live_raw did not advance")
-        after_id = next_id
-        commits += 1
-
-
 def _uploaded_batches(source_paths: Sequence[Path]) -> Iterator[Sequence[dict[str, object]]]:
     records = [
         csd_raw_record(row)
@@ -442,12 +426,7 @@ def prepare_candidate(
         _call_rows(conn, "csd_candidate_create", (plan.run_id,))
         created = True
         live_raw, live_stage = validate_live(conn, plan)
-        commits = _seed_live_raw(conn, plan)
-        seeded_raw, seeded_stage = _fingerprints_from_validate(_load_action(conn, plan, "validate"))
-        if seeded_raw != live_raw:
-            raise CandidateValidationError("seeded raw fingerprint differs from canonical live raw fingerprint")
-        if seeded_stage.row_count != 0:
-            raise CandidateValidationError("new stage candidate is not empty")
+        commits = 0
         for batch in _uploaded_batches(source_paths):
             _load_action(conn, plan, "merge_uploaded_raw", rows=batch)
             commits += 1

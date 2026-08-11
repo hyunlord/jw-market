@@ -28,6 +28,7 @@ ENV_QUEUE_DRAIN_WEBHOOK_URL = "INGEST_QUEUE_DRAIN_WEBHOOK_URL"
 ENV_QUEUE_DRAIN_WEBHOOK_ATTEMPTS = "INGEST_QUEUE_DRAIN_WEBHOOK_ATTEMPTS"
 ENV_WEBHOOK_PROMOTE_EXACT = "INGEST_WEBHOOK_PROMOTE_EXACT"
 ENV_FULL_SCAN_ENABLED = "INGEST_FULL_SCAN_ENABLED"
+ENV_ALLOW_PERIOD_SHRINK = "INGEST_ALLOW_PERIOD_SHRINK"
 ENV_E2E_COMMISSIONING = "INGEST_E2E_COMMISSIONING"
 ENV_AUTOMATIC_PUBLISH_WEBHOOK_URL = "INGEST_AUTOMATIC_PUBLISH_WEBHOOK_URL"
 ENV_CSD_CHANNEL_SHADOW_ACTIVATION = "INGEST_CSD_CHANNEL_SHADOW_ACTIVATION"
@@ -132,6 +133,14 @@ def full_scan_enabled() -> bool:
     value = os.environ.get(ENV_FULL_SCAN_ENABLED, "0").strip()
     if value not in {"0", "1"}:
         raise RuntimeError(f"{ENV_FULL_SCAN_ENABLED} must be 0 or 1")
+    return value == "1"
+
+
+def allow_period_shrink() -> bool:
+    """Allow an explicitly approved source-period reduction for one deployment."""
+    value = os.environ.get(ENV_ALLOW_PERIOD_SHRINK, "0").strip()
+    if value not in {"0", "1"}:
+        raise RuntimeError(f"{ENV_ALLOW_PERIOD_SHRINK} must be 0 or 1")
     return value == "1"
 
 

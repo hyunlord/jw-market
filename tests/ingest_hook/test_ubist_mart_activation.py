@@ -601,6 +601,7 @@ def test_candidate_corpus_promotes_by_rename_and_can_rollback(tmp_path) -> None:
     (live / "old.txt").write_text("old", encoding="utf-8")
 
     corpus = activation.prepare_candidate_corpus(live, run_id="run1")
+    assert not (corpus.candidate_root / "old.txt").exists()
     (corpus.candidate_root / "new.txt").write_text("new", encoding="utf-8")
     activation.promote_candidate_corpus(corpus)
 

@@ -14,6 +14,7 @@ from pipeline.scripts.ingest_hook.source_inventory import (
     ScanSnapshot,
     SourceInventoryError,
     SourceScanPolicy,
+    SourceSetEvidence,
     classified_source_paths,
     compare_snapshots,
     enforce_scan_gates,
@@ -22,6 +23,7 @@ from pipeline.scripts.ingest_hook.source_inventory import (
     read_scan_snapshot,
     run_full_scan,
     scan_source,
+    source_set_evidence,
     write_inventory_snapshot,
 )
 from pipeline.scripts.ingest_hook.workbook_contracts import WorkbookSummary
@@ -46,6 +48,113 @@ def _summary(periods: set[str]) -> WorkbookSummary:
 
 def _file_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_source_set_hash_is_canonical_and_provenance_bound() -> None:
+    first = FileObservation(
+        "nested/b.xlsx", "b" * 64, 20, "classified", rows=7, periods=("2026-02",)
+    )
+    second = FileObservation(
+        "a.xlsx", "a" * 64, 10, "classified", rows=5, periods=("2026-01",)
+    )
+
+    forward = source_set_evidence((first, second))
+    reverse = source_set_evidence((second, first))
+
+    assert isinstance(forward, SourceSetEvidence)
+    assert forward == reverse
+    assert forward.relative_paths == ("a.xlsx", "nested/b.xlsx")
+    assert forward.rows == 12
+    assert forward.periods == ("2026-01", "2026-02")
+    assert len(forward.sha256) == 64
+
+
+def test_full_scan_records_window_exclusions_without_silent_drop(tmp_path: Path) -> None:
+    old = _write(tmp_path, "old.xlsx", b"old")
+    current = _write(tmp_path, "current.xlsx", b"current")
+
+    outcome = run_full_scan(
+        SourceScanPolicy("ubist", tmp_path, "month", rebuild_periods=1),
+        epoch="2026-06",
+        manifest_sha="f" * 64,
+        run_id="window-run",
+        output_root=tmp_path / "inventory",
+        classify=lambda _path: "ubist",
+        summarize=lambda _category, path, _epoch: WorkbookSummary(
+            rows=11 if path == old else 13,
+            periods=frozenset({"2021-01" if path == old else "2026-06"}),
+            detail="fixture",
+        ),
+        rebuild=lambda paths: {"files": len(paths)},
+        permissive=True,
+    )
+
+    assert outcome.source_set.relative_paths == (current.name,)
+    assert len(outcome.window_excluded) == 1
+    assert outcome.window_excluded[0].relative_path == old.name
+    assert outcome.window_excluded[0].sha256 == _file_sha256(old)
+    assert outcome.window_excluded[0].rows == 11
+    assert outcome.window_excluded[0].periods == ("2021-01",)
+
+
+def test_full_scan_rejects_unapproved_strict_period_subset_before_rebuild(
+    tmp_path: Path,
+) -> None:
+    current = _write(tmp_path, "current.xlsx", b"current")
+    previous = ScanSnapshot(
+        "1",
+        "iqvia_csd_channel",
+        "2026-05",
+        "e" * 64,
+        "previous-run",
+        "2026-08-11T00:00:00+00:00",
+        (
+            FileObservation(
+                "dec23.xlsx",
+                "d" * 64,
+                10,
+                "classified",
+                "iqvia_csd_channel",
+                50_775,
+                tuple(f"2023-{month:02d}" for month in range(1, 12)),
+            ),
+            FileObservation(
+                current.name,
+                _file_sha256(current),
+                current.stat().st_size,
+                "classified",
+                "iqvia_csd_channel",
+                10,
+                ("2026-05",),
+            ),
+        ),
+    )
+    rebuilt = False
+
+    def rebuild(_paths: tuple[Path, ...]) -> dict[str, int]:
+        nonlocal rebuilt
+        rebuilt = True
+        return {}
+
+    with pytest.raises(
+        SourceInventoryError,
+        match=r"unapproved period shrink.*2023-01\(rows=50775\).*2023-11\(rows=50775\)",
+    ):
+        run_full_scan(
+            SourceScanPolicy("iqvia_csd_channel", tmp_path, "month"),
+            epoch="2026-05",
+            manifest_sha="f" * 64,
+            run_id="shrink-run",
+            output_root=tmp_path / "inventory",
+            previous=previous,
+            classify=lambda _path: "iqvia_csd_channel",
+            summarize=lambda *_args: WorkbookSummary(
+                rows=10, periods=frozenset({"2026-05"}), detail="fixture"
+            ),
+            rebuild=rebuild,
+        )
+
+    assert rebuilt is False
 
 
 def test_scan_reuses_unchanged_sha_without_reparsing(tmp_path: Path) -> None:
@@ -241,7 +350,7 @@ def test_scan_revalidates_classified_observation_after_contract_change(tmp_path:
     assert current.files[0].validation_action == "revalidated"
 
 
-def test_full_scan_bootstrap_rebuilds_only_manifest_files(tmp_path: Path) -> None:
+def test_full_scan_bootstrap_rebuilds_complete_folder_not_manifest_only(tmp_path: Path) -> None:
     old = _write(tmp_path, "old.xlsx", b"old")
     current = _write(tmp_path, "current.xlsx", b"current")
     rebuilt: list[tuple[Path, ...]] = []
@@ -257,10 +366,9 @@ def test_full_scan_bootstrap_rebuilds_only_manifest_files(tmp_path: Path) -> Non
             {"2026-05" if path == old else "2026-06"}
         ),
         rebuild=lambda paths: rebuilt.append(paths) or {"files": len(paths)},
-        bootstrap_files=(current,),
     )
 
-    assert rebuilt == [(current.resolve(),)]
+    assert rebuilt == [(current.resolve(), old.resolve())]
 
 
 def test_full_scan_unchanged_sha_never_reaches_rebuild_parser(tmp_path: Path) -> None:
@@ -300,7 +408,7 @@ def test_full_scan_unchanged_sha_never_reaches_rebuild_parser(tmp_path: Path) ->
         rebuild=lambda paths: rebuilt.append(paths) or {"files": len(paths)},
     )
 
-    assert rebuilt == [()]
+    assert rebuilt == [(source.resolve(),)]
 
 
 def test_full_scan_rebuilds_unchanged_files_for_fresh_run_database(tmp_path: Path) -> None:
@@ -336,7 +444,6 @@ def test_full_scan_rebuilds_unchanged_files_for_fresh_run_database(tmp_path: Pat
         classify=lambda _path: pytest.fail("unchanged SHA must not be classified"),
         summarize=lambda *_args: pytest.fail("unchanged SHA must not be parsed"),
         rebuild=lambda paths: rebuilt.append(paths) or {"files": len(paths)},
-        rebuild_all_current=True,
     )
 
     assert rebuilt == [(source.resolve(),)]
@@ -746,6 +853,7 @@ def test_full_scan_rebuilds_only_after_hard_gates_and_publishes_removed_evidence
         classify=lambda path: "iqvia_nsa" if path == source else "wrong",
         summarize=lambda *_args: _summary({"2026-Q2"}),
         rebuild=lambda paths: rebuilt.append(paths) or {"artifacts": 1},
+        allow_period_shrink=True,
     )
 
     assert rebuilt == [(source.resolve(),)]
@@ -827,7 +935,6 @@ def test_full_scan_applies_crash_floor_to_complete_source_population(tmp_path: P
                 detail="fixture",
             ),
             rebuild=rebuild,
-            rebuild_all_current=True,
             row_floor_ratio=0.5,
         )
 
@@ -871,7 +978,6 @@ def test_full_scan_accepts_growth_in_complete_source_population(tmp_path: Path) 
             detail="fixture",
         ),
         rebuild=lambda paths: rebuilt.append(paths) or {"files": len(paths)},
-        rebuild_all_current=True,
         row_floor_ratio=0.5,
         permissive=True,
     )
