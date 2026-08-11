@@ -142,11 +142,22 @@ class V4Synthesizer:
             and (result.source != "web" or _web_has_citable_body(result.payload))
         ))
         if not usable:
+            fallback = "이번 조회에서 확인된 근거가 없어 구체적인 답을 구성하지 못했습니다."
+            absence_answer = _append_absence_context_surface("", results)
+            has_typed_absence = bool(absence_answer)
             return SynthesisOutcome(
-                text="이번 조회에서 확인된 근거가 없어 구체적인 답을 구성하지 못했습니다.",
+                text=absence_answer if has_typed_absence else fallback,
                 trace={
-                    "status": "no_usable_evidence",
-                    "fallback_reason": "no_evidence",
+                    "status": (
+                        "typed_absence"
+                        if has_typed_absence
+                        else "no_usable_evidence"
+                    ),
+                    "fallback_reason": (
+                        "confirmed_absence"
+                        if has_typed_absence
+                        else "no_evidence"
+                    ),
                     "serving_id": "not_applicable",
                     "model": "not_applicable",
                 },
@@ -713,11 +724,16 @@ def _append_absence_context_surface(
         ),
         None,
     )
-    if context_result is None or not isinstance(context_result.payload, Mapping):
-        return answer
-    context = context_result.payload.get("absence_context")
-    if not isinstance(context, Mapping):
-        return answer
+    context: Mapping[str, Any] | None = None
+    if context_result is not None and isinstance(context_result.payload, Mapping):
+        candidate = context_result.payload.get("absence_context")
+        if isinstance(candidate, Mapping):
+            context = candidate
+    if context is None:
+        confirmation = _typed_absence_context(results)
+        if confirmation is None:
+            return answer
+        context = confirmation
     subject = str(context.get("subject") or "").strip()
     source = str(context.get("source") or "")
     document = str(context.get("document") or "")
@@ -735,7 +751,11 @@ def _append_absence_context_surface(
             f"[출처: {official_label}]"
         )
     answer = _insert_core_first_paragraph(answer, official_sentence)
-    items = _absence_web_items(context_result.payload)
+    items = (
+        _absence_web_items(context_result.payload)
+        if context_result is not None and isinstance(context_result.payload, Mapping)
+        else []
+    )
     event = next(
         (
             item
@@ -745,16 +765,63 @@ def _append_absence_context_surface(
         ),
         None,
     )
-    if event is None or ("급여 협상" in answer and "보도되고 있습니다" in answer):
+    if event is None:
         return answer
     title = " ".join(str(event.get("title") or "").split())
     if not title:
         return answer
-    event_sentence = f"웹 자료에서는 \"{title}\"로 보도되고 있습니다 [출처: 웹 자료]."
+    published_date = _observed_publication_date(event)
+    if title in answer and (not published_date or published_date in answer):
+        return answer
+    date_prefix = f"{published_date} 게시된 " if published_date else ""
+    event_sentence = (
+        f"웹 자료에서는 {date_prefix}\"{title}\"로 보도되고 있습니다 [출처: 웹 자료]."
+    )
     first_break = answer.find("\n\n")
     if first_break < 0:
         return f"{answer.rstrip()}\n\n{event_sentence}"
     return f"{answer[:first_break]}\n\n{event_sentence}\n\n{answer[first_break + 2:]}"
+
+
+def _observed_publication_date(item: Mapping[str, Any]) -> str:
+    for key in ("published_at", "published_date", "date"):
+        value = str(item.get(key) or "").strip()
+        match = re.match(r"^(\d{4}-\d{2}-\d{2})(?:\D|$)", value)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def _typed_absence_context(
+    results: Sequence[SourceResult],
+) -> dict[str, str] | None:
+    for result in results:
+        if result.status != "empty" or not isinstance(result.payload, Mapping):
+            continue
+        record = result.payload.get("absence_confirmation")
+        if not isinstance(record, Mapping) or result.evidence is None:
+            continue
+        document = str(record.get("doc_type") or "")
+        expected_source = {"reimbursement": "hira", "approval": "nedrug"}.get(document)
+        subject = str(record.get("subject") or "").strip()
+        claims = set(result.evidence.eligible_claims)
+        if (
+            expected_source == result.source
+            and record.get("source") == result.source
+            and record.get("status") == "confirmed_absent"
+            and subject
+            and {
+                document,
+                "absence_confirmation",
+                f"absence_confirmation:{document}",
+            }.issubset(claims)
+        ):
+            return {
+                "source": result.source,
+                "document": document,
+                "subject": subject,
+            }
+    return None
 
 
 def _absence_web_items(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:

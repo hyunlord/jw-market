@@ -88,7 +88,7 @@ _CLAIM_PATTERNS: dict[str, re.Pattern[str]] = {
     "patient_count": re.compile(r"환자\s*수|청구\s*실인원"),
     "cost": re.compile(r"진료비|요양급여비용|보험자부담금"),
     "reimbursement": re.compile(r"급여\s*기준|투여\s*기준|고시"),
-    "approval": re.compile(r"(?:허가|승인)(?:일|현황|되|받|됨)"),
+    "approval": re.compile(r"(?:허가|승인)(?:일|현황|되|받|됨|\s*문서)"),
     "label": re.compile(r"효능\s*효과|적응증|용법|용량|주의사항"),
     "patent": re.compile(r"특허|재심사|만료"),
     "study_design": re.compile(r"시험\s*디자인|무작위|눈가림|맹검"),
@@ -96,6 +96,16 @@ _CLAIM_PATTERNS: dict[str, re.Pattern[str]] = {
     "recruitment_status": re.compile(r"모집\s*상태|진행\s*중|완료|철회"),
     "enrollment": re.compile(r"등록\s*(?:수|인원)|피험자\s*수"),
     "eligibility": re.compile(r"선정\s*기준|제외\s*기준|선정제외기준"),
+    "absence_confirmation": re.compile(
+        r"현재\s*(?:급여\s*기준이?\s*없습니다(?:\s*\(\s*비급여\s*\))?"
+        r"|허가\s*문서를\s*확인할\s*수\s*없습니다)"
+    ),
+    "absence_confirmation:reimbursement": re.compile(
+        r"현재\s*급여\s*기준이?\s*없습니다(?:\s*\(\s*비급여\s*\))?"
+    ),
+    "absence_confirmation:approval": re.compile(
+        r"현재\s*허가\s*문서를\s*확인할\s*수\s*없습니다"
+    ),
 }
 _SOURCE_TAG_ALIASES: dict[str, tuple[str, ...]] = {
     "mart": ("내부 데이터마트", "mart"),
@@ -1117,6 +1127,28 @@ def _render_mart_history(results: tuple[SourceResult, ...], question: str) -> st
     return ""
 
 
+def is_typed_absence_confirmation(result: SourceResult) -> bool:
+    if result.status != "empty" or not isinstance(result.payload, Mapping):
+        return False
+    record = result.payload.get("absence_confirmation")
+    if not isinstance(record, Mapping) or result.evidence is None:
+        return False
+    document = str(record.get("doc_type") or "")
+    required_source = {"reimbursement": "hira", "approval": "nedrug"}.get(document)
+    claims = set(result.evidence.eligible_claims)
+    return bool(
+        required_source == result.source
+        and record.get("source") == result.source
+        and record.get("status") == "confirmed_absent"
+        and str(record.get("subject") or "").strip()
+        and {
+            document,
+            "absence_confirmation",
+            f"absence_confirmation:{document}",
+        }.issubset(claims)
+    )
+
+
 def _enforce_claim_eligibility(
     question: str,
     text: str,
@@ -1124,7 +1156,9 @@ def _enforce_claim_eligibility(
 ) -> tuple[str, dict[str, Any]]:
     source_claims: list[tuple[tuple[str, ...], set[str]]] = []
     for result in results:
-        if result.status != "ok" or result.evidence is None:
+        if result.evidence is None:
+            continue
+        if result.status != "ok" and not is_typed_absence_confirmation(result):
             continue
         claims = set(result.evidence.eligible_claims)
         if result.source == "hira" and "reimbursement" in claims:
@@ -1476,7 +1510,7 @@ def _append_sources(text: str, results: tuple[SourceResult, ...]) -> str:
     lines: list[str] = []
     seen: set[tuple[str, str]] = set()
     for result in results:
-        if result.status != "ok":
+        if result.status != "ok" and not is_typed_absence_confirmation(result):
             continue
         source = _public_source_name(result)
         key = (source, result.query)
@@ -1529,6 +1563,13 @@ def _public_source_name(result: SourceResult) -> str:
 
 
 def _source_reference_type(result: SourceResult) -> str:
+    if is_typed_absence_confirmation(result):
+        record = result.payload["absence_confirmation"]
+        return (
+            "고시 무결과 확인"
+            if record["doc_type"] == "reimbursement"
+            else "허가 문서 무결과 확인"
+        )
     if result.source == "hira" and result.evidence is not None:
         if "reimbursement" in result.evidence.eligible_claims:
             return "고시 검색"

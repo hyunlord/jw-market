@@ -15,9 +15,17 @@ from uuid import uuid4
 
 from jw_chat_agent_poc.service.conversation import ConversationTurn
 from jw_chat_agent_poc.service.v4.adapters import build_source_adapters
-from jw_chat_agent_poc.service.v4.contracts import SOURCE_NAMES, SourceResult, V4Answer
+from jw_chat_agent_poc.service.v4.contracts import (
+    SOURCE_NAMES,
+    EvidenceEnvelope,
+    SourceResult,
+    V4Answer,
+)
 from jw_chat_agent_poc.service.v4.executor import ParallelSourceExecutor
-from jw_chat_agent_poc.service.v4.gates import apply_v4_gates
+from jw_chat_agent_poc.service.v4.gates import (
+    apply_v4_gates,
+    is_typed_absence_confirmation,
+)
 from jw_chat_agent_poc.service.v4.llm import planner_client, synthesizer_client
 from jw_chat_agent_poc.service.v4.planner import V4Planner
 from jw_chat_agent_poc.service.v4.session_state import SessionState, SessionStateStore
@@ -294,40 +302,65 @@ class V4Runtime:
             )
         absence_request = _absence_context_request(plan, first_results)
         absence_execution = SimpleNamespace(results=(), trace=None)
+        if absence_request is not None:
+            first_results = tuple(
+                _tag_absence_confirmation(result, absence_request)
+                for result in first_results
+            )
         if (
             absence_request is not None
             and linked_plan is None
             and gap_request is None
             and _remaining(deadline) > 0.1
         ):
-            _emit_progress(
-                progress_callback,
-                "관련 경과 조회",
-                "공식 문서 부재와 구분해 공개된 경과 자료를 조회합니다",
+            tagged_first_results = tuple(
+                _tag_absence_context(result, absence_request)
+                if result.source == "web" and result.status == "ok"
+                else result
+                for result in first_results
             )
-            absence_execution = _execute_with_trace(
-                self._executor,
-                _absence_context_plan(plan, absence_request),
-                session_id=session_id,
-                total_timeout_s=min(30.0, _remaining(deadline)),
-                answer_sources=("web",),
-                soft_deadline_s=4.0,
-                source_filter=("web",),
-                progress_callback=source_completed,
+            reused_first_wave = any(
+                result.source == "web"
+                and result.status == "ok"
+                and isinstance(result.payload, Mapping)
+                and isinstance(result.payload.get("absence_context"), Mapping)
+                for result in tagged_first_results
             )
-            absence_execution = SimpleNamespace(
-                results=tuple(
-                    _tag_absence_context(result, absence_request)
-                    for result in absence_execution.results
-                ),
-                trace=absence_execution.trace,
-            )
-            if not any(result.status == "ok" for result in absence_execution.results):
-                first_results = tuple(
-                    _tag_absence_context(result, absence_request)
-                    if result.source == "web" and result.status == "ok"
-                    else result
-                    for result in first_results
+            first_results = tagged_first_results
+            if reused_first_wave:
+                absence_execution = SimpleNamespace(
+                    results=(),
+                    trace={
+                        "elapsed_ms": 0.0,
+                        "tools": [],
+                        "reused_first_wave": True,
+                    },
+                )
+            else:
+                _emit_progress(
+                    progress_callback,
+                    "관련 경과 조회",
+                    "공식 문서 부재와 구분해 공개된 경과 자료를 조회합니다",
+                )
+                supplemental = _execute_with_trace(
+                    self._executor,
+                    _absence_context_plan(plan, absence_request),
+                    session_id=session_id,
+                    total_timeout_s=min(30.0, _remaining(deadline)),
+                    answer_sources=("web",),
+                    soft_deadline_s=4.0,
+                    source_filter=("web",),
+                    progress_callback=source_completed,
+                )
+                absence_execution = SimpleNamespace(
+                    results=tuple(
+                        _tag_absence_context(result, absence_request)
+                        for result in supplemental.results
+                    ),
+                    trace={
+                        **(supplemental.trace or {}),
+                        "reused_first_wave": False,
+                    },
                 )
         current_results = (
             *first_results,
@@ -473,14 +506,18 @@ class V4Runtime:
             "gates": gated.trace,
             "typed_grounding_shadow": grounding_shadow,
         }
-        sources = tuple(
-            dict.fromkeys(
+        source_names = [
                 citation.source
                 for result in results
                 if result.status == "ok"
                 for citation in result.citations
-            )
+        ]
+        source_names.extend(
+            result.source
+            for result in results
+            if is_typed_absence_confirmation(result)
         )
+        sources = tuple(dict.fromkeys(source_names))
         next_state = _derive_session_state(
             question,
             plan,
@@ -570,11 +607,20 @@ def _results_from_session_state(state: SessionState) -> tuple[SourceResult, ...]
             continue
         path = str(fact.get("path") or "").strip()
         value = fact.get("value")
-        if not path or isinstance(value, bool) or not isinstance(value, (int, float)):
+        is_number = not isinstance(value, bool) and isinstance(value, (int, float))
+        is_date = fact.get("value_type") == "date" and _is_reusable_date_fact(path, value)
+        if not path or not (is_number or is_date):
             continue
-        facts_by_source.setdefault(source, []).append(
-            {"source": source, "path": path, "value": value}
-        )
+        restored = {"source": source, "path": path, "value": value}
+        if is_date:
+            restored.update(
+                {
+                    "column": str(fact.get("column") or path.rsplit(".", 1)[-1]),
+                    "row_path": str(fact.get("row_path") or ""),
+                    "value_type": "date",
+                }
+            )
+        facts_by_source.setdefault(source, []).append(restored)
 
     results: list[SourceResult] = []
     for source in SOURCE_NAMES:
@@ -616,25 +662,53 @@ def _state_entities(results: Sequence[SourceResult]) -> list[str]:
 
 
 def _state_numeric_facts(results: Sequence[SourceResult]) -> list[dict[str, Any]]:
-    facts: list[dict[str, Any]] = []
+    date_facts: list[dict[str, Any]] = []
+    numeric_facts: list[dict[str, Any]] = []
     for result in results:
         if result.status != "ok":
             continue
         for path, value in _walk_state_values(result.payload):
+            column = path.rsplit(".", 1)[-1].split("[", 1)[0]
+            row_path = path.rsplit(".", 1)[0] if "." in path else ""
+            if _is_reusable_date_fact(path, value):
+                date_facts.append(
+                    {
+                        "source": result.source,
+                        "path": path,
+                        "column": column,
+                        "row_path": row_path,
+                        "value": value,
+                        "value_type": "date",
+                    }
+                )
+                continue
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 continue
-            facts.append(
+            numeric_facts.append(
                 {
                     "source": result.source,
                     "path": path,
-                    "column": path.rsplit(".", 1)[-1].split("[", 1)[0],
-                    "row_path": path.rsplit(".", 1)[0] if "." in path else "",
+                    "column": column,
+                    "row_path": row_path,
                     "value": value,
                 }
             )
-            if len(facts) >= 64:
-                return facts
-    return facts
+    return [*date_facts, *numeric_facts][:64]
+
+
+_REUSABLE_DATE_COLUMNS = {"reexam_date", "reexamination_date"}
+_REUSABLE_DATE_RE = re.compile(
+    r"\d{4}-\d{2}-\d{2}(?:\s*~\s*\d{4}-\d{2}-\d{2})?"
+)
+
+
+def _is_reusable_date_fact(path: str, value: Any) -> bool:
+    column = path.rsplit(".", 1)[-1].split("[", 1)[0].casefold()
+    return bool(
+        column in _REUSABLE_DATE_COLUMNS
+        and isinstance(value, str)
+        and _REUSABLE_DATE_RE.fullmatch(value.strip())
+    )
 
 
 def _state_record_ids(results: Sequence[SourceResult]) -> list[str]:
@@ -1068,6 +1142,68 @@ def _has_official_document_reference(
             if any(host == expected or host.endswith(f".{expected}") for expected in official_hosts):
                 return True
     return False
+
+
+def _tag_absence_confirmation(
+    result: SourceResult,
+    request: Mapping[str, Any],
+) -> SourceResult:
+    if (
+        result.status != "empty"
+        or result.source != request.get("source")
+        or not isinstance(result.payload, Mapping)
+    ):
+        return result
+    lookup = result.payload.get("document_lookup")
+    if not (
+        isinstance(lookup, Mapping)
+        and lookup.get("document") == request.get("document")
+        and lookup.get("outcome") == "confirmed_absent"
+        and lookup.get("subject") == request.get("subject")
+    ):
+        return result
+
+    document = str(request["document"])
+    subject = str(request["subject"])
+    claims = tuple(
+        dict.fromkeys(
+            (
+                *(result.evidence.eligible_claims if result.evidence else ()),
+                document,
+                "absence_confirmation",
+                f"absence_confirmation:{document}",
+            )
+        )
+    )
+    evidence = (
+        result.evidence.model_copy(update={"eligible_claims": claims})
+        if result.evidence is not None
+        else EvidenceEnvelope(
+            kind=result.source,
+            entity_match="EXACT",
+            source_scope="KR",
+            time_match="NOT_REQUESTED",
+            eligible_claims=claims,
+            causal=False,
+            metric_type="document_absence",
+            product=(subject,),
+            subject_grain="brand",
+        )
+    )
+    return result.model_copy(
+        update={
+            "payload": {
+                **result.payload,
+                "absence_confirmation": {
+                    "source": result.source,
+                    "doc_type": document,
+                    "status": "confirmed_absent",
+                    "subject": subject,
+                },
+            },
+            "evidence": evidence,
+        }
+    )
 
 
 def _tag_absence_context(
