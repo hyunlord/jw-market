@@ -92,12 +92,9 @@ _SYNTHESIS_SYSTEM_PROMPT = (
     "공식 통계 표나 시계열에 섞지 말고 별도 문단에서 '공식 통계 아님'을 밝혀 서술한다. TIER1 또는 TIER2가 "
     "아닌 웹 정량값은 쓰지 않는다. 제네릭처럼 하위 제품 집합을 묻는 질문에서는 그 집합이 근거에 없을 때 "
     "본품이나 상위 제품의 수치를 대신 답하지 않고 요청 집합의 값을 확인하지 못했다고 먼저 밝힌다."
-    " 내부 데이터마트의 압축 JSON에서 `$columns`와 같은 위치의 `$rows` 값은 열 순서대로 대응하며, "
-    "`$ref`는 앞서 나온 경로의 byte-identical 근거를 그대로 재사용한다는 뜻이다. "
-    "`required_hira_surface`가 있으면 모든 항목을 첫 합성에서 본문에 정확히 포함한다."
+    " `required_hira_surface`가 있으면 모든 항목을 첫 합성에서 본문에 정확히 포함한다."
 )
 _CAUSE_MARKERS = ("원인", "왜 ", "이유")
-_MART_DEDUP_MIN_CHARS = 256
 
 
 @dataclass(frozen=True)
@@ -502,21 +499,8 @@ def _clinical_study_classification(payload: Any) -> list[dict[str, Any]]:
 def _mart_block(result: SourceResult) -> str:
     payload = _public_mart_payload(result.payload)
     tables = _markdown_tables(payload)
-    compacted, stats = _compact_mart_payload(payload)
-    raw = json.dumps(
-        compacted,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        default=str,
-    )
-    body = "\n\n".join(
-        (
-            *tables,
-            "무손실 압축 JSON "
-            f"(exact_refs={stats['reference_count']}, columnar_tables={stats['columnar_table_count']}): "
-            f"{raw}",
-        )
-    )
+    raw = json.dumps(payload, ensure_ascii=False, default=str)
+    body = "\n\n".join((*tables, f"원형 JSON: {raw}"))
     return f"<INTERNAL_DATAMART source=\"{_PUBLIC_SOURCE[result.source]}\">\n{body}\n</INTERNAL_DATAMART>"
 
 
@@ -534,81 +518,6 @@ def _public_mart_payload(value: Any) -> Any:
     if isinstance(value, tuple):
         return tuple(_public_mart_payload(item) for item in value)
     return value
-
-
-def _compact_mart_payload(value: Any) -> tuple[Any, dict[str, int]]:
-    """Factor exact duplicate subtrees and scalar row keys without dropping evidence."""
-
-    public = _public_mart_payload(value)
-    original_chars = len(_canonical_json(public))
-    seen: dict[str, str] = {}
-    reference_count = 0
-    columnar_table_count = 0
-
-    def compact(item: Any, path: str) -> Any:
-        nonlocal reference_count, columnar_table_count
-
-        if not isinstance(item, (Mapping, list, tuple)):
-            return item
-
-        canonical = _canonical_json(item)
-        if len(canonical) >= _MART_DEDUP_MIN_CHARS:
-            digest = hashlib.sha256(canonical.encode()).hexdigest()
-            first_path = seen.get(digest)
-            if first_path is not None:
-                reference_count += 1
-                return {"$ref": first_path}
-            seen[digest] = path
-
-        if isinstance(item, Mapping):
-            return {
-                str(key): compact(child, f"{path}.{key}")
-                for key, child in item.items()
-            }
-
-        if _can_encode_columnar(item):
-            columns = list(dict.fromkeys(str(key) for row in item for key in row))
-            columnar_table_count += 1
-            return {
-                "$columns": columns,
-                "$rows": [[row.get(column) for column in columns] for row in item],
-            }
-
-        rows = [compact(child, f"{path}[{index}]") for index, child in enumerate(item)]
-        return rows
-
-    compacted = compact(public, "$")
-    return compacted, {
-        "original_chars": original_chars,
-        "compacted_chars": len(_canonical_json(compacted)),
-        "reference_count": reference_count,
-        "columnar_table_count": columnar_table_count,
-    }
-
-
-def _canonical_json(value: Any) -> str:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    )
-
-
-def _can_encode_columnar(rows: Sequence[Any]) -> bool:
-    if len(rows) < 3 or not all(isinstance(row, Mapping) for row in rows):
-        return False
-    first_keys = set(rows[0])
-    return bool(
-        first_keys
-        and "$ref" not in first_keys
-        and all(
-            set(row) == first_keys
-            and all(not isinstance(value, (Mapping, list, tuple)) for value in row.values())
-            for row in rows
-        )
-    )
 
 
 def _required_hira_surface(

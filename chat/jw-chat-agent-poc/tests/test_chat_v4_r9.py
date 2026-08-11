@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
-from copy import deepcopy
 
 import pytest
 
@@ -18,10 +17,7 @@ from jw_chat_agent_poc.service.v4.contracts import (
     ToolQueries,
 )
 from jw_chat_agent_poc.service.v4.gates import apply_v4_gates
-from jw_chat_agent_poc.service.v4.synthesizer import (
-    _compact_mart_payload,
-    _synthesis_messages,
-)
+from jw_chat_agent_poc.service.v4.synthesizer import _synthesis_messages
 
 
 def _plan(question: str) -> PlannerOutput:
@@ -51,36 +47,6 @@ def _mart_result(*, payload: dict[str, object], grain: str = "brand") -> SourceR
             subject_grain=grain,
         ),
     )
-
-
-def _expand_compacted_mart(value: object) -> object:
-    resolved: dict[str, object] = {}
-
-    def expand(item: object, path: str) -> object:
-        if isinstance(item, dict) and set(item) == {"$ref"}:
-            result = deepcopy(resolved[str(item["$ref"])])
-        elif isinstance(item, dict) and set(item) == {"$columns", "$rows"}:
-            columns = item["$columns"]
-            rows = item["$rows"]
-            assert isinstance(columns, list) and isinstance(rows, list)
-            result = [dict(zip(columns, row, strict=True)) for row in rows]
-        elif isinstance(item, dict):
-            result = {
-                key: expand(child, f"{path}.{key}")
-                for key, child in item.items()
-            }
-        elif isinstance(item, list):
-            result = [
-                expand(child, f"{path}[{index}]")
-                for index, child in enumerate(item)
-            ]
-        else:
-            result = item
-        if isinstance(result, (dict, list)):
-            resolved[path] = deepcopy(result)
-        return result
-
-    return expand(value, "$")
 
 
 class _StreamResponse:
@@ -139,54 +105,6 @@ def test_r9_synthesis_keeps_static_prefix_byte_stable_and_cause_guide_dynamic() 
         for phrase in cause_payload["cause_answer_contract"]["forbidden_causal_phrases"]
     )
     assert "cause_answer_contract" not in overview_payload
-
-
-def test_r9_mart_prompt_compaction_is_lossless_for_unique_values() -> None:
-    series = [
-        {"period": f"2026-{month:02d}", "value_억원": month + 0.25, "rank": month}
-        for month in range(1, 7)
-    ]
-    payload = {
-        "calls": [
-            {"render_data": {"brand": "리바로", "series": series}},
-            {
-                "render_data": {
-                    "brand": "리바로젯",
-                    "series": series,
-                    "unique_value": "124.54억원",
-                }
-            },
-        ]
-    }
-
-    compacted, stats = _compact_mart_payload(payload)
-
-    first_series = compacted["calls"][0]["render_data"]["series"]
-    second_series = compacted["calls"][1]["render_data"]["series"]
-    assert first_series["$columns"] == ["period", "value_억원", "rank"]
-    assert first_series["$rows"][0] == ["2026-01", 1.25, 1]
-    assert second_series == {"$ref": "$.calls[0].render_data.series"}
-    assert compacted["calls"][1]["render_data"]["unique_value"] == "124.54억원"
-    assert stats["reference_count"] == 1
-    assert stats["columnar_table_count"] == 1
-    assert stats["compacted_chars"] < stats["original_chars"]
-    assert _expand_compacted_mart(compacted) == payload
-
-
-def test_r9_mart_prompt_does_not_columnarize_sparse_rows() -> None:
-    payload = {
-        "rows": [
-            {"period": "2026-01", "value": None},
-            {"period": "2026-02"},
-            {"period": "2026-03", "value": 3},
-        ]
-    }
-
-    compacted, stats = _compact_mart_payload(payload)
-
-    assert "$columns" not in compacted["rows"]
-    assert stats["columnar_table_count"] == 0
-    assert _expand_compacted_mart(compacted) == payload
 
 
 def test_r9_initial_synthesis_prompt_binds_requested_hira_values() -> None:
