@@ -45,6 +45,9 @@ WEEKLY_EVENT_ALIASES: Final = {
     "종근당 자누비아": "종근당자누비아",
     "종근당자누비아": "종근당자누비아",
 }
+WEEKLY_ALIAS_CONTEXTS: Final = {
+    "종근당자누비아": ("ml_003", "cd_003"),
+}
 WEEKLY_EXCLUDED_NON_JW_MARKET: Final = frozenset(
     {
         "노보믹스", "다파시타 엠", "디트루시톨", "발디핀 플러스",
@@ -256,9 +259,27 @@ def route_density_worklist(
 ) -> DensityWorklist:
     """Build a brand_key-routed Agent2 worklist from mart and score rows."""
 
-    identities = build_brand_identities(brand_rows)
+    effective_brand_rows = list(brand_rows)
+    if weekly_global:
+        existing_keys = {_text(row.get("brand_key")) for row in effective_brand_rows}
+        for row in strategic_rows or []:
+            brand_key = _text(row.get("general_brand_key"))
+            expected_context = WEEKLY_ALIAS_CONTEXTS.get(brand_key)
+            actual_context = (_text(row.get("ml_id")), _text(row.get("cd_id")))
+            if expected_context != actual_context or brand_key in existing_keys:
+                continue
+            effective_brand_rows.append(
+                {
+                    "brand_key": brand_key,
+                    "brand_name": _text(row.get("canonical_name")) or brand_key,
+                    "raw_value_history": {},
+                }
+            )
+            existing_keys.add(brand_key)
+
+    identities = build_brand_identities(effective_brand_rows)
     evidence = build_evidence_counts_from_rows(
-        brand_rows,
+        effective_brand_rows,
         score_rows,
         accept_canonical_brand_keys=accept_canonical_brand_keys,
         weekly_global=weekly_global,
@@ -330,7 +351,7 @@ def load_density_worklist(
             db_conn,
             """
             SELECT brand_id, canonical_name, is_jw, is_target,
-                   is_excluded, is_class_excluded, ml_id, cd_id
+                   is_excluded, is_class_excluded, general_brand_key, ml_id, cd_id
             FROM catalog_strategic_brand
             ORDER BY brand_id
             """,

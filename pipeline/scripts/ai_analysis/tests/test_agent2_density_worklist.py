@@ -91,8 +91,8 @@ def test_weekly_opt_in_records_alias_and_all_non_jw_exclusions() -> None:
                 "canonical_name": "종근당 자누비아",
                 "is_jw": 0,
                 "is_target": 1,
-                "ml_market_id": "ml_003",
-                "cd_market_id": "cd_003",
+                "ml_id": "ml_003",
+                "cd_id": "cd_003",
             }
         ],
     )
@@ -108,6 +108,42 @@ def test_weekly_opt_in_records_alias_and_all_non_jw_exclusions() -> None:
             "source_event_count": 3,
         }
     ]
+
+
+def test_weekly_alias_uses_approved_catalog_identity_when_general_mart_key_is_absent() -> None:
+    score_rows = [
+        {
+            "brand_canonical": "종근당자누비아",
+            "source_processor": "tier2_llm_v1",
+            "derivation": "llm_direct",
+            "tag": "신약/R&D",
+            "score": 99,
+        }
+    ]
+
+    worklist = route_density_worklist(
+        [],
+        score_rows,
+        weekly_global=True,
+        strategic_rows=[
+            {
+                "canonical_name": "종근당 자누비아",
+                "general_brand_key": "종근당자누비아",
+                "is_jw": 0,
+                "is_target": 0,
+                "is_excluded": 0,
+                "is_class_excluded": 0,
+                "ml_id": "ml_003",
+                "cd_id": "cd_003",
+            }
+        ],
+    )
+
+    assert [item.brand_key for item in worklist.routed] == ["종근당자누비아"]
+    assert worklist.evidence.unmatched_unknown == ()
+    assert worklist.evidence.aliases == (
+        ("종근당자누비아", "종근당자누비아", "ml_003", "cd_003"),
+    )
 
 
 def test_weekly_loader_uses_live_strategic_catalog_column_names() -> None:
