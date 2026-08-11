@@ -358,6 +358,10 @@ def _render_mart_facts(
     *,
     allowed_fields: tuple[str, ...],
 ) -> str:
+    history = _render_mart_history(results)
+    if history:
+        return history
+
     summaries: list[str] = []
     for result in results:
         calls = result.payload.get("calls") if isinstance(result.payload, dict) else None
@@ -392,6 +396,61 @@ def _render_mart_facts(
     if not facts:
         return "mart 근거는 확인했지만 복사 가능한 수치 필드를 찾지 못했습니다."
     return "확인된 내부 데이터마트 지표는 " + ", ".join(dict.fromkeys(facts[:20])) + "입니다."
+
+
+def _render_mart_history(results: tuple[SourceResult, ...]) -> str:
+    for result in results:
+        if not any(
+            token in result.query.casefold()
+            for token in ("추이", "시계열", "최근 5년", "최근5년", "변해", "변화", "변동")
+        ):
+            continue
+        calls = result.payload.get("calls") if isinstance(result.payload, dict) else None
+        if not isinstance(calls, list):
+            continue
+        for call in calls:
+            render_data = call.get("render_data") if isinstance(call, dict) else None
+            if not isinstance(render_data, dict):
+                continue
+            brand_series = render_data.get("brand_value_series_10pt")
+            if not isinstance(brand_series, list) or len(brand_series) < 2:
+                continue
+            market_series = render_data.get("market_size_series")
+            market_by_period = (
+                {
+                    str(item.get("period")): item.get("value_억원")
+                    for item in market_series
+                    if isinstance(item, dict)
+                    and item.get("period")
+                    and item.get("value_억원") is not None
+                }
+                if isinstance(market_series, list)
+                else {}
+            )
+            selected = [
+                item
+                for index, item in enumerate(brand_series)
+                if isinstance(item, dict)
+                and item.get("period")
+                and item.get("value_억원") is not None
+                and (
+                    index == 0
+                    or str(item.get("period")).endswith("-12")
+                    or index == len(brand_series) - 1
+                )
+            ]
+            if len(selected) < 2:
+                continue
+            brand = str(render_data.get("brand") or "브랜드")
+            lines = [f"| 기간 | {brand} 매출 | 시장 규모 |", "| --- | ---: | ---: |"]
+            for item in selected:
+                period = str(item["period"])
+                brand_value = item["value_억원"]
+                market_value = market_by_period.get(period)
+                market_display = f"{market_value}억원" if market_value is not None else "확인되지 않음"
+                lines.append(f"| {period} | {brand_value}억원 | {market_display} |")
+            return "확인된 기존 시계열 값은 다음과 같습니다.\n\n" + "\n".join(lines)
+    return ""
 
 
 def _walk_scalars(value: Any, prefix: str = ""):

@@ -608,6 +608,13 @@ def _hira_patient_facts(payload: Any) -> tuple[str, ...]:
     disease_code = ""
     disease_name = ""
     yearly: dict[str, list[str]] = {}
+    public_fields = (
+        ("ptntCnt", "환자수는", "명(청구 실인원)"),
+        ("rvdInsupBrdnAmt", "보험자부담금", "천원"),
+        ("rvdRpeTamtAmt", "요양급여비용총액", "천원"),
+        ("specCnt", "명세서건수", "건"),
+        ("vstDdcnt", "내원일수", "일"),
+    )
     for call in payload["calls"]:
         if not isinstance(call, Mapping):
             continue
@@ -626,15 +633,20 @@ def _hira_patient_facts(payload: Any) -> tuple[str, ...]:
             disease_code = disease_code or str(row.get("sickCd") or "")
             disease_name = disease_name or str(row.get("sickNm") or "")
             row_year = year or str(row.get("year") or "")
-            patient_count = row.get("ptntCnt")
-            if not row_year or patient_count in (None, ""):
+            if not row_year or row.get("ptntCnt") in (None, ""):
                 continue
-            try:
-                count = f"{int(str(patient_count).replace(',', '')):,}"
-            except ValueError:
-                count = str(patient_count)
             care_type = str(row.get("inpatOpat") or "환자")
-            yearly.setdefault(row_year, []).append(f"{care_type} {count}명")
+            values: list[str] = []
+            for field, label, unit in public_fields:
+                raw_value = row.get(field)
+                if raw_value in (None, ""):
+                    continue
+                try:
+                    display = f"{int(str(raw_value).replace(',', '')):,}"
+                except ValueError:
+                    display = str(raw_value)
+                values.append(f"{label} {display}{unit}")
+            yearly.setdefault(row_year, []).append(f"{care_type} " + ", ".join(values))
     if not yearly:
         return ()
     subject = disease_code
@@ -642,15 +654,14 @@ def _hira_patient_facts(payload: Any) -> tuple[str, ...]:
         subject += f"({disease_name})" if subject else disease_name
     if subject:
         return tuple(
-            f"{subject} 환자수는 {year}년 {', '.join(values)}으로 확인되었습니다."
+            f"{subject} {year}년 {', '.join(values)}으로 확인되었습니다."
             for year, values in sorted(yearly.items())
         )
     facts: list[str] = []
     for year, values in sorted(yearly.items()):
         labeled = []
         for value in values:
-            care_type, count = value.split(" ", 1)
-            labeled.append(f"{care_type} 환자수는 {count}")
+            labeled.append(value)
         facts.append(f"{year}년 {', '.join(labeled)}으로 확인되었습니다.")
     return tuple(facts)
 

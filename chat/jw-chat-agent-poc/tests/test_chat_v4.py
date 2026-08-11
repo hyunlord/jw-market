@@ -232,8 +232,50 @@ def test_v4_fallback_joins_hira_name_and_split_year_rows() -> None:
 
     answer = _evidence_fallback((result,))
 
-    assert "D693(특발성 혈소판감소성 자반) 환자수는 2024년 입원 1,606명, 외래 9,231명" in answer
+    assert (
+        "D693(특발성 혈소판감소성 자반) 2024년 입원 환자수는 "
+        "1,606명(청구 실인원), 외래 환자수는 9,231명(청구 실인원)"
+    ) in answer
     assert all(field not in answer for field in ("sickCd", "ptntCnt", "value"))
+
+
+def test_v4_fallback_preserves_all_hira_additive_fields() -> None:
+    result = SourceResult(
+        source="hira",
+        query="D693 상병 환자수 최근 5년과 진료비, 방문일수 알려줘",
+        status="ok",
+        payload={
+            "calls": [
+                {
+                    "render_data": {
+                        "request": {"sickCd": "D693", "year": "2024"},
+                        "items": [
+                            {
+                                "inpatOpat": "입원",
+                                "ptntCnt": "1606",
+                                "rvdInsupBrdnAmt": "7193144",
+                                "rvdRpeTamtAmt": "8697604",
+                                "specCnt": "2547",
+                                "vstDdcnt": "12879",
+                            }
+                        ],
+                    }
+                }
+            ]
+        },
+    )
+
+    answer = _evidence_fallback((result,))
+
+    assert "환자수는 1,606명(청구 실인원)" in answer
+    assert "보험자부담금 7,193,144천원" in answer
+    assert "요양급여비용총액 8,697,604천원" in answer
+    assert "명세서건수 2,547건" in answer
+    assert "내원일수 12,879일" in answer
+    assert all(
+        field not in answer
+        for field in ("ptntCnt", "rvdInsupBrdnAmt", "rvdRpeTamtAmt", "specCnt", "vstDdcnt")
+    )
 
 
 def test_v4_fallback_never_lists_unknown_internal_field_names() -> None:
@@ -1011,7 +1053,7 @@ def test_v4_synthesizer_uses_grounded_fallback_for_length_cutoff() -> None:
         _plan(), (result,), (), budget_s=24.0
     )
 
-    assert "2024년 입원 1,606명" in outcome.text
+    assert "2024년 입원 환자수는 1,606명(청구 실인원)" in outcome.text
     assert outcome.trace["finish_reason"] == "length"
     assert outcome.trace["fallback_reason"] == "length"
 
@@ -2111,6 +2153,53 @@ def test_v4_gates_render_verified_mart_summary_instead_of_raw_fields() -> None:
     assert "230833352390.9699" not in gated.text
     assert "원시 필드" not in gated.text
     assert "- value:" not in gated.text
+
+
+def test_v4_gates_render_existing_mart_history_points_when_synthesis_is_blocked() -> None:
+    results = (
+        SourceResult(
+            source="mart",
+            query="리바로 매출 추이",
+            status="ok",
+            payload={
+                "calls": [
+                    {
+                        "summary_text": "리바로 2026-06 UBIST 전략 mart 지표: 매출 85.87억원.",
+                        "render_data": {
+                            "brand": "리바로",
+                            "brand_value_series_10pt": [
+                                {"period": "2021-07", "value_억원": 69.24},
+                                {"period": "2021-12", "value_억원": 75.34},
+                                {"period": "2022-12", "value_억원": 77.73},
+                                {"period": "2026-06", "value_억원": 85.87},
+                            ],
+                            "market_size_series": [
+                                {"period": "2021-07", "value_억원": 1446.74},
+                                {"period": "2021-12", "value_억원": 1590.98},
+                                {"period": "2022-12", "value_억원": 1743.44},
+                                {"period": "2026-06", "value_억원": 2308.33},
+                            ],
+                        },
+                    }
+                ]
+            },
+        ),
+    )
+
+    gated = apply_v4_gates(
+        "리바로 매출 추이가 어떻게 변해왔어?",
+        "리바로 매출은 99.99억원입니다.",
+        results,
+    )
+
+    assert "| 기간 | 리바로 매출 | 시장 규모 |" in gated.text
+    assert "| 2021-07 | 69.24억원 | 1446.74억원 |" in gated.text
+    assert "| 2026-06 | 85.87억원 | 2308.33억원 |" in gated.text
+    assert "99.99" not in gated.text
+
+
+def test_v4_base_query_removes_patent_planner_suffix() -> None:
+    assert v4_adapters._base_query("리바로정 특허권 등재 현황") == "리바로정"
 
 
 def test_v4_gates_prepend_requested_mart_metric_when_synthesis_omits_it() -> None:

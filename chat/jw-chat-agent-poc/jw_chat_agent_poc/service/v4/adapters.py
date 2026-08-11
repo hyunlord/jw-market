@@ -385,6 +385,7 @@ def _base_query(query: str) -> str:
         "label safety",
         "clinical trials",
         "특허 만료 공식",
+        "특허권 등재 현황",
     )
     changed = True
     while changed:
