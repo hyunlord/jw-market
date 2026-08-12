@@ -290,6 +290,7 @@ def test_r10b_absence_surface_is_first_paragraph_and_reads_nested_web_items() ->
                                 {
                                     "url": "https://www.yna.co.kr/view/example",
                                     "title": "마운자로 급여 협상 결렬 뒤 재신청",
+                                    "published_date": "2024-10-25",
                                 }
                             ]
                         }

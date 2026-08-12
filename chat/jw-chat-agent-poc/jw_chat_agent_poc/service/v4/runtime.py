@@ -1211,7 +1211,7 @@ def _tag_absence_context(
     request: Mapping[str, Any],
 ) -> SourceResult:
     payload = result.payload if isinstance(result.payload, Mapping) else {"value": result.payload}
-    filtered, usable = _official_gap_payload(payload)
+    filtered, usable = _absence_context_payload(payload, request)
     return result.model_copy(
         update={
             "status": result.status if usable else "empty",
@@ -1231,7 +1231,12 @@ def _tag_absence_context(
 
 
 def _absence_context_plan(plan: Any, request: Mapping[str, Any]) -> Any:
-    query = f"{request['query']} 공식 문서 부재 협상 경과 보도자료"
+    subject = str(request["subject"])
+    document_terms = {
+        "reimbursement": "급여 약가 협상 결렬 재신청",
+        "approval": "허가 심사 반려 재신청",
+    }.get(str(request["document"]), "공식 문서 경과")
+    query = f"{subject} {document_terms} 보도"
     queries = plan.tool_queries.model_copy(update={"web": (query,)})
     return plan.model_copy(
         update={
@@ -1297,6 +1302,87 @@ def _official_gap_payload(payload: Mapping[str, Any]) -> tuple[dict[str, Any], b
             usable = usable or bool(kept_items)
         kept_calls.append(copied_call)
     return {**payload, "calls": kept_calls}, usable
+
+
+def _absence_context_payload(
+    payload: Mapping[str, Any],
+    request: Mapping[str, Any],
+) -> tuple[dict[str, Any], bool]:
+    trusted_payload, _ = _official_gap_payload(payload)
+    direct_items = trusted_payload.get("items")
+    if isinstance(direct_items, list):
+        kept_items = _relevant_absence_context_items(direct_items, request)
+        return {**trusted_payload, "items": kept_items}, bool(kept_items)
+
+    calls = trusted_payload.get("calls")
+    if not isinstance(calls, list):
+        return trusted_payload, False
+    kept_calls: list[Any] = []
+    usable = False
+    for call in calls:
+        if not isinstance(call, Mapping):
+            continue
+        copied_call = dict(call)
+        render_data = call.get("render_data")
+        if isinstance(render_data, Mapping) and isinstance(render_data.get("items"), list):
+            kept_items = _relevant_absence_context_items(render_data["items"], request)
+            copied_call["render_data"] = {**render_data, "items": kept_items}
+            usable = usable or bool(kept_items)
+        kept_calls.append(copied_call)
+    return {**trusted_payload, "calls": kept_calls}, usable
+
+
+def _relevant_absence_context_items(
+    items: Sequence[Any],
+    request: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    subject_markers = _absence_subject_markers(request)
+    event_markers = {
+        "reimbursement": ("협상", "결렬", "재신청", "약가"),
+        "approval": ("허가", "심사", "반려", "재신청"),
+    }.get(str(request.get("document") or ""), ())
+    kept_items: list[dict[str, Any]] = []
+    for raw_item in items:
+        if not isinstance(raw_item, Mapping):
+            continue
+        searchable = " ".join(
+            str(raw_item.get(key) or "")
+            for key in ("title", "snippet", "description", "content")
+        )
+        normalized = _normalize_context_text(searchable)
+        if not any(marker and marker in normalized for marker in subject_markers):
+            continue
+        if not any(_normalize_context_text(marker) in normalized for marker in event_markers):
+            continue
+        if not _has_observed_publication_date(raw_item):
+            continue
+        kept_items.append(dict(raw_item))
+    return kept_items
+
+
+def _absence_subject_markers(request: Mapping[str, Any]) -> tuple[str, ...]:
+    markers = [_normalize_context_text(request.get("subject"))]
+    query = str(request.get("query") or "")
+    for group in re.findall(r"\(([^()]*)\)", query):
+        markers.extend(
+            _normalize_context_text(token)
+            for token in re.findall(r"[A-Za-z][A-Za-z0-9+.-]{2,}", group)
+        )
+    return tuple(dict.fromkeys(marker for marker in markers if marker))
+
+
+def _normalize_context_text(value: Any) -> str:
+    return re.sub(r"[\W_]+", "", str(value or "").casefold())
+
+
+def _has_observed_publication_date(item: Mapping[str, Any]) -> bool:
+    return any(
+        re.match(
+            r"^\d{4}[-./]\d{1,2}[-./]\d{1,2}(?:\D|$)",
+            str(item.get(key) or "").strip(),
+        )
+        for key in ("published_at", "published_date", "date")
+    )
 
 
 def _trusted_web_items(items: Sequence[Any]) -> list[dict[str, Any]]:

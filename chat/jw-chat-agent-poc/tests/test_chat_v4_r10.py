@@ -199,7 +199,15 @@ def test_r10_absence_context_separates_official_absence_from_web_reporting() -> 
         source="web",
         query="마운자로 급여기준 부재 경과",
         status="ok",
-        payload={"items": [{"url": "https://www.yna.co.kr/view/example", "title": "약가 협상 결렬"}]},
+        payload={
+            "items": [
+                {
+                    "url": "https://www.yna.co.kr/view/example",
+                    "title": "마운자로 약가 협상 결렬",
+                    "published_date": "2024-10-25",
+                }
+            ]
+        },
     )
     tagged = _tag_absence_context(web, request)
     item = tagged.payload["items"][0]
@@ -277,6 +285,7 @@ def test_r10_absence_context_surface_keeps_official_absence_and_reported_event()
                     {
                         "url": "https://www.yna.co.kr/view/example",
                         "title": "마운자로 급여 협상 결렬 뒤 재신청",
+                        "published_date": "2024-10-25",
                     }
                 ]
             },
@@ -799,6 +808,7 @@ def test_r10_runtime_reuses_first_wave_web_when_absence_wave_is_empty() -> None:
                                 {
                                     "url": "https://www.yna.co.kr/view/example",
                                     "title": "마운자로 급여 협상 결렬 뒤 재신청",
+                                    "published_date": "2024-10-25",
                                 }
                             ]
                         },

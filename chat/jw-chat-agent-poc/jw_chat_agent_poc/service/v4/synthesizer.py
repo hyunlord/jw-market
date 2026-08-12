@@ -751,9 +751,17 @@ def _append_absence_context_surface(
             f"[출처: {official_label}]"
         )
     answer = _insert_core_first_paragraph(answer, official_sentence)
+    reported_result = next(
+        (
+            result
+            for result in results
+            if result.status == "ok" and _is_absence_context_result(result)
+        ),
+        None,
+    )
     items = (
-        _absence_web_items(context_result.payload)
-        if context_result is not None and isinstance(context_result.payload, Mapping)
+        _absence_web_items(reported_result.payload)
+        if reported_result is not None and isinstance(reported_result.payload, Mapping)
         else []
     )
     event = next(
@@ -761,7 +769,10 @@ def _append_absence_context_surface(
             item
             for item in items
             if isinstance(item, Mapping)
-            and any(marker in str(item.get("title") or "") for marker in ("협상", "급여"))
+            and any(
+                marker in str(item.get("title") or "")
+                for marker in ("협상", "결렬", "재신청", "약가")
+            )
         ),
         None,
     )
@@ -786,9 +797,9 @@ def _append_absence_context_surface(
 def _observed_publication_date(item: Mapping[str, Any]) -> str:
     for key in ("published_at", "published_date", "date"):
         value = str(item.get(key) or "").strip()
-        match = re.match(r"^(\d{4}-\d{2}-\d{2})(?:\D|$)", value)
+        match = re.match(r"^(\d{4})[-./](\d{1,2})[-./](\d{1,2})(?:\D|$)", value)
         if match:
-            return match.group(1)
+            return f"{match.group(1)}-{int(match.group(2)):02d}-{int(match.group(3)):02d}"
     return ""
 
 

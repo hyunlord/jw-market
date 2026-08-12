@@ -59,7 +59,26 @@ def _trusted_web() -> SourceResult:
                 {
                     "url": "https://www.yna.co.kr/view/example",
                     "title": "마운자로 급여 협상 결렬 뒤 재신청",
-                    "published_date": "2024-10-25",
+                    "published_date": "2024.10.25",
+                }
+            ]
+        },
+    )
+
+
+def _generic_trusted_web() -> SourceResult:
+    return SourceResult(
+        source="web",
+        query="마운자로 급여 등재 현황 2024",
+        status="ok",
+        payload={
+            "items": [
+                {
+                    "url": "https://www.khidi.or.kr/board/view?no=998",
+                    "title": "2024 급여의약품 청구 현황",
+                    "snippet": "급여의약품 청구 현황 통계",
+                    "published_at": None,
+                    "published_date": None,
                 }
             ]
         },
@@ -148,6 +167,42 @@ def test_r10c_first_wave_web_context_skips_supplemental_call() -> None:
     assert web["payload"]["absence_context"]["official_absence"] is True
 
 
+def test_r10c_generic_first_wave_web_triggers_targeted_supplemental_call() -> None:
+    class Executor:
+        def __init__(self) -> None:
+            self.filters: list[tuple[str, ...] | None] = []
+
+        def execute_with_trace(self, _plan, **kwargs):
+            source_filter = kwargs.get("source_filter")
+            self.filters.append(source_filter)
+            results = (
+                (_trusted_web(),)
+                if source_filter == ("web",)
+                else (_confirmed_absence(), _generic_trusted_web())
+            )
+            return SimpleNamespace(
+                results=results,
+                trace={"elapsed_ms": 1.0, "tools": [], "session_result_reused": False},
+            )
+
+    executor = Executor()
+    answer = V4Runtime(
+        planner=_Planner(),
+        executor=executor,
+        synthesizer=_AbsenceSynthesizer(),
+    ).answer("마운자로 급여기준", conversation_id="r10c-generic-web", turns=())
+
+    usable_web = [
+        result
+        for result in answer.trace["tool_results"]
+        if result["source"] == "web" and result["status"] == "ok"
+    ]
+    assert executor.filters == [None, ("web",)]
+    assert len(usable_web) == 1
+    assert usable_web[0]["payload"]["items"][0]["title"].startswith("마운자로")
+    assert answer.trace["absence_context"]["execution"]["reused_first_wave"] is False
+
+
 def test_r10c_absence_context_surfaces_observed_web_publication_date() -> None:
     from jw_chat_agent_poc.service.v4.runtime import _tag_absence_context
     from jw_chat_agent_poc.service.v4.synthesizer import _append_absence_context_surface
@@ -167,6 +222,72 @@ def test_r10c_absence_context_surfaces_observed_web_publication_date() -> None:
     assert "2024-10-25 게시된" in answer
     assert "협상 결렬" in answer
     assert "보도되고 있습니다" in answer
+
+
+def test_r10c_undated_negotiation_result_is_not_reused_as_context() -> None:
+    from jw_chat_agent_poc.service.v4.runtime import _tag_absence_context
+
+    undated = _trusted_web().model_copy(
+        update={
+            "payload": {
+                "items": [
+                    {
+                        "url": "https://www.yna.co.kr/view/example",
+                        "title": "마운자로 급여 협상 결렬 뒤 재신청",
+                        "published_date": None,
+                    }
+                ]
+            }
+        }
+    )
+
+    tagged = _tag_absence_context(
+        undated,
+        {
+            "source": "hira",
+            "document": "reimbursement",
+            "subject": "마운자로",
+            "query": "마운자로(Tirzepatide) 급여기준",
+        },
+    )
+
+    assert tagged.status == "empty"
+    assert tagged.payload["items"] == []
+
+
+def test_r10c_empty_first_wave_context_does_not_mask_supplemental_context() -> None:
+    from jw_chat_agent_poc.service.v4.runtime import _tag_absence_context
+    from jw_chat_agent_poc.service.v4.synthesizer import _append_absence_context_surface
+
+    request = {
+        "source": "hira",
+        "document": "reimbursement",
+        "subject": "마운자로",
+        "query": "마운자로(Tirzepatide) 급여기준",
+    }
+    rejected_first_wave = _generic_trusted_web().model_copy(
+        update={
+            "status": "empty",
+            "payload": {
+                **_generic_trusted_web().payload,
+                "absence_context": {
+                    **request,
+                    "official_absence": True,
+                    "reported_context_only": True,
+                },
+            },
+        }
+    )
+    supplemental = _tag_absence_context(_trusted_web(), request)
+
+    answer = _append_absence_context_surface(
+        "## 핵심 답\n확인 중입니다.",
+        (rejected_first_wave, supplemental),
+    )
+
+    assert "2024-10-25 게시된" in answer
+    assert "협상 결렬" in answer
+    assert "2024 급여의약품 청구 현황" not in answer
 
 
 def test_r10c_confirmed_absence_surfaces_without_web_context() -> None:
