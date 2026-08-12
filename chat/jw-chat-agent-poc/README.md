@@ -23,7 +23,7 @@ are out of P1 scope.
 ## Run
 
 ```bash
-cd /Users/rexxa/github/jw-market-test
+cd <repository-root>
 PYTHONPATH=chat/jw-chat-agent-poc pytest -q chat/jw-chat-agent-poc/tests
 PYTHONPATH=chat/jw-chat-agent-poc python chat/jw-chat-agent-poc/scripts/run_scenarios.py --out /tmp/chat_poc_verify
 ```
@@ -32,4 +32,3 @@ PYTHONPATH=chat/jw-chat-agent-poc python chat/jw-chat-agent-poc/scripts/run_scen
 
 The map is copied from the PL-provided screen-read table in the task request.
 It must be reviewed by PL before expanding P1 behavior.
-
