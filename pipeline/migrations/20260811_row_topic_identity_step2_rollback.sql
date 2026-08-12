@@ -1,0 +1,3 @@
+DROP TABLE jw_brand_activity_stage.row_topic_assignment_status_semantic_v1;
+DROP TABLE jw_brand_activity_stage.row_topic_assignment_semantic_v1;
+DROP TABLE jw_brand_activity_stage.row_topic_stage_occurrence_v1;

@@ -1,0 +1,7 @@
+-- ROW_TOPIC_STEP3_5_IMPL_20260812: destructive rollback DDL. Do not execute without approval.
+
+DROP TABLE jw_brand_activity_stage.row_topic_taxonomy_active_release_v1;
+DROP TABLE jw_brand_activity_stage.row_topic_taxonomy_release_manifest_v1;
+DROP TABLE jw_brand_activity_stage.row_topic_taxonomy_release_v1;
+DROP TABLE jw_brand_activity_stage.row_topic_assignment_batch_semantic_v1;
+DROP TABLE jw_brand_activity_stage.row_topic_assignment_run_semantic_v1;
