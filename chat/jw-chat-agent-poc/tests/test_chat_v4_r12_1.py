@@ -599,6 +599,7 @@ def test_patent_payload_keeps_kr_us_and_news_in_separate_lanes() -> None:
         kr_calls=(kr_call,),
         us_calls=(us_call,),
         news_calls=(news_call,),
+        entity_tokens=("리바로", "Pitavastatin Calcium"),
     )
 
     assert set(payload) == {"kr_primary", "us_secondary", "news"}
@@ -1045,7 +1046,7 @@ def test_lossless_timeout_composition_keeps_full_clinical_facts() -> None:
         mode="inject",
     )
 
-    assert "자동 해설 생성이 완료되지 않았습니다" in composed.text
+    assert "자동 해설 생성 미완료" in composed.text
     assert "구체적인 답을 구성하지 못했습니다" not in composed.text
     assert all(f"NCT{index:08d}" in composed.text for index in range(1, 4))
     assert composed.fallback_detail_retention_rate == 1.0
@@ -1302,7 +1303,7 @@ def test_lossless_patent_renderer_keeps_three_lanes_and_bounded_wording() -> Non
                         "render_data": {
                             "items": [
                                 {
-                                    "title": "특허 분쟁 보도",
+                                    "title": "리바로젯 특허 분쟁 보도",
                                     "url": "https://news.example.test/patent",
                                     "event_date": "2026-07-31",
                                     "published_at": "2026-08-01",
@@ -1311,6 +1312,7 @@ def test_lossless_patent_renderer_keeps_three_lanes_and_bounded_wording() -> Non
                         },
                     },
                 ),
+                entity_tokens=("리바로젯",),
             )
         },
     )
@@ -1363,7 +1365,7 @@ def test_lossless_patent_renderer_keeps_three_lanes_and_bounded_wording() -> Non
     )
     assert "10-0777553" in composed.text
     assert "8557993" in composed.text
-    assert "특허 분쟁 보도" in composed.text
+    assert "리바로젯 특허 분쟁 보도" in composed.text
     assert "구체적인 답을 구성하지 못했습니다" not in composed.text
     assert composed.fallback_detail_retention_rate == 1.0
 
@@ -1664,9 +1666,10 @@ def test_runtime_inject_mode_composes_deterministic_facts_before_commentary(
         synthesizer=Synthesizer(),
     ).answer("리바로젯 임상현황", conversation_id="lossless", turns=())
 
-    assert answer.text.startswith("## 조사 범위와 완전성")
+    assert answer.text.startswith("## 핵심 답\n임상 포트폴리오 해설입니다.")
     assert "NCT00000001" in answer.text
-    assert "## 자동 해설\n임상 포트폴리오 해설입니다." in answer.text
+    assert "## 자동 해설" not in answer.text
+    assert answer.text.index("## 핵심 답") < answer.text.index("## 조사 범위와 완전성")
     assert answer.trace["lossless_spine"]["answer_mutation"] is True
     assert answer.trace["lossless_spine"]["records_rendered"] == 1
 
@@ -1773,7 +1776,7 @@ def test_runtime_fallback_retains_full_clinical_facts(monkeypatch) -> None:
 
     assert "NCT00000001" in answer.text
     assert "Pitavastatin" in answer.text
-    assert "자동 해설 생성이 완료되지 않았습니다" in answer.text
+    assert "자동 해설 생성 미완료" in answer.text
     assert "구체적인 답을 구성하지 못했습니다" not in answer.text
     assert answer.trace["lossless_spine"]["fallback_detail_retention_rate"] == 1.0
 

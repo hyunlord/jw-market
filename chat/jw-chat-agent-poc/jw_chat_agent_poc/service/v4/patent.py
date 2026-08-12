@@ -5,6 +5,22 @@ from typing import Any, Literal
 
 
 PatentLaneName = Literal["kr_primary", "us_secondary", "news"]
+_GENERIC_RELEVANCE_TOKENS = frozenset(
+    {
+        "calcium",
+        "chemical",
+        "company",
+        "corporation",
+        "hydrate",
+        "hydrochloride",
+        "limited",
+        "pharma",
+        "pharmaceutical",
+        "sodium",
+        "제약",
+        "주식회사",
+    }
+)
 
 
 def build_patent_lane_payload(
@@ -12,10 +28,18 @@ def build_patent_lane_payload(
     kr_calls: Sequence[Mapping[str, Any]],
     us_calls: Sequence[Mapping[str, Any]],
     news_calls: Sequence[Mapping[str, Any]],
+    entity_tokens: Sequence[str] = (),
 ) -> dict[str, dict[str, Any]]:
     kr_records, kr_received = _patent_records(kr_calls, lane="kr_primary")
     us_records, us_received = _patent_records(us_calls, lane="us_secondary")
-    news_records, news_received = _news_records(news_calls)
+    relevance_tokens = _relevance_tokens(
+        entity_tokens,
+        (*kr_records, *us_records),
+    )
+    news_records, news_received = _news_records(
+        news_calls,
+        relevance_tokens=relevance_tokens,
+    )
     return {
         "kr_primary": _lane(
             scope="KR_PRIMARY",
@@ -102,6 +126,8 @@ def _patent_record(
 
 def _news_records(
     calls: Sequence[Mapping[str, Any]],
+    *,
+    relevance_tokens: Sequence[str],
 ) -> tuple[list[dict[str, Any]], int]:
     received: list[dict[str, Any]] = []
     for call in calls:
@@ -125,7 +151,49 @@ def _news_records(
                     "source_record": dict(item),
                 }
             )
-    return _deduplicate(received, keys=("url", "title", "snippet")), len(received)
+    relevant = [
+        record
+        for record in received
+        if _news_record_is_relevant(record, relevance_tokens)
+    ]
+    return _deduplicate(relevant, keys=("url", "title", "snippet")), len(received)
+
+
+def _relevance_tokens(
+    explicit: Sequence[str],
+    patent_records: Sequence[Mapping[str, Any]],
+) -> tuple[str, ...]:
+    candidates = [*explicit]
+    for record in patent_records:
+        candidates.extend(
+            _text(record.get(field))
+            for field in ("product", "ingredient", "owner")
+        )
+    normalized: list[str] = []
+    for candidate in candidates:
+        value = " ".join(_text(candidate).casefold().split())
+        if len(value) >= 2 and value not in normalized:
+            normalized.append(value)
+        for token in value.replace("/", " ").replace("+", " ").split():
+            if (
+                len(token) >= 3
+                and token not in _GENERIC_RELEVANCE_TOKENS
+                and token not in normalized
+            ):
+                normalized.append(token)
+    return tuple(normalized)
+
+
+def _news_record_is_relevant(
+    record: Mapping[str, Any],
+    relevance_tokens: Sequence[str],
+) -> bool:
+    if not relevance_tokens:
+        return False
+    surface = " ".join(
+        (_text(record.get("title")), _text(record.get("snippet")))
+    ).casefold()
+    return any(token in surface for token in relevance_tokens)
 
 
 def _items(call: Mapping[str, Any]) -> list[Mapping[str, Any]]:

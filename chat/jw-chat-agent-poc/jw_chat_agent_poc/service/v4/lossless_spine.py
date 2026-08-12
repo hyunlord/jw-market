@@ -3,21 +3,35 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from datetime import date
 import os
+import re
 from typing import Any, Literal
 
 from jw_chat_agent_poc.service.v4.contracts import PlannerOutput, SourceResult
 from jw_chat_agent_poc.service.v4.deterministic_render import render_deterministic_facts
 from jw_chat_agent_poc.service.v4.evidence_sets import build_evidence_sets
+from jw_chat_agent_poc.service.v4.gates import (
+    contains_internal_source_reference,
+    is_public_source_url,
+)
 from jw_chat_agent_poc.service.v4.lossless_contracts import (
     CompositionResult,
     DeterministicRender,
     EvidenceSet,
+    RenderNode,
 )
 
 
 LosslessMode = Literal["shadow", "inject"]
 RequestedFieldsMode = Literal["shadow", "inject"]
 RequestSatisfactionMode = Literal["shadow", "inject"]
+
+_SECTION_RE = re.compile(r"(?m)^#{1,6}\s+([^\n]+?)\s*$")
+_MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+_HTTP_URL_RE = re.compile(r"https?://[^\s<>()\[\]]+")
+_CORE_HEADINGS = {"핵심 답", "핵심 요약"}
+_CONTEXT_HEADINGS = {"근거와 맥락", "근거"}
+_INSIGHT_HEADINGS = {"종합 인사이트", "인사이트"}
+_LIMIT_HEADINGS = {"해석 상한", "해석상 주의점", "미확인 요소", "한계"}
 
 
 def configured_lossless_mode() -> LosslessMode:
@@ -134,20 +148,13 @@ def compose_lossless_answer(
     prefix = f"{rendered.request_notice}\n\n" if inject_request_notice else ""
     if not inject_facts:
         text = prefix + commentary
-    elif fallback:
-        text = (
-            prefix
-            + facts
-            + "\n\n## 자동 해설\n자동 해설 생성이 완료되지 않았습니다. 위 사실면과 원문은 그대로 제공합니다."
-            + _source_block(rendered)
-        )
     else:
-        text = (
-            prefix
-            + facts
-            + "\n\n## 자동 해설\n"
-            + commentary.strip()
-            + _source_block(rendered)
+        text = _assemble_injected_answer(
+            rendered,
+            commentary,
+            fallback=fallback,
+            requested_fields_mode=requested_fields_mode,
+            request_notice=rendered.request_notice if inject_request_notice else None,
         )
     trace["answer_mutation"] = True
     trace["requested_fields_injected"] = bool(
@@ -164,15 +171,167 @@ def compose_lossless_answer(
     )
 
 
-def _source_block(rendered: DeterministicRender) -> str:
-    if not rendered.source_refs:
-        return ""
-    lines = ["\n\n## 출처"]
+def _assemble_injected_answer(
+    rendered: DeterministicRender,
+    commentary: str,
+    *,
+    fallback: bool,
+    requested_fields_mode: RequestedFieldsMode,
+    request_notice: str | None,
+) -> str:
+    preamble, commentary_sections = _markdown_sections(commentary)
+    source_bodies = [
+        body for heading, body in commentary_sections if heading == "출처" and body
+    ]
+    commentary_sections = [
+        (heading, body)
+        for heading, body in commentary_sections
+        if heading not in {"출처", "자동 해설"} and body
+    ]
+
+    core: list[tuple[str, str]] = []
+    context: list[tuple[str, str]] = []
+    insights: list[tuple[str, str]] = []
+    limits: list[tuple[str, str]] = []
+    other: list[tuple[str, str]] = []
+    for heading, body in commentary_sections:
+        if heading in _CORE_HEADINGS:
+            core.append(("핵심 답", body))
+        elif heading in _CONTEXT_HEADINGS:
+            context.append(("근거와 맥락", body))
+        elif heading in _INSIGHT_HEADINGS:
+            insights.append(("종합 인사이트", body))
+        elif heading in _LIMIT_HEADINGS:
+            limits.append((heading, body))
+        else:
+            other.append((heading, body))
+
+    if fallback:
+        core = [("핵심 답", "자동 해설 생성 미완료")]
+    elif preamble:
+        core.insert(0, ("핵심 답", preamble))
+    if not core and not fallback:
+        core = [("핵심 답", commentary.strip())]
+
+    fact_coverage: list[str] = []
+    fact_tables: list[str] = []
+    fact_limits: list[str] = []
+    nodes = rendered.nodes or (
+        RenderNode(block_id=f"{rendered.profile}:facts", text=rendered.text),
+    )
+    for node in nodes:
+        if (
+            requested_fields_mode != "inject"
+            and node.block_id == "requested-fields:absence"
+        ):
+            continue
+        if not _has_visible_node_content(node):
+            continue
+        if node.block_id.endswith(":coverage"):
+            fact_coverage.append(node.text.strip())
+        elif node.block_id.endswith(":limits"):
+            fact_limits.append(node.text.strip())
+        else:
+            fact_tables.append(node.text.strip())
+
+    if request_notice:
+        limits.append(("미확인 요소", request_notice.strip()))
+
+    blocks = [
+        *(_render_sections(core)),
+        *fact_coverage,
+        *fact_tables,
+        *(_render_sections([*context, *other])),
+        *(_render_sections(insights)),
+        *fact_limits,
+        *(_render_sections(limits)),
+    ]
+    source_block = _merged_source_block(rendered, source_bodies)
+    if source_block:
+        blocks.append(source_block)
+    return "\n\n".join(block for block in blocks if block.strip()).strip()
+
+
+def _markdown_sections(value: str) -> tuple[str, list[tuple[str, str]]]:
+    text = value.strip()
+    matches = list(_SECTION_RE.finditer(text))
+    if not matches:
+        return text, []
+    preamble = text[: matches[0].start()].strip()
+    sections: list[tuple[str, str]] = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        sections.append((match.group(1).strip(), text[match.end() : end].strip()))
+    return preamble, sections
+
+
+def _render_sections(sections: Sequence[tuple[str, str]]) -> list[str]:
+    merged: list[tuple[str, list[str]]] = []
+    by_heading: dict[str, list[str]] = {}
+    for heading, body in sections:
+        if not body.strip():
+            continue
+        bodies = by_heading.get(heading)
+        if bodies is None:
+            bodies = []
+            by_heading[heading] = bodies
+            merged.append((heading, bodies))
+        if body.strip() not in bodies:
+            bodies.append(body.strip())
+    return [f"## {heading}\n" + "\n\n".join(bodies) for heading, bodies in merged]
+
+
+def _has_visible_node_content(node: RenderNode) -> bool:
+    text = node.text.strip()
+    if not text:
+        return False
+    _, sections = _markdown_sections(text)
+    if sections and all(not body for _, body in sections):
+        return False
+    return not (
+        not node.record_ids
+        and re.search(r"(?m)^\|\s*조회 결과 없음\s*\|", text) is not None
+    )
+
+
+def _merged_source_block(
+    rendered: DeterministicRender,
+    source_bodies: Sequence[str],
+) -> str:
+    lines: list[str] = []
+    seen_lines: set[str] = set()
+    seen_urls: set[str] = set()
+    for body in source_bodies:
+        for raw_line in body.splitlines():
+            line = raw_line.rstrip()
+            if not line.strip():
+                continue
+            if contains_internal_source_reference(line):
+                continue
+            urls = tuple(
+                dict.fromkeys(
+                    (
+                        *(match.group(2).strip() for match in _MARKDOWN_LINK_RE.finditer(line)),
+                        *(match.group(0).rstrip(".,;:") for match in _HTTP_URL_RE.finditer(line)),
+                    )
+                )
+            )
+            if any(not is_public_source_url(url) for url in urls):
+                continue
+            normalized = " ".join(line.split())
+            if normalized in seen_lines:
+                continue
+            seen_lines.add(normalized)
+            seen_urls.update(urls)
+            lines.append(line)
     for ref in rendered.source_refs:
+        if not is_public_source_url(ref.url) or ref.url in seen_urls:
+            continue
         label = ref.title or ref.url
         suffix = f" ({ref.published_at})" if ref.published_at else ""
         lines.append(f"- [{label}]({ref.url}){suffix}")
-    return "\n".join(lines)
+        seen_urls.add(ref.url)
+    return "" if not lines else "## 출처\n" + "\n".join(lines)
 
 
 __all__ = [

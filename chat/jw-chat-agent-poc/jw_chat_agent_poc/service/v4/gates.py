@@ -20,6 +20,16 @@ from jw_chat_agent_poc.service.v4.reason_code_enforcement import (
 
 
 _NUMBER_RE = re.compile(r"(?<![\w.])-?\d[\d,]*(?:\.\d+)?")
+_IPV4_SURFACE_RE = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
+_INTERNAL_ENDPOINT_SURFACE_RE = re.compile(
+    r"(?:"
+    r"\b(?:localhost|mcp-[a-z0-9.-]*|code-serving-[a-z0-9.-]*|read-only[a-z0-9.-]*)"
+    r"(?::\d+|/|\b)"
+    r"|(?:[a-z0-9-]+\.)*svc(?:\.cluster\.local)?(?::\d+|/|\b)"
+    r"|[a-z0-9.-]*-svc(?::\d+|/)"
+    r")",
+    re.IGNORECASE,
+)
 _UNSIGNED_DECREASE_RE = re.compile(
     r"(?<![-\w.])(?P<value>\d[\d,]*(?:\.\d+)?)\s*"
     r"(?:억원|%p|%|Rx)?(?:이|가)?\s*(?:감소|하락|줄(?:었|어|었습니다|었다))",
@@ -1687,6 +1697,8 @@ def _append_sources(text: str, results: tuple[SourceResult, ...]) -> str:
         if key in seen:
             continue
         seen.add(key)
+        if result.source == "patent" and _append_patent_lane_sources(lines, result):
+            continue
         detail = _source_reference_detail(result)
         reuse = " · 이전 조회 재사용" if result.cache_hit else ""
         line = f'- {source} — "{result.query}" {_source_reference_type(result)}{detail}{reuse}'
@@ -1701,6 +1713,38 @@ def _append_sources(text: str, results: tuple[SourceResult, ...]) -> str:
     if not lines:
         lines.append("- 사용 가능한 출처를 확보하지 못했습니다.")
     return f"{text}\n\n## 출처\n" + "\n".join(lines)
+
+
+def _append_patent_lane_sources(lines: list[str], result: SourceResult) -> bool:
+    lanes = (
+        result.payload.get("patent_lanes")
+        if isinstance(result.payload, Mapping)
+        else None
+    )
+    if not isinstance(lanes, Mapping):
+        return False
+    specs = (
+        ("kr_primary", "식품의약품안전처 의약품 특허목록"),
+        ("us_secondary", "FDA Orange Book"),
+        ("news", "특허·분쟁 동향 (웹 뉴스)"),
+    )
+    added = False
+    reuse = " · 이전 조회 재사용" if result.cache_hit else ""
+    for lane_name, label in specs:
+        raw_lane = lanes.get(lane_name)
+        lane = raw_lane if isinstance(raw_lane, Mapping) else {}
+        records = lane.get("records")
+        if not isinstance(records, list) or not records:
+            continue
+        lines.append(f'- {label} — 조회 "{result.query}"{reuse}')
+        lines.extend(
+            "  - "
+            + (f"{published_at} " if published_at else "")
+            + f"[{_public_reference_label(url, title)}]({url})"
+            for url, published_at, title in _public_references_from_value(lane)
+        )
+        added = True
+    return added
 
 
 def _source_reference_detail(result: SourceResult) -> str:
@@ -1759,15 +1803,35 @@ def _public_source_references(
 ) -> tuple[tuple[str, str | None, str | None], ...]:
     references: list[tuple[str, str | None, str | None]] = []
     for citation in result.citations:
-        if _is_public_source_url(citation.url):
+        if is_public_source_url(citation.url):
             references.append((str(citation.url), None, None))
 
-    def visit(value: Any) -> None:
-        if isinstance(value, dict):
-            url = value.get("url") or value.get("source_url")
-            if _is_public_source_url(url):
-                published_at = value.get("published_at") or value.get("published_date")
-                title = value.get("title") or value.get("name")
+    references.extend(_public_references_from_value(result.payload))
+    by_url: dict[str, tuple[str, str | None, str | None]] = {}
+    for url, published_at, title in references:
+        existing = by_url.get(url)
+        if existing is None:
+            by_url[url] = (url, published_at, title)
+            continue
+        by_url[url] = (
+            url,
+            existing[1] or published_at,
+            existing[2] or title,
+        )
+    return tuple(by_url.values())
+
+
+def _public_references_from_value(
+    value: Any,
+) -> tuple[tuple[str, str | None, str | None], ...]:
+    references: list[tuple[str, str | None, str | None]] = []
+
+    def visit(current: Any) -> None:
+        if isinstance(current, dict):
+            url = current.get("url") or current.get("source_url")
+            if is_public_source_url(url):
+                published_at = current.get("published_at") or current.get("published_date")
+                title = current.get("title") or current.get("name")
                 references.append(
                     (
                         str(url),
@@ -1775,13 +1839,13 @@ def _public_source_references(
                         str(title).strip() if title else None,
                     )
                 )
-            for item in value.values():
+            for item in current.values():
                 visit(item)
-        elif isinstance(value, (list, tuple)):
-            for item in value:
+        elif isinstance(current, (list, tuple)):
+            for item in current:
                 visit(item)
 
-    visit(result.payload)
+    visit(value)
     by_url: dict[str, tuple[str, str | None, str | None]] = {}
     for url, published_at, title in references:
         existing = by_url.get(url)
@@ -1813,13 +1877,16 @@ def _one_line_source_title(value: str | None, limit: int = 72) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-def _is_public_source_url(value: Any) -> bool:
+def is_public_source_url(value: Any) -> bool:
     if not isinstance(value, str):
         return False
-    parsed = urlparse(value)
-    host = (parsed.hostname or "").casefold()
+    parsed = urlparse(unquote(value.strip()))
+    host = (parsed.hostname or "").casefold().rstrip(".")
     if parsed.scheme not in {"http", "https"} or not host:
         return False
+    path_segments = tuple(
+        segment.casefold() for segment in parsed.path.split("/") if segment
+    )
     if (
         "." not in host
         or host == "localhost"
@@ -1828,10 +1895,25 @@ def _is_public_source_url(value: Any) -> bool:
         or host.endswith(".local")
         or host.startswith(("mcp-", "code-serving-", "read-only"))
         or any(token in host for token in ("mcp-", "code-serving-", "read-only"))
+        or host.split(".", 1)[0] == "api"
+        or any(segment in {"api", "mcp", "serving"} for segment in path_segments)
     ):
         return False
     try:
         address = ipaddress.ip_address(host)
     except ValueError:
         return True
-    return not (address.is_private or address.is_loopback or address.is_link_local)
+    return address.is_global
+
+
+def contains_internal_source_reference(value: str) -> bool:
+    if _INTERNAL_ENDPOINT_SURFACE_RE.search(value):
+        return True
+    for match in _IPV4_SURFACE_RE.finditer(value):
+        try:
+            address = ipaddress.ip_address(match.group(0))
+        except ValueError:
+            continue
+        if not address.is_global:
+            return True
+    return False

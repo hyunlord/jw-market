@@ -1193,6 +1193,19 @@ def build_source_adapters() -> dict[SourceName, Any]:
             kr_calls=tuple(asdict(call) for call in kr_calls),
             us_calls=tuple(asdict(call) for call in us_calls),
             news_calls=tuple(asdict(call) for call in news_calls),
+            entity_tokens=tuple(
+                dict.fromkeys(
+                    (
+                        base,
+                        *(
+                            (str(resolution.canonical_brand),)
+                            if resolution is not None
+                            else ()
+                        ),
+                        *molecules,
+                    )
+                )
+            ),
         )
         return result.model_copy(
             update={"payload": {**result.payload, "patent_lanes": lanes}}
