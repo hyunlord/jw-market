@@ -14,10 +14,16 @@ import requests
 from jw_chat_agent_poc.service.conversation import ConversationTurn
 from jw_chat_agent_poc.service.v4.contracts import (
     SOURCE_NAMES,
+    ClinicalTrialConcept,
     PlannerOutput,
+    RequestedAnswerShape,
     SourceName,
     SourceResult,
     ToolQueries,
+)
+from jw_chat_agent_poc.service.v4.clinical import (
+    compile_clinical_query,
+    concept_from_query,
 )
 from jw_chat_agent_poc.service.v4.llm import CompletionResult, GenOSV4Client
 from jw_chat_agent_poc.service.v4.session_state import SessionState
@@ -110,6 +116,7 @@ class V4Planner:
                     plan = plan.model_copy(update={"answer_sources": direct_sources})
                 plan = _lock_exact_anchor(question, plan)
                 plan = _anchor_relative_years(question, plan, observed_on)
+                plan = _attach_lossless_contracts(question, plan)
                 return PlannerOutcome(
                     plan=plan,
                     trace={
@@ -127,17 +134,20 @@ class V4Planner:
             except (ValueError, json.JSONDecodeError) as exc:
                 error = exc
         return PlannerOutcome(
-            plan=_anchor_relative_years(
+            plan=_attach_lossless_contracts(
                 question,
-                _lock_exact_anchor(
+                _anchor_relative_years(
                     question,
-                    _fallback_plan(
+                    _lock_exact_anchor(
                         question,
-                        turns,
-                        reason=str(error or "planner returned no JSON"),
+                        _fallback_plan(
+                            question,
+                            turns,
+                            reason=str(error or "planner returned no JSON"),
+                        ),
                     ),
+                    observed_on,
                 ),
-                observed_on,
             ),
             trace={
                 "status": "fallback",
@@ -331,7 +341,10 @@ def _planner_messages(
                 "You are CHAT-V4's query planner. Resolve Korean anaphora from at most ten prior turns, "
                 "expand the user's meaning, and produce queries for every source. You do not select tools: "
                 "all seven keys mart, nedrug, hira, openfda, clinicaltrials, web, patent must contain at least "
-                "one useful query. Until patent tooling is implemented, make patent a web-search query. "
+                "one useful query. Patent queries feed separate Korean MFDS, US Orange Book, and news lanes. "
+                "For clinical trials, populate clinical_query_specs with searchable concepts rather than "
+                "document filler phrases: ingredients, brands, intervention/condition search area, both/any "
+                "matching, countries, statuses, and the corresponding source_queries. "
                 "Set answer_sources to the smallest source list that directly answers the user's question; "
                 "these sources form the evidence quorum while all seven sources still run. "
                 "Return JSON only, with no markdown. Set needs_second_hop only when first-hop entities are "
@@ -371,14 +384,18 @@ def _anchor_relative_years(
     def normalize(value: str) -> str:
         normalized, replacements = _EXPLICIT_YEAR_RANGE_RE.subn(canonical, value)
         if replacements:
-            return normalized
+            return (
+                normalized
+                if _RELATIVE_YEAR_RE.search(normalized)
+                else f"{normalized.rstrip()}({relative})"
+            )
         normalized, replacements = _RELATIVE_YEAR_RE.subn(
             f"{canonical}({relative})",
             normalized,
         )
         if replacements:
             return normalized
-        return f"{normalized.rstrip()} {canonical}"
+        return f"{normalized.rstrip()} {canonical}({relative})"
 
     return plan.model_copy(
         update={
@@ -414,11 +431,139 @@ def _limit_first_wave_queries(plan: PlannerOutput) -> PlannerOutput:
         update={
             "tool_queries": ToolQueries(
                 **{
-                    source: queries[:limit]
+                    source: (
+                        tuple(dict.fromkeys(queries))
+                        if source == "clinicaltrials"
+                        else queries[:limit]
+                    )
                     for source, queries in plan.tool_queries.items()
                 }
             )
         }
+    )
+
+
+def _attach_lossless_contracts(question: str, plan: PlannerOutput) -> PlannerOutput:
+    grouped: dict[tuple[tuple[str, str], ...], tuple[str, ClinicalTrialConcept]] = {}
+    supplied = plan.clinical_query_specs
+    query_concepts: list[tuple[str, ClinicalTrialConcept]] = []
+    raw_queries = plan.tool_queries.clinicaltrials
+    for index, query in enumerate(raw_queries):
+        if index < len(supplied):
+            concept = supplied[index]
+            if len(supplied) < len(raw_queries) and query not in concept.source_queries:
+                concept = concept.model_copy(
+                    update={
+                        "source_queries": tuple(
+                            dict.fromkeys((*concept.source_queries, query))
+                        )
+                    }
+                )
+        else:
+            concept = concept_from_query(
+                query,
+                search_area=_clinical_search_area(question, query),
+            )
+        query_concepts.append((query, concept))
+    for concept in supplied[len(raw_queries) :]:
+        compiled = compile_clinical_query(concept)
+        query_concepts.append(
+            (
+                concept.source_queries[0]
+                if concept.source_queries
+                else compiled.expression,
+                concept,
+            )
+        )
+
+    for query, concept in query_concepts:
+        compiled = compile_clinical_query(concept)
+        key = tuple(
+            sorted((name, str(value)) for name, value in compiled.parameters.items())
+        )
+        if key not in grouped:
+            grouped[key] = (query, concept)
+            continue
+        first_query, existing = grouped[key]
+        grouped[key] = (
+            first_query,
+            existing.model_copy(
+                update={
+                    "source_queries": tuple(
+                        dict.fromkeys((*existing.source_queries, *concept.source_queries))
+                    )
+                }
+            ),
+        )
+
+    queries = tuple(value[0] for value in grouped.values())
+    concepts = tuple(value[1] for value in grouped.values())
+    return plan.model_copy(
+        update={
+            "tool_queries": plan.tool_queries.model_copy(
+                update={"clinicaltrials": queries or plan.tool_queries.clinicaltrials}
+            ),
+            "clinical_query_specs": concepts,
+            "requested_answer_shape": _requested_answer_shape(question),
+        }
+    )
+
+
+def _clinical_search_area(question: str, query: str) -> str:
+    lowered = f"{question} {query}".casefold()
+    if any(token in lowered for token in ("질환", "상병", "disease", "condition")):
+        return "condition"
+    return "intervention"
+
+
+def _requested_answer_shape(question: str) -> RequestedAnswerShape:
+    lowered = question.casefold()
+    attributes: list[str] = []
+    attribute_markers = (
+        ("api_unit_price", ("api 단가", "원료의약품 단가", "원료 단가")),
+        ("sales", ("매출",)),
+        ("market_share", ("점유율", " ms ")),
+        ("patient_count", ("환자수", "환자 수")),
+        ("patent", ("특허",)),
+        ("reimbursement", ("급여",)),
+        ("active_clinical_trials", ("진행 중", "모집 중", "recruiting")),
+        ("clinical_trials", ("임상", "clinical")),
+    )
+    for name, markers in attribute_markers:
+        if any(marker in lowered for marker in markers):
+            attributes.append(name)
+
+    entities: list[str] = []
+    if any(marker in lowered for marker in ("국내", "한국", "korea")):
+        entities.append("country:KR")
+    entities.extend(_NCT_ANCHOR_RE.findall(question.upper()))
+    subject_match = re.search(
+        r"(?P<entity>[가-힣A-Za-z0-9_-]{2,40})\s*(?:의\s*)?"
+        r"(?:API|원료의약품|원료|매출|점유율|특허|임상|급여)",
+        question,
+        re.IGNORECASE,
+    )
+    if subject_match:
+        entities.append(subject_match.group("entity"))
+
+    horizon_match = re.search(r"최근\s*\d{1,2}\s*년", question)
+    range_match = _EXPLICIT_YEAR_RANGE_RE.search(question)
+    horizon = horizon_match.group(0) if horizon_match else (
+        range_match.group(0) if range_match else None
+    )
+    granularity = None
+    if any(marker in lowered for marker in ("연도별", "연간", "년별")):
+        granularity = "year"
+    elif any(marker in lowered for marker in ("분기별", "분기")):
+        granularity = "quarter"
+    elif any(marker in lowered for marker in ("월별", "월간")):
+        granularity = "month"
+
+    return RequestedAnswerShape(
+        entities=tuple(dict.fromkeys(entities)),
+        measure_or_attribute=tuple(dict.fromkeys(attributes)),
+        time_horizon=horizon,
+        granularity=granularity,
     )
 
 

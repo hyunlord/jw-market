@@ -1793,7 +1793,7 @@ def _public_source_references(
             existing[1] or published_at,
             existing[2] or title,
         )
-    return tuple(by_url.values())[:5]
+    return tuple(by_url.values())
 
 
 def _public_reference_label(url: str, title: str | None) -> str:

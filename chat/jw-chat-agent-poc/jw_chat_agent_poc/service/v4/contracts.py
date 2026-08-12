@@ -40,7 +40,7 @@ class ToolQueries(_StrictModel):
     nedrug: tuple[str, ...] = Field(min_length=1)
     hira: tuple[str, ...] = Field(min_length=1)
     openfda: tuple[str, ...] = Field(min_length=1)
-    clinicaltrials: tuple[str, ...] = Field(min_length=1)
+    clinicaltrials: tuple[str, ...] = Field(min_length=1, max_length=32)
     web: tuple[str, ...] = Field(min_length=1)
     patent: tuple[str, ...] = Field(min_length=1)
 
@@ -56,6 +56,23 @@ class ToolQueries(_StrictModel):
         return tuple((name, getattr(self, name)) for name in SOURCE_NAMES)
 
 
+class ClinicalTrialConcept(_StrictModel):
+    ingredients: tuple[str, ...] = ()
+    brands: tuple[str, ...] = ()
+    search_area: Literal["intervention", "condition"] = "intervention"
+    match: Literal["both", "any"] = "any"
+    countries: tuple[str, ...] = ()
+    statuses: tuple[str, ...] = ()
+    source_queries: tuple[str, ...] = ()
+
+
+class RequestedAnswerShape(_StrictModel):
+    entities: tuple[str, ...] = ()
+    measure_or_attribute: tuple[str, ...] = ()
+    time_horizon: str | None = None
+    granularity: str | None = None
+
+
 class PlannerOutput(_StrictModel):
     resolved_question: str = Field(min_length=1)
     expanded_intents: tuple[str, ...] = Field(min_length=1)
@@ -63,6 +80,13 @@ class PlannerOutput(_StrictModel):
     tool_queries: ToolQueries
     linking_plan: str = Field(min_length=1)
     needs_second_hop: bool = False
+    clinical_query_specs: tuple[ClinicalTrialConcept, ...] = Field(
+        default=(),
+        max_length=32,
+    )
+    requested_answer_shape: RequestedAnswerShape = Field(
+        default_factory=RequestedAnswerShape
+    )
 
     @field_validator("answer_sources")
     @classmethod

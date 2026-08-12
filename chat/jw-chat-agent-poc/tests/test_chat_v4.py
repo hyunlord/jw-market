@@ -2639,7 +2639,7 @@ def test_planner_detailed_trace_keeps_usage_and_corrects_obvious_answer_source()
     assert outcome.trace["model"] == "gemini-3-flash-preview"
 
 
-def test_planner_limits_first_wave_queries_with_env_defaulting_to_one(monkeypatch) -> None:
+def test_planner_limits_nonclinical_first_wave_queries_by_default(monkeypatch) -> None:
     class Client:
         serving_id = "190"
 
@@ -2663,12 +2663,21 @@ def test_planner_limits_first_wave_queries_with_env_defaulting_to_one(monkeypatc
 
     outcome = V4Planner(Client()).plan_with_trace("리바로 요즘 어때", ())
 
-    assert all(len(queries) == 1 for _, queries in outcome.plan.tool_queries.items())
+    assert all(
+        len(queries) == 1
+        for source, queries in outcome.plan.tool_queries.items()
+        if source != "clinicaltrials"
+    )
+    assert len(outcome.plan.tool_queries.clinicaltrials) == 2
 
     monkeypatch.setenv("CHAT_V4_MAX_SOURCE_QUERIES", "2")
     expanded = V4Planner(Client()).plan_with_trace("리바로 요즘 어때", ())
 
     assert all(len(queries) == 2 for _, queries in expanded.plan.tool_queries.items())
+
+
+def test_planner_limits_first_wave_queries_with_env_defaulting_to_one(monkeypatch) -> None:
+    test_planner_limits_nonclinical_first_wave_queries_by_default(monkeypatch)
 
 
 @pytest.mark.parametrize(
@@ -2690,7 +2699,12 @@ def test_planner_clamps_source_query_limit_to_supported_range(
 
     limited = v4_planner._limit_first_wave_queries(plan)
 
-    assert all(len(queries) == expected for _, queries in limited.tool_queries.items())
+    assert all(
+        len(queries) == expected
+        for source, queries in limited.tool_queries.items()
+        if source != "clinicaltrials"
+    )
+    assert len(limited.tool_queries.clinicaltrials) == 3
 
 
 def test_planner_keeps_reexamination_as_nedrug_core_when_mart_is_always_on() -> None:
@@ -4193,7 +4207,7 @@ def test_v4_base_query_removes_approval_status_suffix() -> None:
     )
 
 
-def test_v4_nedrug_patent_query_calls_mfds_without_brand_resolution(monkeypatch) -> None:
+def test_v4_nedrug_patent_query_does_not_duplicate_patent_lane_calls(monkeypatch) -> None:
     from jw_chat_agent_poc.agent_loop import factory
     from jw_chat_agent_poc.service import general_view_routing
     from jw_chat_agent_poc.tools.external.client import ExternalCall
@@ -4244,8 +4258,11 @@ def test_v4_nedrug_patent_query_calls_mfds_without_brand_resolution(monkeypatch)
 
     assert result.status == "ok"
     assert ("search", "리바로정") in called
-    assert ("patent", "Pitavastatin") in called
-    assert ("orangebook", "Pitavastatin") in called
+    assert not any(kind in {"patent", "orangebook"} for kind, _value in called)
+
+
+def test_v4_nedrug_patent_query_calls_mfds_without_brand_resolution(monkeypatch) -> None:
+    test_v4_nedrug_patent_query_does_not_duplicate_patent_lane_calls(monkeypatch)
 
 
 def test_v4_reimbursement_summary_is_not_dropped_for_title_case_colons() -> None:

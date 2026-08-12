@@ -17,11 +17,17 @@ from typing import Any
 
 from jw_chat_agent_poc.common.periods import requested_period
 from jw_chat_agent_poc.service.v4.contracts import (
+    ClinicalTrialConcept,
     Citation,
     EvidenceEnvelope,
     SourceName,
     SourceResult,
 )
+from jw_chat_agent_poc.service.v4.clinical import (
+    compile_clinical_query,
+    concept_from_query,
+)
+from jw_chat_agent_poc.service.v4.patent import build_patent_lane_payload
 from jw_chat_agent_poc.service.v4.time_context import current_kst_date
 
 
@@ -752,6 +758,82 @@ def _analysis_timestamp(value: Any) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
+def _clinical_lossless_external_call(
+    query: str,
+    concept: ClinicalTrialConcept,
+    *,
+    timeout_s: float,
+):
+    from jw_chat_agent_poc.tools.external.client import ExternalCall
+    from jw_chat_agent_poc.tools.external.clinicaltrials_v2 import (
+        CLINICALTRIALS_V2_STUDIES_URL,
+        ClinicalTrialsV2Client,
+    )
+
+    compiled = compile_clinical_query(concept)
+    try:
+        result = ClinicalTrialsV2Client(timeout_s=timeout_s).search(compiled)
+    except Exception as exc:  # noqa: BLE001 - external failures are typed evidence
+        return ExternalCall(
+            tool="clinicaltrials_v2_lossless_search",
+            source="clinicaltrials_api_v2",
+            status="error",
+            summary_text="ClinicalTrials.gov API v2 전건 조회에 실패했습니다.",
+            render_data={
+                "request": dict(compiled.parameters),
+                "payload": {"studies": []},
+                "query_manifest": {
+                    "query_id": compiled.query_id,
+                    "compiled_expression": compiled.expression,
+                    "source_queries": list(concept.source_queries or (query,)),
+                    "pagination_complete": False,
+                },
+                "coverage": {
+                    "total_reported": None,
+                    "records_received": 0,
+                    "records_unique": 0,
+                    "page_count": 0,
+                    "pagination_complete": False,
+                    "partial_reason": "ClinicalTrials.gov API v2 조회 실패",
+                },
+                "error_type": type(exc).__name__,
+                "external_claim_policy": "fail_closed_error",
+            },
+            safe_url=CLINICALTRIALS_V2_STUDIES_URL,
+        )
+
+    coverage = {
+        "total_reported": result.total_reported,
+        "records_received": result.records_received,
+        "records_unique": result.records_unique,
+        "page_count": result.page_count,
+        "pagination_complete": result.pagination_complete,
+        "partial_reason": result.partial_reason,
+    }
+    return ExternalCall(
+        tool="clinicaltrials_v2_lossless_search",
+        source="clinicaltrials_api_v2",
+        status="live" if result.records else "no_data",
+        summary_text=(
+            f"ClinicalTrials.gov API v2에서 {result.records_unique}건을 전건 수집했습니다."
+            if result.records
+            else "ClinicalTrials.gov API v2 조회 결과가 없습니다."
+        ),
+        render_data={
+            "request": dict(compiled.parameters),
+            "payload": {
+                "studies": list(result.records),
+                "totalCount": result.total_reported,
+            },
+            "query_manifest": result.query_manifest,
+            "coverage": coverage,
+            "external_claim_policy": "source_relay_only",
+        },
+        safe_url=CLINICALTRIALS_V2_STUDIES_URL,
+        elapsed_ms=result.elapsed_ms,
+    )
+
+
 def build_source_adapters() -> dict[SourceName, Any]:
     from jw_chat_agent_poc.agent_loop.factory import build_chat_agent_dependencies
     from jw_chat_agent_poc.service.general_view_routing import GeneralRoute, GeneralViewService
@@ -917,14 +999,6 @@ def build_source_adapters() -> dict[SourceName, Any]:
         item_seq = _find_value(search.render_data, "ITEM_SEQ", "item_seq")
         if item_seq:
             calls.append(external.mfds_permission_detail(str(item_seq)))
-        if "특허" in query:
-            molecules = (
-                resolution.molecule_en
-                if resolution is not None
-                else (_ingredient_query(base),)
-            )
-            for molecule in dict.fromkeys(molecules):
-                calls.extend((external.mfds_patent(molecule), external.mfds_fda_orangebook(molecule)))
         result = external_calls("nedrug", query, calls)
         requested_periods = _requested_hira_years(base)
         if requested_periods:
@@ -1029,22 +1103,100 @@ def build_source_adapters() -> dict[SourceName, Any]:
             [external.openfda_label_search(ingredient) for ingredient in ingredients],
         )
 
-    def clinicaltrials(query: str) -> SourceResult:
+    def clinicaltrials(
+        query: str,
+        *,
+        concept: ClinicalTrialConcept | None = None,
+    ) -> SourceResult:
         nct_id = _nct_id(query)
         if nct_id:
             return external_calls(
                 "clinicaltrials", query, [external.clinicaltrials_study_details(nct_id)]
             )
         resolution = resolved(query)
-        if resolution is not None and resolution.molecule_en:
-            calls = [
-                external.clinicaltrials_v2_search(molecule, query_type="intervention")
-                for molecule in resolution.molecule_en
-            ]
+        if concept is not None:
+            concepts = (concept,)
+        elif resolution is not None and resolution.molecule_en:
+            molecules = tuple(dict.fromkeys(str(value) for value in resolution.molecule_en))
+            combined = len(molecules) > 1 and bool(
+                re.search(
+                    r"(?:복합|조합|combination|\band\b|\+|(?:^|\s)(?:및|와|과)(?:\s|$))",
+                    query,
+                    re.IGNORECASE,
+                )
+            )
+            concepts = (
+                (
+                    ClinicalTrialConcept(
+                        ingredients=molecules,
+                        brands=(str(resolution.canonical_brand),),
+                        search_area="intervention",
+                        match="both",
+                        source_queries=(query,),
+                    ),
+                )
+                if combined
+                else tuple(
+                    ClinicalTrialConcept(
+                        ingredients=(molecule,),
+                        brands=(str(resolution.canonical_brand),),
+                        search_area="intervention",
+                        match="any",
+                        source_queries=(query,),
+                    )
+                    for molecule in molecules
+                )
+            )
         else:
             term, query_type = _clinical_query(query)
-            calls = [external.clinicaltrials_v2_search(term, query_type=query_type)]
+            concepts = (
+                concept_from_query(
+                    query,
+                    search_area=query_type,
+                    matched_terms=(term,),
+                ),
+            )
+        calls = [
+            _clinical_lossless_external_call(
+                query,
+                concept,
+                timeout_s=float(external.timeout_s),
+            )
+            for concept in concepts
+        ]
         return external_calls("clinicaltrials", query, calls)
+
+    def patent(query: str) -> SourceResult:
+        base = _base_query(query)
+        resolution = resolved(query)
+        molecules = (
+            tuple(dict.fromkeys(str(value) for value in resolution.molecule_en))
+            if resolution is not None and resolution.molecule_en
+            else (_ingredient_query(base),)
+        )
+        kr_calls = [external.mfds_patent(molecule) for molecule in molecules]
+        us_calls = [external.mfds_fda_orangebook(molecule) for molecule in molecules]
+        news_calls = [
+            _v4_web_search(
+                external,
+                f"{base} 특허 만료 최근 뉴스",
+                search_depth="basic",
+                topic="news",
+            )
+        ]
+        result = external_calls(
+            "patent",
+            query,
+            [*kr_calls, *us_calls, *news_calls],
+        )
+        lanes = build_patent_lane_payload(
+            kr_calls=tuple(asdict(call) for call in kr_calls),
+            us_calls=tuple(asdict(call) for call in us_calls),
+            news_calls=tuple(asdict(call) for call in news_calls),
+        )
+        return result.model_copy(
+            update={"payload": {**result.payload, "patent_lanes": lanes}}
+        )
 
     return {
         "mart": mart,
@@ -1057,17 +1209,7 @@ def build_source_adapters() -> dict[SourceName, Any]:
             query,
             [_v4_web_search(external, _base_query(query), search_depth="advanced")],
         ),
-        "patent": lambda query: external_calls(
-            "patent",
-            query,
-            [
-                _v4_web_search(
-                    external,
-                    f"{_base_query(query)} 특허 만료 공식",
-                    search_depth="basic",
-                )
-            ],
-        ),
+        "patent": patent,
     }
 
 

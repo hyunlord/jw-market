@@ -27,6 +27,18 @@ from jw_chat_agent_poc.service.v4.gates import (
     is_typed_absence_record,
 )
 from jw_chat_agent_poc.service.v4.llm import planner_client, synthesizer_client
+from jw_chat_agent_poc.service.v4.lossless_contracts import (
+    DeterministicRender,
+    LosslessInvariantError,
+)
+from jw_chat_agent_poc.service.v4.lossless_spine import (
+    build_lossless_render,
+    compose_lossless_answer,
+    configured_lossless_mode,
+    configured_requested_fields_mode,
+    configured_request_satisfaction_mode,
+    deterministic_fact_text,
+)
 from jw_chat_agent_poc.service.v4.planner import V4Planner
 from jw_chat_agent_poc.service.v4.session_state import SessionState, SessionStateStore
 from jw_chat_agent_poc.service.v4.synthesizer import SynthesisOutcome, V4Synthesizer
@@ -35,6 +47,7 @@ from jw_chat_agent_poc.service.v4.shadow import (
     build_canonical_ledger,
     build_grounding_shadow,
 )
+from jw_chat_agent_poc.service.v4.time_context import current_kst_date
 
 
 _PUBLIC_SOURCE = {
@@ -391,6 +404,35 @@ class V4Runtime:
         results = tuple(_mark_citations_used(result) for result in current_results)
         self._remember_session_results(session_id, results)
         grounding_future = _submit_grounding_ledger(results)
+        lossless_mode = configured_lossless_mode()
+        requested_fields_mode = configured_requested_fields_mode()
+        request_satisfaction_mode = configured_request_satisfaction_mode()
+        lossless_error_type: str | None = None
+        try:
+            evidence_sets, deterministic_render = build_lossless_render(
+                plan,
+                results,
+                observed_on=current_kst_date(),
+            )
+        except LosslessInvariantError:
+            LOGGER.exception("v4 lossless spine invariant failed")
+            raise
+        except Exception as exc:  # noqa: BLE001 - legacy answer path must remain available
+            LOGGER.exception("v4 lossless spine build failed")
+            evidence_sets = ()
+            deterministic_render = DeterministicRender(profile="market_analysis")
+            lossless_error_type = type(exc).__name__
+        visible_facts = deterministic_fact_text(
+            deterministic_render,
+            requested_fields_mode,
+        )
+        deterministic_facts = (
+            visible_facts
+            if lossless_mode == "inject"
+            and deterministic_render.profile != "market_analysis"
+            and visible_facts
+            else None
+        )
         _emit_progress(
             progress_callback,
             "답변 작성 중",
@@ -405,6 +447,7 @@ class V4Runtime:
                 selected_turns,
                 budget_s=min(60.0, _remaining(deadline)),
                 state=session_state,
+                optional_kwargs={"deterministic_facts": deterministic_facts},
             )
         else:
             synthesis = SynthesisOutcome(
@@ -415,10 +458,20 @@ class V4Runtime:
                     selected_turns,
                     budget_s=min(60.0, _remaining(deadline)),
                     state=session_state,
+                    optional_kwargs={"deterministic_facts": deterministic_facts},
                 ),
                 trace={},
             )
         gated = apply_v4_gates(plan.resolved_question, synthesis.text, results)
+        composition = compose_lossless_answer(
+            deterministic_render,
+            gated.text,
+            synthesis_trace=synthesis.trace,
+            mode=lossless_mode,
+            requested_fields_mode=requested_fields_mode,
+            request_satisfaction_mode=request_satisfaction_mode,
+        )
+        final_text = composition.text
         if grounding_future is None:
             grounding_shadow = {
                 "mode": "SHADOW_RECORD_ONLY",
@@ -429,7 +482,7 @@ class V4Runtime:
         else:
             try:
                 grounding_shadow = build_grounding_shadow(
-                    gated.text,
+                    final_text,
                     results,
                     ledger=grounding_future.result(timeout=2.0),
                 )
@@ -505,6 +558,25 @@ class V4Runtime:
             },
             "stage_timing": stage_timing,
             "gates": gated.trace,
+            "lossless_spine": {
+                **composition.trace,
+                "build_error_type": lossless_error_type,
+                "evidence_sets": [
+                    {
+                        "source": evidence_set.source,
+                        "query_spec": list(evidence_set.query_spec),
+                        "query_manifest": list(evidence_set.query_manifest),
+                        "retrieved_at": evidence_set.retrieved_at,
+                        "coverage": evidence_set.coverage.model_dump(mode="json"),
+                        "item_failures": list(evidence_set.item_failures),
+                        "source_refs": [
+                            ref.model_dump(mode="json")
+                            for ref in evidence_set.source_refs
+                        ],
+                    }
+                    for evidence_set in evidence_sets
+                ],
+            },
             "typed_grounding_shadow": grounding_shadow,
         }
         source_names = [
@@ -528,7 +600,7 @@ class V4Runtime:
         if self._state_store is not None:
             self._state_store.save(session_id, next_state)
         return V4Answer(
-            text=gated.text,
+            text=final_text,
             sources=sources,
             trace=trace,
             timing=stage_timing,
@@ -561,10 +633,19 @@ def _call_with_state(
     function: Callable[..., Any],
     *args: Any,
     state: SessionState | None,
+    optional_kwargs: Mapping[str, Any] | None = None,
     **kwargs: Any,
 ) -> Any:
-    if "state" in inspect.signature(function).parameters:
+    parameters = inspect.signature(function).parameters
+    if "state" in parameters:
         kwargs["state"] = state
+    accepts_arbitrary_kwargs = any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+    for key, value in (optional_kwargs or {}).items():
+        if key in parameters or accepts_arbitrary_kwargs:
+            kwargs[key] = value
     return function(*args, **kwargs)
 
 

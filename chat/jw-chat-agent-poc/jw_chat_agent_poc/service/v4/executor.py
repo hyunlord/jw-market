@@ -8,10 +8,16 @@ import threading
 import time
 from typing import Any
 
-from jw_chat_agent_poc.service.v4.contracts import SOURCE_NAMES, PlannerOutput, SourceName, SourceResult
+from jw_chat_agent_poc.service.v4.contracts import (
+    SOURCE_NAMES,
+    ClinicalTrialConcept,
+    PlannerOutput,
+    SourceName,
+    SourceResult,
+)
 
 
-SourceAdapter = Callable[[str], SourceResult]
+SourceAdapter = Callable[..., SourceResult]
 SourceProgressCallback = Callable[[SourceResult], None]
 
 
@@ -80,7 +86,9 @@ class ParallelSourceExecutor:
     ) -> ExecutionOutcome:
         started = time.monotonic()
         output: list[SourceResult | None] = []
-        pending_specs: list[tuple[int, SourceName, str]] = []
+        pending_specs: list[
+            tuple[int, SourceName, str, ClinicalTrialConcept | None]
+        ] = []
         tool_trace: dict[int, dict[str, Any]] = {}
         quorum_fired = False
         quorum_fire_ms: float | None = None
@@ -96,7 +104,14 @@ class ParallelSourceExecutor:
                 if query_index >= len(queries):
                     continue
                 query = queries[query_index]
-                key = (session_id, source, query)
+                clinical_concept = (
+                    plan.clinical_query_specs[query_index]
+                    if source == "clinicaltrials"
+                    and query_index < len(plan.clinical_query_specs)
+                    else None
+                )
+                cache_query = _cache_query(query, clinical_concept)
+                key = (session_id, source, cache_query)
                 with self._cache_lock:
                     cached = self._cache.get(key)
                     if cached is not None:
@@ -117,7 +132,7 @@ class ParallelSourceExecutor:
                 else:
                     index = len(output)
                     output.append(None)
-                    pending_specs.append((index, source, query))
+                    pending_specs.append((index, source, query, clinical_concept))
 
         if not pending_specs:
             return ExecutionOutcome(
@@ -131,13 +146,26 @@ class ParallelSourceExecutor:
             )
 
         pool = ThreadPoolExecutor(
-            max_workers=min(7, len(pending_specs)),
+            # The planner already bounds non-clinical fan-out. ClinicalTrials
+            # static concepts must all start together so queued searches do not
+            # spend their timeout budget waiting behind the first seven tools.
+            max_workers=min(len(pending_specs), 44),
             thread_name_prefix="chat-v4-source",
         )
-        futures: dict[Future[SourceResult], tuple[int, SourceName, str, float]] = {}
-        for index, source, query in pending_specs:
+        futures: dict[
+            Future[SourceResult],
+            tuple[int, SourceName, str, str, float],
+        ] = {}
+        for index, source, query, clinical_concept in pending_specs:
             submitted = time.monotonic()
-            futures[pool.submit(self._run, source, query)] = (index, source, query, submitted)
+            cache_query = _cache_query(query, clinical_concept)
+            futures[pool.submit(self._run, source, query, clinical_concept)] = (
+                index,
+                source,
+                query,
+                cache_query,
+                submitted,
+            )
             tool_trace[index] = {
                 "source": source,
                 "query": query,
@@ -166,7 +194,7 @@ class ParallelSourceExecutor:
                     quorum_fire_ms = (now - started) * 1000
                     for future in tuple(remaining):
                         remaining.remove(future)
-                        index, source, query, submitted = futures[future]
+                        index, source, query, _cache_query_value, submitted = futures[future]
                         future.cancel()
                         timed_out = SourceResult(
                             source=source,
@@ -186,11 +214,11 @@ class ParallelSourceExecutor:
                 expired = [
                     future
                     for future in remaining
-                    if now - futures[future][3] >= self._per_tool_timeout_s
+                    if now - futures[future][4] >= self._per_tool_timeout_s
                 ]
                 for future in expired:
                     remaining.remove(future)
-                    index, source, query, submitted = futures[future]
+                    index, source, query, _cache_query_value, submitted = futures[future]
                     future.cancel()
                     timed_out = SourceResult(
                         source=source,
@@ -212,7 +240,7 @@ class ParallelSourceExecutor:
                 if remaining_total <= 0:
                     for future in tuple(remaining):
                         remaining.remove(future)
-                        index, source, query, submitted = futures[future]
+                        index, source, query, _cache_query_value, submitted = futures[future]
                         future.cancel()
                         timed_out = SourceResult(
                             source=source,
@@ -230,7 +258,7 @@ class ParallelSourceExecutor:
                             progress_callback(timed_out)
                     break
                 next_tool_deadline = min(
-                    self._per_tool_timeout_s - (time.monotonic() - futures[future][3])
+                    self._per_tool_timeout_s - (time.monotonic() - futures[future][4])
                     for future in remaining
                 )
                 wait_candidates = [remaining_total, next_tool_deadline]
@@ -245,7 +273,7 @@ class ParallelSourceExecutor:
                 )
                 for future in done:
                     remaining.remove(future)
-                    index, source, query, _ = futures[future]
+                    index, source, query, cache_query, _ = futures[future]
                     result = future.result()
                     output[index] = result
                     tool_trace[index].update(
@@ -255,7 +283,7 @@ class ParallelSourceExecutor:
                     if progress_callback is not None:
                         progress_callback(result)
                     with self._cache_lock:
-                        key = (session_id, source, query)
+                        key = (session_id, source, cache_query)
                         self._cache[key] = result
                         self._cache.move_to_end(key)
                         while len(self._cache) > self._max_cache_entries:
@@ -272,10 +300,19 @@ class ParallelSourceExecutor:
             },
         )
 
-    def _run(self, source: SourceName, query: str) -> SourceResult:
+    def _run(
+        self,
+        source: SourceName,
+        query: str,
+        clinical_concept: ClinicalTrialConcept | None,
+    ) -> SourceResult:
         started = time.monotonic()
         try:
-            result = self._adapters[source](query)
+            result = (
+                self._adapters[source](query, concept=clinical_concept)
+                if source == "clinicaltrials" and clinical_concept is not None
+                else self._adapters[source](query)
+            )
         except Exception as exc:  # noqa: BLE001 - one failed source must not block synthesis
             return SourceResult(
                 source=source,
@@ -287,6 +324,15 @@ class ParallelSourceExecutor:
         return result.model_copy(
             update={"elapsed_ms": (time.monotonic() - started) * 1000}
         )
+
+
+def _cache_query(
+    query: str,
+    concept: ClinicalTrialConcept | None,
+) -> str:
+    if concept is None:
+        return query
+    return f"{query}\x1f{concept.model_dump_json()}"
 
 
 def _answer_quorum_met(

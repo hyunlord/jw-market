@@ -124,6 +124,7 @@ class V4Synthesizer:
         *,
         budget_s: float = 60.0,
         state: SessionState | None = None,
+        deterministic_facts: str | None = None,
     ) -> str:
         return self.synthesize_with_trace(
             plan,
@@ -131,6 +132,7 @@ class V4Synthesizer:
             turns,
             budget_s=budget_s,
             state=state,
+            deterministic_facts=deterministic_facts,
         ).text
 
     def synthesize_with_trace(
@@ -141,6 +143,7 @@ class V4Synthesizer:
         *,
         budget_s: float = 60.0,
         state: SessionState | None = None,
+        deterministic_facts: str | None = None,
     ) -> SynthesisOutcome:
         observed_on = _current_kst_date()
         usable = _select_usable_results(plan, tuple(
@@ -184,6 +187,7 @@ class V4Synthesizer:
             turns,
             state=state,
             observed_on=observed_on,
+            deterministic_facts=deterministic_facts,
         )
         completion: CompletionResult | None = None
         error_type: str | None = None
@@ -395,6 +399,7 @@ def _synthesis_messages(
     *,
     state: SessionState | None = None,
     observed_on: date | None = None,
+    deterministic_facts: str | None = None,
 ) -> list[dict[str, str]]:
     mart = tuple(result for result in results if result.source == "mart")
     external = tuple(result for result in results if result.source != "mart")
@@ -435,6 +440,14 @@ def _synthesis_messages(
             "출처는 본문 문장 끝에 [출처: 이름]으로 표시",
         ],
     }
+    if deterministic_facts:
+        prompt["deterministic_facts"] = deterministic_facts
+        prompt["deterministic_commentary_contract"] = {
+            "facts_are_precomputed_and_rendered_before_commentary": True,
+            "do_not_recalculate_or_rewrite_facts": True,
+            "do_not_repeat_full_tables_or_source_documents": True,
+            "commentary_scope": "해석과 맥락만 작성하며 근거에 없는 사실을 추가하지 않는다",
+        }
     if deep_analysis_blocks:
         prompt["internal_deep_analysis"] = deep_analysis_blocks
         prompt["deep_analysis_contract"] = {
