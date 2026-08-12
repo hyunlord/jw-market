@@ -402,7 +402,6 @@ def _connect_runner_db(config: RunnerConfig):
 
 def check_upstream_freshness(db_conn: Any) -> dict[str, Any]:
     required_tables = (
-        "cache_cause",
         "cache_deep_analysis",
         "cache_deep_analysis_ai_analysis",
     )

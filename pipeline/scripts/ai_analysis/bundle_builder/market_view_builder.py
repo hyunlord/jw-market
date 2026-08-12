@@ -4,10 +4,8 @@ import json
 
 from .catalog_db_loader import load_market_from_catalog, source_public_to_db
 from .competitor_resolver import get_competitor_history_for_view
-from .market_kpi_calculator import calculate_ml_kpi_extras
-from .mart_metric_reader import fetch_ml_metric_rows, ml_view_exists, use_cache_free_ml_kpi
 from .mat_computer import compute_mat_12m_absolute, find_latest_actual_period
-from .ms_recomputer import get_kpi_extras_from_cache_cause, recompute_ms_pct
+from .ms_recomputer import get_kpi_extras_from_mart, recompute_ms_pct
 
 VIEW_SHORT = {"market_landscape": "ML", "competitive_dynamics": "CD"}
 PERIOD_UNIT = {"UBIST": "월간", "IQVIA": "분기"}
@@ -85,24 +83,26 @@ def _market_tables(view: str) -> tuple[str, str, str]:
     return "mart_strategic_ml_brand_metric", "mart_strategic_ml_market_metric", "ml_id"
 
 
-def _cache_exists(brand_name: str, view: str, source: str, measure: str, db_conn) -> bool:
+def _view_exists(brand_name: str, market_id: str, view: str, source: str, measure: str, _config, db_conn) -> bool:
+    brand_table, market_table, id_col = _market_tables(view)
     with db_conn.cursor() as cur:
         cur.execute(
-            """
+            f"""
             SELECT 1
-            FROM cache_cause
-            WHERE brand = %s AND view_type = %s AND source = %s AND measure = %s
+            FROM {brand_table} AS b
+            JOIN {market_table} AS m
+              ON m.{id_col} = b.{id_col}
+             AND m.source = b.source
+             AND m.measure = b.measure
+            WHERE b.{id_col} = %s
+              AND b.brand_name = %s
+              AND b.source = %s
+              AND b.measure = %s
             LIMIT 1
             """,
-            (brand_name, view, source.upper(), measure),
+            (market_id, brand_name, source_public_to_db(source), measure),
         )
         return cur.fetchone() is not None
-
-
-def _view_exists(brand_name: str, market_id: str, view: str, source: str, measure: str, config, db_conn) -> bool:
-    if view == "market_landscape" and use_cache_free_ml_kpi(config):
-        return ml_view_exists(brand_name, market_id, source, measure, db_conn)
-    return _cache_exists(brand_name, view, source, measure, db_conn)
 
 
 def _fetch_brand_metric(brand_name: str, market_id: str, view: str, source: str, measure: str, db_conn) -> dict | None:
@@ -246,11 +246,7 @@ def build_market_view(
         )
 
     ranking_series = _json_load(market_row.get("brand_ranking_stacked"))
-    kpi_extras = get_kpi_extras_from_cache_cause(brand_name, view, source, measure, db_conn)
-    if view == "market_landscape" and use_cache_free_ml_kpi(config):
-        ml_rows = fetch_ml_metric_rows(brand_name, ml_id, source, measure, db_conn)
-        if ml_rows:
-            kpi_extras = calculate_ml_kpi_extras(ml_rows)
+    kpi_extras = get_kpi_extras_from_mart(brand_name, market_id, view, source, measure, db_conn)
     return {
         "view_id": f"{VIEW_SHORT[view]}.{source.upper()}.{measure}",
         "view": view,

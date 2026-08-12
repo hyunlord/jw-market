@@ -41,8 +41,9 @@ market:
         - source: IQVIA
           measures: [sales, unit, dosage_unit, counting_unit]
   ms_computation:
-    primary: cache_cause
+    primary: mart_metric
     fallback: raw_recompute
+    kpi_source: mart
     forbidden: mart_metric_history_ms
   atc4_source: catalog_strategic_ml_market
   include_market_size: true

@@ -701,7 +701,6 @@ def _seed_idempotency_from_run_db(
 
 def check_upstream_freshness(db_conn: Any) -> dict[str, Any]:
     required_tables = (
-        "cache_cause",
         "cache_deep_analysis",
         "cache_deep_analysis_ai_analysis",
     )

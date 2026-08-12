@@ -186,26 +186,18 @@ def detect_available_sources(brand_name: str, db_conn) -> List[str]:
         cur.execute(
             """
             SELECT DISTINCT source
-            FROM cache_cause
-            WHERE brand = %s
+            FROM (
+                SELECT source
+                FROM mart_strategic_ml_brand_metric
+                WHERE brand_name = %s
+                UNION ALL
+                SELECT source
+                FROM mart_strategic_cd_brand_metric
+                WHERE brand_name = %s
+            ) AS available_sources
             ORDER BY source ASC
             """,
-            (brand_name,),
-        )
-        rows = cur.fetchall()
-    sources = [source_db_to_public(row["source"]) for row in rows]
-    if sources:
-        return sorted(set(sources), key=lambda value: ("UBIST", "IQVIA").index(value) if value in ("UBIST", "IQVIA") else 99)
-
-    with db_conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT DISTINCT source
-            FROM mart_strategic_ml_brand_metric
-            WHERE brand_name = %s
-            ORDER BY source ASC
-            """,
-            (brand_name,),
+            (brand_name, brand_name),
         )
         rows = cur.fetchall()
     return sorted(

@@ -4,7 +4,7 @@ import json
 
 from .catalog_db_loader import source_public_to_db
 from .mat_computer import compute_mat_12m_absolute, find_latest_actual_period
-from .ms_recomputer import get_kpi_extras_from_cache_cause, get_ms_from_cache_cause, recompute_ms_pct
+from .ms_recomputer import get_kpi_extras_from_mart, recompute_ms_pct
 
 
 def _json_load(value):
@@ -230,5 +230,5 @@ def get_competitor_history_for_view(
             "yoy_pct": point.get("yoy"),
             "rank": point.get("rank"),
         }
-    extras = get_kpi_extras_from_cache_cause(competitor_brand_name, view, source, measure, db_conn)
+    extras = get_kpi_extras_from_mart(competitor_brand_name, market_id, view, source, measure, db_conn)
     return {"history": history, "kpi_extras": extras, "is_jw": bool(row.get("is_jw"))}

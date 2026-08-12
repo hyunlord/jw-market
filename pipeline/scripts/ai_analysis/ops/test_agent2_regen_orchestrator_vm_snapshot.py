@@ -125,7 +125,7 @@ def test_upstream_freshness_requires_cache_tables_but_allows_missing_mart_tables
     result = check_upstream_freshness(Conn())
 
     assert result["valid"] is True
-    assert result["tables"]["cache_cause"]["row_count"] == 100
+    assert "cache_cause" not in result["tables"]
     assert result["tables"]["cache_deep_analysis"]["row_count"] == 100
     assert result["tables"]["cache_deep_analysis_ai_analysis"]["row_count"] == 25
     assert result["tables"]["mart_strategic_ml_brand_metric"]["required"] is False

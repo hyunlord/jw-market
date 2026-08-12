@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from bundle_builder.market_view_builder import _view_exists
-from bundle_builder.mart_metric_reader import use_cache_free_ml_kpi
 
 
 @dataclass(frozen=True)
@@ -41,16 +40,19 @@ class _Connection:
         return self.cursor_obj
 
 
-def test_cache_free_flag_reads_market_config() -> None:
-    assert use_cache_free_ml_kpi(_Config(_MarketConfig({"kpi_source": "mart"})))
-    assert use_cache_free_ml_kpi(_Config(_MarketConfig({"cache_free_ml_kpi": True})))
-    assert not use_cache_free_ml_kpi(_Config(_MarketConfig({"kpi_source": "cache_cause"})))
-
-
-def test_ml_view_exists_uses_mart_gate_when_cache_free() -> None:
+def test_ml_view_exists_uses_mart_gate_by_default() -> None:
     conn = _Connection()
 
-    assert _view_exists("리바로젯", "ml_006", "market_landscape", "UBIST", "sales", _Config(_MarketConfig({"kpi_source": "mart"})), conn)
+    assert _view_exists("리바로젯", "ml_006", "market_landscape", "UBIST", "sales", _Config(_MarketConfig({})), conn)
 
     assert "mart_strategic_ml_brand_metric" in conn.cursor_obj.sql
+    assert "cache_cause" not in conn.cursor_obj.sql
+
+
+def test_cd_view_exists_uses_cd_mart_gate() -> None:
+    conn = _Connection()
+
+    assert _view_exists("리바로젯", "cd_006", "competitive_dynamics", "IQVIA", "sales", _Config(_MarketConfig({})), conn)
+
+    assert "mart_strategic_cd_brand_metric" in conn.cursor_obj.sql
     assert "cache_cause" not in conn.cursor_obj.sql

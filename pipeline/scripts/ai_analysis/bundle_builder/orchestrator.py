@@ -264,8 +264,8 @@ def _build_brand_bundle_v1_1(
             "bundle_hash": None,
             "mart_computed_at": _mart_computed_at(db_conn),
             "data_sources_used": {
-                "market_metrics": "cache_cause+mart_strategic",
-                "ms_computation": "raw_recompute_with_cache_cause_latest",
+                "market_metrics": "mart_strategic",
+                "ms_computation": "mart_metric_recompute",
                 "atc4_code": "catalog_strategic_ml_market_fallback_to_mart",
                 "competitors": "market_sales_top_n",
                 "competitor_events": "event_brand_scores",

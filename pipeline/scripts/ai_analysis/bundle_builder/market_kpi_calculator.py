@@ -225,7 +225,7 @@ def _annual_share_hhi_from_rows(rows: tuple[dict[str, Any], ...], source: str) -
 
 
 def calculate_ml_kpi_extras(rows: MlMetricRows) -> dict[str, Any]:
-    """Return cache_cause-compatible KPI extras from ML mart rows."""
+    """Return bundle KPI extras computed from strategic mart rows."""
 
     brand = str(rows.brand_row.get("brand_name") or "")
     source = "IQVIA" if str(rows.brand_row.get("source") or "").startswith("iqvia") else str(rows.brand_row.get("source") or "").upper()
