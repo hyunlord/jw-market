@@ -36,7 +36,11 @@ def render_deterministic_facts(
     observed_on: date,
 ) -> DeterministicRender:
     profile = select_render_profile(plan, evidence_sets)
-    source_notices = _source_failure_notices(evidence_sets)
+    source_notices = (
+        _source_failure_notices(evidence_sets)
+        if _source_notices_enabled(plan, profile)
+        else ()
+    )
     if profile == "market_analysis":
         return DeterministicRender(
             profile=profile,
@@ -260,6 +264,26 @@ def _source_failure_notices(
                 notice = f"{label} 조회는 상류 오류로 이번 답변에서 제외되었습니다."
             notices.append(notice)
     return tuple(dict.fromkeys(notices))
+
+
+def _source_notices_enabled(plan: PlannerOutput, profile: RenderProfile) -> bool:
+    if profile != "market_analysis":
+        return True
+    normalized = plan.resolved_question.casefold()
+    return any(
+        token in normalized
+        for token in (
+            "임상",
+            "clinical",
+            "nct",
+            "특허",
+            "오렌지북",
+            "orange book",
+            "급여",
+            "보험",
+            "reimbursement",
+        )
+    )
 
 
 def _failure_reason(failure: Mapping[str, Any]) -> str:

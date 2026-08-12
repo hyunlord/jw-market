@@ -180,6 +180,37 @@ def test_failures_are_surfaced_with_public_source_and_specific_reason() -> None:
     assert "soft deadline" not in composed.text
 
 
+def test_general_market_question_keeps_lossless_spine_non_mutating() -> None:
+    plan = _plan("리바로 매출 알려줘", answer_sources=("mart",))
+    rendered = render_deterministic_facts(
+        plan,
+        build_evidence_sets(
+            plan,
+            (
+                SourceResult(
+                    source="web",
+                    query="리바로 2025년 매출",
+                    status="empty",
+                    notice="exceeds your plan's set usage limit",
+                ),
+            ),
+            observed_on=date(2026, 8, 13),
+        ),
+        observed_on=date(2026, 8, 13),
+    )
+    composed = compose_lossless_answer(
+        rendered,
+        "## 핵심 답\n시장 데이터 답변입니다.",
+        synthesis_trace={"status": "synthesized"},
+        mode="inject",
+    )
+
+    assert rendered.profile == "market_analysis"
+    assert rendered.source_notices == ()
+    assert composed.answer_mutated is False
+    assert composed.trace["answer_mutation"] is False
+
+
 def test_quota_empty_result_keeps_provider_quota_reason_in_trace() -> None:
     executor = ParallelSourceExecutor(
         adapters={
