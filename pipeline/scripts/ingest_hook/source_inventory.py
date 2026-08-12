@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
+from pipeline.scripts.ingest_hook.contract import Manifest, ManifestFile
 from pipeline.scripts.ingest_hook.workbook_contracts import (
     WorkbookSummary,
     summarize_inventory,
@@ -167,6 +168,119 @@ def source_set_evidence(files: Iterable[FileObservation]) -> SourceSetEvidence:
     )
 
 
+def _canonical_manifest_sha(payload: Mapping[str, object]) -> str:
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _manifest_file_from_observation(item: FileObservation) -> ManifestFile:
+    return ManifestFile(
+        path=item.relative_path,
+        sha256=item.sha256,
+        rows=item.rows,
+        period_start=min(item.periods) if item.periods else None,
+        period_end=max(item.periods) if item.periods else None,
+    )
+
+
+def reconcile_manifest_with_source_snapshot(
+    parent_manifest: Manifest,
+    snapshot: ScanSnapshot,
+) -> ManifestReconciliation:
+    """Rebind a parent manifest to the current source scan without weakening SHA checks.
+
+    Parent manifests remain immutable audit evidence. A current scan may replace stale
+    paths only when the content SHA is still present. If parent content disappeared,
+    the ingest remains fail-closed before G3 or load can read a fallback corpus.
+    """
+    selected_files = tuple(
+        sorted(
+            (item for item in snapshot.files if item.state == "classified"),
+            key=lambda item: item.relative_path,
+        )
+    )
+    current_by_sha: dict[str, list[FileObservation]] = {}
+    for item in selected_files:
+        current_by_sha.setdefault(item.sha256, []).append(item)
+
+    name_only: list[tuple[str, str, str]] = []
+    missing: list[tuple[str, str]] = []
+    matched_current_paths: set[str] = set()
+    for parent_file in parent_manifest.files:
+        matches = current_by_sha.get(parent_file.sha256, [])
+        match = matches.pop(0) if matches else None
+        if match is None:
+            missing.append((parent_file.path, parent_file.sha256))
+            continue
+        matched_current_paths.add(match.relative_path)
+        if parent_file.path != match.relative_path:
+            name_only.append((parent_file.path, match.relative_path, parent_file.sha256))
+
+    if missing:
+        detail = ",".join(f"{path}:{sha}" for path, sha in missing)
+        raise SourceInventoryError(
+            f"{parent_manifest.category}: parent manifest content disappeared: {detail}"
+        )
+
+    new_contents = tuple(
+        (item.relative_path, item.sha256)
+        for item in selected_files
+        if item.relative_path not in matched_current_paths
+    )
+    files = tuple(_manifest_file_from_observation(item) for item in selected_files)
+    raw = dict(parent_manifest.raw) if parent_manifest.raw else {}
+    raw.update(
+        {
+            "contract_version": parent_manifest.contract_version,
+            "epoch": parent_manifest.epoch,
+            "category": parent_manifest.category,
+            "complete": parent_manifest.complete,
+            "files": [
+                {
+                    "path": file.path,
+                    "sha256": file.sha256,
+                    **({"rows": file.rows} if file.rows is not None else {}),
+                    **(
+                        {"period_start": file.period_start}
+                        if file.period_start is not None
+                        else {}
+                    ),
+                    **(
+                        {"period_end": file.period_end}
+                        if file.period_end is not None
+                        else {}
+                    ),
+                }
+                for file in files
+            ],
+            "parent_manifest_sha": parent_manifest.manifest_sha,
+        }
+    )
+    if parent_manifest.submitted_at is not None:
+        raw["submitted_at"] = parent_manifest.submitted_at
+    if parent_manifest.uploaded_by is not None:
+        raw["uploaded_by"] = parent_manifest.uploaded_by
+
+    manifest = replace(
+        parent_manifest,
+        files=files,
+        manifest_sha=_canonical_manifest_sha(raw),
+        raw=raw,
+    )
+    return ManifestReconciliation(
+        manifest=manifest,
+        source_set=source_set_evidence(selected_files),
+        name_only_changes=tuple(name_only),
+        missing_parent_contents=tuple(missing),
+        new_contents=new_contents,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class PeriodGate:
     name: str
@@ -184,15 +298,32 @@ class PeriodGateResult:
 
 
 @dataclass(frozen=True, slots=True)
+class RenamedFile:
+    previous_path: str
+    current_path: str
+    sha256: str
+
+
+@dataclass(frozen=True, slots=True)
 class SnapshotDiff:
     added_files: tuple[FileObservation, ...]
     changed_files: tuple[FileObservation, ...]
     removed_files: tuple[FileObservation, ...]
     unchanged_files: tuple[FileObservation, ...]
+    renamed_files: tuple[RenamedFile, ...] = ()
 
     @property
     def removed_count(self) -> int:
         return len(self.removed_files)
+
+
+@dataclass(frozen=True, slots=True)
+class ManifestReconciliation:
+    manifest: Manifest
+    source_set: SourceSetEvidence
+    name_only_changes: tuple[tuple[str, str, str], ...]
+    missing_parent_contents: tuple[tuple[str, str], ...]
+    new_contents: tuple[tuple[str, str], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -509,30 +640,53 @@ def compare_snapshots(previous: ScanSnapshot, current: ScanSnapshot) -> Snapshot
     previous_paths = set(previous_files)
     current_paths = set(current_files)
     common = previous_paths & current_paths
+    candidate_added = {
+        path: current_files[path] for path in sorted(current_paths - previous_paths)
+    }
+    added_by_sha: dict[str, list[str]] = {}
+    for path, item in candidate_added.items():
+        added_by_sha.setdefault(item.sha256, []).append(path)
+    renamed: list[RenamedFile] = []
+    removed: list[FileObservation] = []
+    for path in sorted(previous_paths - current_paths):
+        previous_item = previous_files[path]
+        replacement_paths = added_by_sha.get(previous_item.sha256, [])
+        if replacement_paths:
+            current_path = replacement_paths.pop(0)
+            renamed.append(
+                RenamedFile(
+                    previous_path=previous_item.relative_path,
+                    current_path=current_path,
+                    sha256=previous_item.sha256,
+                )
+            )
+            candidate_added.pop(current_path, None)
+            continue
+        removed.append(
+            FileObservation.removed(
+                relative_path=previous_item.relative_path,
+                sha256=previous_item.sha256,
+                size=previous_item.size,
+                periods=previous_item.periods,
+                first_observed_at=previous_item.first_observed_at,
+                last_observed_at=previous_item.last_observed_at,
+                removed_at=current.observed_at,
+            )
+        )
     return SnapshotDiff(
-        added_files=tuple(current_files[path] for path in sorted(current_paths - previous_paths)),
+        added_files=tuple(candidate_added[path] for path in sorted(candidate_added)),
         changed_files=tuple(
             current_files[path]
             for path in sorted(common)
             if current_files[path].sha256 != previous_files[path].sha256
         ),
-        removed_files=tuple(
-            FileObservation.removed(
-                relative_path=previous_files[path].relative_path,
-                sha256=previous_files[path].sha256,
-                size=previous_files[path].size,
-                periods=previous_files[path].periods,
-                first_observed_at=previous_files[path].first_observed_at,
-                last_observed_at=previous_files[path].last_observed_at,
-                removed_at=current.observed_at,
-            )
-            for path in sorted(previous_paths - current_paths)
-        ),
+        removed_files=tuple(removed),
         unchanged_files=tuple(
             current_files[path]
             for path in sorted(common)
             if current_files[path].sha256 == previous_files[path].sha256
         ),
+        renamed_files=tuple(renamed),
     )
 
 
@@ -807,6 +961,100 @@ def classified_source_paths(
     return tuple(result)
 
 
+def prepare_reconciled_manifest_for_g3(
+    policy: SourceScanPolicy,
+    parent_manifest: Manifest,
+    *,
+    run_id: str,
+    previous: ScanSnapshot | None = None,
+    classify: Callable[[Path], str] = detect_workbook_source,
+    summarize: Callable[[str, Path, str], WorkbookSummary] = summarize_inventory,
+    permissive: bool = False,
+    row_floor_ratio: float | None = None,
+    allow_period_shrink: bool = False,
+) -> ManifestReconciliation:
+    """Build the G3 manifest from the current NFS source set before validation.
+
+    This mirrors the source-inventory gates used by load, but writes no inventory
+    snapshot and invokes no rebuild. The subsequent load phase must compare its
+    scan source-set to the returned evidence before calling the loader.
+    """
+    root = policy.root.resolve()
+    direct_candidates = tuple(
+        (path.relative_to(root).as_posix(), path)
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and path.suffix.lower() == ".xlsx"
+    )
+    current = scan_source(
+        policy,
+        epoch=parent_manifest.epoch,
+        manifest_sha=parent_manifest.manifest_sha,
+        run_id=run_id,
+        classify=classify,
+        summarize=summarize,
+        candidate_files=direct_candidates,
+        commissioning=permissive,
+        previous=previous,
+    )
+    diff = compare_snapshots(previous, current) if previous is not None else None
+    selected_files = tuple(item for item in current.files if item.state == "classified")
+    if policy.rebuild_periods is not None:
+        if policy.rebuild_periods < 1:
+            raise SourceInventoryError("rebuild_periods must be positive")
+        newest = _period_index(parent_manifest.epoch, policy.period_unit)
+        oldest = newest - policy.rebuild_periods + 1
+        selected_files = tuple(
+            item
+            for item in selected_files
+            if any(
+                oldest <= _period_index(period, policy.period_unit) <= newest
+                for period in item.periods
+            )
+        )
+    selected = replace(current, files=selected_files)
+    if previous is not None:
+        previous_files = tuple(
+            item for item in previous.files if item.state == "classified"
+        )
+        if policy.rebuild_periods is not None:
+            previous_files = tuple(
+                item
+                for item in previous_files
+                if any(
+                    oldest <= _period_index(period, policy.period_unit) <= newest
+                    for period in item.periods
+                )
+            )
+        previous_periods = {period for item in previous_files for period in item.periods}
+        current_periods = set(selected.periods)
+        missing = tuple(sorted(previous_periods - current_periods))
+        if missing and current_periods < previous_periods and not allow_period_shrink:
+            affected = ",".join(
+                f"{period}(rows={sum(item.rows or 0 for item in previous_files if period in item.periods)})"
+                for period in missing
+            )
+            raise SourceInventoryError(
+                f"{current.category}: unapproved period shrink missing={affected}"
+            )
+    enforce_scan_gates(
+        previous,
+        current,
+        diff,
+        period_unit=policy.period_unit,
+        permissive=permissive,
+        row_floor_ratio=row_floor_ratio,
+    )
+    reconciliation = reconcile_manifest_with_source_snapshot(parent_manifest, selected)
+    print(
+        "phase=source_manifest_reconcile "
+        f"category={parent_manifest.category} files={len(reconciliation.manifest.files)} "
+        f"source_set_sha256={reconciliation.source_set.sha256} "
+        f"name_only_changes={len(reconciliation.name_only_changes)} "
+        f"new_contents={len(reconciliation.new_contents)}"
+    )
+    return reconciliation
+
+
 def run_full_scan(
     policy: SourceScanPolicy,
     *,
@@ -821,6 +1069,7 @@ def run_full_scan(
     permissive: bool = False,
     row_floor_ratio: float | None = None,
     allow_period_shrink: bool = False,
+    expected_source_set: SourceSetEvidence | None = None,
 ) -> ScanOutcome:
     """Scan, gate, rebuild, then publish one immutable successful inventory.
 
@@ -867,6 +1116,14 @@ def run_full_scan(
                 item for item in selected_files if item not in window_excluded
             )
         selected_evidence = source_set_evidence(selected_files)
+        if (
+            expected_source_set is not None
+            and selected_evidence != expected_source_set
+        ):
+            raise SourceInventoryError(
+                f"{current.category}: source set changed after G3 "
+                f"expected={expected_source_set.sha256} actual={selected_evidence.sha256}"
+            )
         if previous is not None:
             previous_files = tuple(
                 item for item in previous.files if item.state == "classified"

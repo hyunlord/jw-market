@@ -22,6 +22,7 @@ from pipeline.scripts.ingest_hook.source_inventory import (
     PeriodGateResult,
     ScanOutcome,
     ScanSnapshot,
+    SourceInventoryError,
     SourceSetEvidence,
 )
 from pipeline.scripts.ingest_hook.category_map import ActivationKind, resolve_category
@@ -243,6 +244,27 @@ def test_real_load_uses_only_content_classified_full_scan_inputs(
     assert observed == [[str(classified[0]), str(classified[1])]]
 
 
+def test_real_load_rejects_empty_source_inventory_before_loader(
+    staging_env,
+    bucket,
+    monkeypatch,
+):
+    manifest = _manifest(bucket, epoch="2026-03")
+    called = False
+
+    def fake_run(_label, _argv):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(job_runner, "_run_commands", fake_run)
+
+    with pytest.raises(RuntimeError, match="empty source file set"):
+        job_runner._real_load(manifest, UBIST, bucket, source_files=())
+
+    assert called is False
+    print("NEGATIVE_EMPTY_SOURCE_SET_BLOCKED", "loader_called=0")
+
+
 def test_full_scan_load_publishes_snapshot_only_after_loader_succeeds(
     staging_env,
     bucket,
@@ -287,6 +309,44 @@ def test_full_scan_load_publishes_snapshot_only_after_loader_succeeds(
     assert result["rows_loaded"] == 1
     assert outcome is not None
     assert calls == ["scan", "load:operating.xlsx", "snapshot"]
+
+
+def test_full_scan_load_rejects_source_set_drift_between_g3_and_load(
+    staging_env,
+    bucket,
+    monkeypatch,
+    tmp_path,
+):
+    manifest = _manifest(bucket, category="ubist", epoch="2026-03")
+    expected = SourceSetEvidence("a" * 64, ("before.xlsx",), 1, ("2026-03",))
+
+    class Policy:
+        root = tmp_path
+
+    def fake_run_full_scan(_policy, **kwargs):
+        assert kwargs["expected_source_set"] == expected
+        raise SourceInventoryError("source set changed after G3")
+
+    monkeypatch.setattr(job_runner, "load_scan_policy", lambda category, required: Policy())
+    monkeypatch.setattr(job_runner, "latest_successful_snapshot", lambda root, category: None)
+    monkeypatch.setattr(job_runner, "run_full_scan", fake_run_full_scan)
+    monkeypatch.setattr(
+        job_runner,
+        "_real_load",
+        lambda *args, **kwargs: pytest.fail("loader must not run after G3/load drift"),
+    )
+
+    with pytest.raises(SourceInventoryError, match="source set changed after G3"):
+        job_runner._load_with_source_inventory(
+            manifest,
+            UBIST,
+            bucket,
+            run_id="scan-run",
+            target_dir_override=None,
+            required=True,
+            expected_source_set=expected,
+        )
+    print("NEGATIVE_G3_LOAD_SOURCESET_DRIFT_BLOCKED", "loader_called=0")
 
 
 def test_full_scan_load_uses_one_contract_for_fresh_target_database(

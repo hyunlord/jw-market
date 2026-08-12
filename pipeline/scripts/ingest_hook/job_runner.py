@@ -204,6 +204,7 @@ from pipeline.scripts.ingest_hook.source_inventory import (
     ScanOutcome,
     SourceScanPolicy,
     SourceSetEvidence,
+    prepare_reconciled_manifest_for_g3,
     run_full_scan,
     source_set_evidence,
 )
@@ -818,6 +819,11 @@ def _real_load(
         if source_files is not None
         else [str((input_root / entry.path).resolve()) for entry in manifest.files]
     )
+    if source_files is not None and not read_files:
+        raise RuntimeError(
+            f"category {manifest.category!r} empty source file set after source inventory; "
+            "refusing loader fallback"
+        )
     source_batches = [read_files] if spec.load_batch_files else [[source] for source in read_files]
     previous_target_db = os.environ.get(config.ENV_LOAD_STAGING_DB)
     if target_db_override is not None:
@@ -927,6 +933,7 @@ def _load_with_source_inventory(
     target_dir_override: Path | None,
     target_db_override: str | None = None,
     required: bool,
+    expected_source_set: SourceSetEvidence | None = None,
 ) -> tuple[dict, ScanOutcome | None]:
     """Run a source-wide scan and publish its immutable anchor after load."""
     policy = load_scan_policy(manifest.category, required=required)
@@ -952,6 +959,7 @@ def _load_with_source_inventory(
         row_floor_ratio=spec.row_floor_ratio,
         permissive=config.e2e_commissioning(),
         allow_period_shrink=config.allow_period_shrink(),
+        expected_source_set=expected_source_set,
         rebuild=lambda source_files: _real_load(
             manifest,
             spec,
@@ -1276,13 +1284,33 @@ def run(
             manifest.category,
             required=config.full_scan_enabled(),
         )
+        g3_manifest = manifest
+        g3_input_root = input_root
+        expected_source_set = None
+        if source_scan_policy is not None:
+            previous_inventory = latest_successful_snapshot(
+                DEFAULT_INVENTORY_ROOT,
+                manifest.category,
+            )
+            reconciliation = prepare_reconciled_manifest_for_g3(
+                source_scan_policy,
+                manifest,
+                run_id=run_id,
+                previous=previous_inventory,
+                row_floor_ratio=spec.row_floor_ratio,
+                permissive=config.e2e_commissioning(),
+                allow_period_shrink=config.allow_period_shrink(),
+            )
+            g3_manifest = reconciliation.manifest
+            g3_input_root = source_scan_policy.root
+            expected_source_set = reconciliation.source_set
 
         # 1) G3 — always first; a failure here has zero DB effect.
         tracker.enter("g3")
         report = validate(
-            manifest,
+            g3_manifest,
             spec,
-            input_root,
+            g3_input_root,
             previous_total_rows=_g3_crash_floor_baseline(
                 previous_total,
                 source_scan_policy,
@@ -1508,6 +1536,7 @@ def run(
                         else None
                     ),
                 ),
+                expected_source_set=expected_source_set,
             )
             rows_before = int(load_result.get("rows_before") or 0)
             rows_after = int(load_result.get("epoch_rows") or 0)

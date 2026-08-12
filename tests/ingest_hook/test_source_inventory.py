@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from pipeline.scripts.ingest_hook import job_runner
+from pipeline.scripts.ingest_hook.contract import Manifest, ManifestFile
 from pipeline.scripts.ingest_hook.source_inventory import (
     SOURCE_INVENTORY_PARSER_CONTRACT_VERSION,
     FileObservation,
@@ -20,6 +21,7 @@ from pipeline.scripts.ingest_hook.source_inventory import (
     enforce_scan_gates,
     evaluate_period_gates,
     mass_deletion_threshold,
+    reconcile_manifest_with_source_snapshot,
     read_scan_snapshot,
     run_full_scan,
     scan_source,
@@ -780,6 +782,108 @@ def test_snapshot_diff_preserves_removed_file_evidence() -> None:
     assert diff.removed_files[0].relative_path == "old.xlsx"
     assert diff.removed_files[0].sha256 == "1" * 64
     assert diff.removed_files[0].periods == ("2026-Q1",)
+
+
+def test_snapshot_diff_treats_same_sha_path_change_as_rename_not_removal() -> None:
+    previous = _snapshot(
+        "previous",
+        (_observed("b21b604c_source.xlsx", "1" * 64, {"2026-Q2"}),),
+    )
+    current = _snapshot(
+        "current",
+        (_observed("3ce5e6f3_source.xlsx", "1" * 64, {"2026-Q2"}),),
+    )
+
+    diff = compare_snapshots(previous, current)
+
+    assert diff.removed_count == 0
+    assert diff.added_files == ()
+    assert diff.renamed_files[0].previous_path == "b21b604c_source.xlsx"
+    assert diff.renamed_files[0].current_path == "3ce5e6f3_source.xlsx"
+    print(
+        "RED_NAME_ONLY_RENAME",
+        f"removed={diff.removed_count}",
+        f"renamed={len(diff.renamed_files)}",
+    )
+
+
+def test_manifest_reconciliation_rebinds_stale_paths_when_content_is_present() -> None:
+    parent = Manifest(
+        contract_version="v2",
+        epoch="2026-06",
+        category="ubist",
+        complete=True,
+        files=(
+            ManifestFile("market/ubist/b21b604c_source.xlsx", "1" * 64, rows=11),
+        ),
+        manifest_sha="a" * 64,
+    )
+    current = _snapshot(
+        "current",
+        (
+            _observed("3ce5e6f3_source.xlsx", "1" * 64, {"2026-06"}),
+            _observed("other.xlsx", "2" * 64, {"2026-05"}),
+        ),
+    )
+
+    reconciled = reconcile_manifest_with_source_snapshot(parent, current)
+
+    assert [item.path for item in reconciled.manifest.files] == [
+        "3ce5e6f3_source.xlsx",
+        "other.xlsx",
+    ]
+    assert reconciled.name_only_changes == (
+        ("market/ubist/b21b604c_source.xlsx", "3ce5e6f3_source.xlsx", "1" * 64),
+    )
+    assert reconciled.missing_parent_contents == ()
+    assert reconciled.new_contents == (("other.xlsx", "2" * 64),)
+    print(
+        "GREEN_STALE_PATH_REBOUND",
+        f"files={len(reconciled.manifest.files)}",
+        f"name_only={len(reconciled.name_only_changes)}",
+        f"missing={len(reconciled.missing_parent_contents)}",
+    )
+
+
+def test_manifest_reconciliation_blocks_real_content_loss() -> None:
+    parent = Manifest(
+        contract_version="v2",
+        epoch="2026-06",
+        category="ubist",
+        complete=True,
+        files=(ManifestFile("market/ubist/missing.xlsx", "9" * 64, rows=11),),
+        manifest_sha="a" * 64,
+    )
+    current = _snapshot(
+        "current",
+        (_observed("survivor.xlsx", "1" * 64, {"2026-06"}),),
+    )
+
+    with pytest.raises(SourceInventoryError, match="parent manifest content disappeared"):
+        reconcile_manifest_with_source_snapshot(parent, current)
+    print("NEGATIVE_CONTENT_LOSS_BLOCKED", f"missing_sha={'9' * 64}")
+
+
+def test_manifest_reconciliation_requires_one_current_file_per_parent_file() -> None:
+    parent = Manifest(
+        contract_version="v2",
+        epoch="2026-06",
+        category="ubist",
+        complete=True,
+        files=(
+            ManifestFile("market/ubist/old-a.xlsx", "1" * 64, rows=11),
+            ManifestFile("market/ubist/old-b.xlsx", "1" * 64, rows=11),
+        ),
+        manifest_sha="a" * 64,
+    )
+    current = _snapshot(
+        "current",
+        (_observed("renamed-a.xlsx", "1" * 64, {"2026-06"}),),
+    )
+
+    with pytest.raises(SourceInventoryError, match="parent manifest content disappeared"):
+        reconcile_manifest_with_source_snapshot(parent, current)
+    print("NEGATIVE_DUPLICATE_SHA_CONTENT_LOSS_BLOCKED", "parent=2", "current=1")
 
 
 def test_mass_deletion_gate_stops_at_approved_formula() -> None:
