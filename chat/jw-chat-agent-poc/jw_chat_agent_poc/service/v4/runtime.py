@@ -45,6 +45,7 @@ from jw_chat_agent_poc.service.v4.lossless_spine import (
     deterministic_fact_text,
 )
 from jw_chat_agent_poc.service.v4.planner import V4Planner
+from jw_chat_agent_poc.service.v4.clinical_query_policy import clinical_scope_suffix
 from jw_chat_agent_poc.service.v4.retrieval_events import (
     retrieval_event_from_result,
     utc_now,
@@ -162,6 +163,11 @@ class V4Runtime:
         plan = _bind_session_state_contract(plan, question, session_state)
         plan = _preserve_period_in_answer_queries(plan)
         plan = fan_out_tier_zero_queries(plan)
+        execution_plan, clinical_query_normalization = _execution_plan(
+            self._executor,
+            plan,
+            clinical_query_anchor=plan.resolved_question,
+        )
         _emit_progress(
             progress_callback,
             "질문 해석",
@@ -174,10 +180,10 @@ class V4Runtime:
         )
         source_queries = {
             source: _source_query_summary(queries)
-            for source, queries in plan.tool_queries.items()
+            for source, queries in execution_plan.tool_queries.items()
         }
         source_expected = {
-            source: len(queries) for source, queries in plan.tool_queries.items()
+            source: len(queries) for source, queries in execution_plan.tool_queries.items()
         }
         source_results: dict[str, list[SourceResult]] = {
             source: [] for source in SOURCE_NAMES
@@ -256,7 +262,7 @@ class V4Runtime:
         else:
             first_execution = _execute_with_trace(
                 self._executor,
-                plan,
+                execution_plan,
                 session_id=session_id,
                 total_timeout_s=min(50.0, _remaining(deadline)),
                 answer_sources=plan.answer_sources,
@@ -291,10 +297,22 @@ class V4Runtime:
                 "연결 조회",
                 "첫 조회에서 확인한 대상을 바탕으로 관련 자료를 한 번 더 조회합니다",
             )
+        if linked_plan is not None:
+            linked_execution_plan, linked_clinical_normalization = _execution_plan(
+                self._executor,
+                linked_plan,
+                clinical_query_anchor=_linked_clinical_query_anchor(
+                    plan.resolved_question,
+                    linked_plan.resolved_question,
+                ),
+            )
+        else:
+            linked_execution_plan = None
+            linked_clinical_normalization = _clinical_normalization_trace(None, None)
         linked_execution = (
             _execute_with_trace(
                 self._executor,
-                linked_plan,
+                linked_execution_plan,
                 session_id=session_id,
                 total_timeout_s=min(30.0, _remaining(deadline)),
                 answer_sources=linked_plan.answer_sources,
@@ -304,7 +322,7 @@ class V4Runtime:
                 ),
                 progress_callback=source_completed,
             )
-            if linked_plan is not None and _remaining(deadline) > 0.1
+            if linked_execution_plan is not None and _remaining(deadline) > 0.1
             else SimpleNamespace(results=(), trace=None)
         )
         linked_results = linked_execution.results
@@ -634,8 +652,10 @@ class V4Runtime:
             "synth_model": synthesis.trace.get("model", "not_applicable"),
             "fallback": plan.linking_plan.startswith("planner fallback;"),
             "planner": plan.model_dump(mode="json"),
+            "clinical_query_normalization": clinical_query_normalization,
             "planner_usage": planner_usage,
             "second_hop": linked_plan.model_dump(mode="json") if linked_plan else None,
+            "linked_clinical_query_normalization": linked_clinical_normalization,
             "tool_results": [
                 {
                     "source": result.source,
@@ -1149,6 +1169,58 @@ def _execute_with_trace(executor: Any, plan: Any, **kwargs: Any) -> Any:
             "tools": [],
         },
     )
+
+
+def _execution_plan(
+    executor: Any,
+    plan: Any,
+    *,
+    clinical_query_anchor: str,
+) -> tuple[Any, dict[str, Any]]:
+    fanned_plan = fan_out_tier_zero_queries(plan)
+    prepare_plan = getattr(executor, "prepare_plan", None)
+    if not callable(prepare_plan):
+        return fanned_plan, _clinical_normalization_trace(plan, fanned_plan)
+    prepared = prepare_plan(fanned_plan, clinical_query_anchor=clinical_query_anchor)
+    return prepared, _clinical_normalization_trace(plan, prepared)
+
+
+def _linked_clinical_query_anchor(first_question: str, linked_question: str) -> str:
+    if clinical_scope_suffix(linked_question):
+        return linked_question
+    inherited_scope = clinical_scope_suffix(first_question)
+    if not inherited_scope:
+        return linked_question
+    return f"{linked_question} {inherited_scope}"
+
+
+def _clinical_normalization_trace(
+    planner_plan: Any | None,
+    execution_plan: Any | None,
+) -> dict[str, Any]:
+    planner_queries = (
+        tuple(planner_plan.tool_queries.clinicaltrials)
+        if planner_plan is not None
+        else ()
+    )
+    execution_queries = (
+        tuple(execution_plan.tool_queries.clinicaltrials)
+        if execution_plan is not None
+        else ()
+    )
+    execution_concepts = (
+        tuple(execution_plan.clinical_query_specs)
+        if execution_plan is not None
+        else ()
+    )
+    return {
+        "applied": planner_queries != execution_queries,
+        "planner_queries": list(planner_queries),
+        "execution_queries": list(execution_queries),
+        "execution_concepts": [
+            concept.model_dump(mode="json") for concept in execution_concepts
+        ],
+    }
 
 
 def _claim_ir_shadow_enabled() -> bool:

@@ -25,7 +25,10 @@ from jw_chat_agent_poc.service.v4.clinical import (
     compile_clinical_query,
     concept_from_query,
 )
-from jw_chat_agent_poc.service.v4.clinical_query_policy import query_entity_candidates
+from jw_chat_agent_poc.service.v4.clinical_query_policy import (
+    is_query_entity_candidate,
+    query_entity_candidates,
+)
 from jw_chat_agent_poc.service.v4.llm import CompletionResult, GenOSV4Client
 from jw_chat_agent_poc.service.v4.session_state import SessionState
 from jw_chat_agent_poc.service.v4.time_context import (
@@ -545,7 +548,7 @@ def _requested_answer_shape(question: str) -> RequestedAnswerShape:
         question,
         re.IGNORECASE,
     )
-    if subject_match:
+    if subject_match and is_query_entity_candidate(subject_match.group("entity")):
         entities.append(subject_match.group("entity"))
 
     horizon_match = re.search(r"최근\s*\d{1,2}\s*년", question)

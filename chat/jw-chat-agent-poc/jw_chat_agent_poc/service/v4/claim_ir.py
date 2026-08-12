@@ -9,19 +9,34 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from jw_chat_agent_poc.service.v4.evidence_payload import is_request_metadata_key
 from jw_chat_agent_poc.service.v4.lossless_contracts import EvidenceRecord, EvidenceSet
+from jw_chat_agent_poc.service.v4.markdown_fences import advance_fence_state
 
 
 ClaimType = Literal["T1", "T2", "T3"]
 CausalLevel = Literal["NONE", "TEMPORAL", "ASSOCIATION", "CAUSAL"]
 Modality = Literal["ASSERTED", "OBSERVED", "NOT_ESTABLISHED"]
-_SENTENCE_RE = re.compile(r"(?<=[.!?。]|[다요음됨임])\s+(?=[^\s])")
+_SENTENCE_RE = re.compile(r"(?<=[.!?。])\s+(?=[^\s])")
 _HIGH_ENTROPY_RE = re.compile(
-    r"(?:\bNCT\d{8}\b|\b[A-Z]{2,}[A-Z0-9]*-\d+[A-Za-z]?\b|"
-    r"\b\d{4}-\d{2}-\d{2}\b|(?<!\w)\d+(?:\.\d+)?%?)",
+    r"(?:(?<![A-Za-z0-9])NCT\d{8}(?!\d)|"
+    r"(?<![A-Za-z0-9])[A-Z]{2,}[A-Z0-9]*-\d+[A-Za-z]?(?![A-Za-z0-9])|"
+    r"(?<!\d)\d{4}-\d{2}-\d{2}(?!\d)|"
+    r"(?<![A-Za-z0-9.,])[-+]?\d[\d,]*(?:\.\d+)?%?(?![A-Za-z0-9.,]))",
     re.IGNORECASE,
 )
+_COMPANY_RE = re.compile(
+    r"(?:\b[A-Z][A-Za-z0-9&.-]*(?:\s+[A-Z][A-Za-z0-9&.-]*)*\s+"
+    r"(?:Pharmaceuticals?|Pharma|Biopharma|Biotech|Corporation|Corp|Company|Inc|Ltd)"
+    r"|[가-힣A-Za-z0-9]{2,}(?:제약|바이오|약품|헬스케어))"
+)
+_NUMBER_RE = re.compile(r"[-+]?\d[\d,]*(?:\.\d+)?%?")
+_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _CAUSAL_RE = re.compile(r"(?:때문|원인|야기|일으켰|영향을\s*줬|caus)", re.IGNORECASE)
+_CURRENCY_CODE_RE = re.compile(
+    r"(?:^|_)([a-z]{3})(?=_|$)",
+    re.IGNORECASE,
+)
 
 
 class _FrozenModel(BaseModel):
@@ -66,6 +81,10 @@ def classify_answer_claims(
     claims: list[ClaimIR] = []
     recomputations: list[dict[str, Any]] = []
     supported_record_ids: set[str] = set()
+    supported_high_entropy = _supported_high_entropy_tokens(fields)
+    supported_field_values = frozenset(
+        value.casefold() for value in _all_field_values(fields)
+    )
     for index, sentence in enumerate(_sentences(answer), start=1):
         arguments = _arguments_for_sentence(sentence, fields)
         explicit_record_ids = tuple(
@@ -83,15 +102,27 @@ def classify_answer_claims(
         unsupported_high_entropy = tuple(
             token
             for token in _HIGH_ENTROPY_RE.findall(sentence)
-            if not any(token.casefold() in value.casefold() for value in _all_field_values(fields))
+            if token.casefold() not in supported_high_entropy
+        )
+        unsupported_companies = tuple(
+            company
+            for company in _COMPANY_RE.findall(sentence)
+            if company.casefold() not in supported_field_values
         )
         relation = _recomputed_relation(sentence, arguments, fields)
-        if len(record_ids) == 1 and arguments and not unsupported_high_entropy:
+        has_unsupported_exact_value = bool(
+            unsupported_high_entropy or unsupported_companies
+        )
+        if len(record_ids) == 1 and arguments and not has_unsupported_exact_value:
             claim_type: ClaimType = "T1"
             operator_id = "field_restatement"
             predicate_id = "field_restatement"
             modality: Modality = "OBSERVED"
-        elif len(record_ids) >= 2 and relation is not None and not unsupported_high_entropy:
+        elif (
+            len(record_ids) >= 2
+            and relation is not None
+            and not has_unsupported_exact_value
+        ):
             claim_type = "T2"
             operator_id, recomputed = relation
             predicate_id = operator_id
@@ -121,7 +152,13 @@ def classify_answer_claims(
             operator_id=operator_id,
             entity_scope=record_ids,
             time_scope=tuple(
-                dict.fromkeys(match.group(0) for match in re.finditer(r"\b\d{4}(?:-\d{2}-\d{2})?\b", sentence))
+                dict.fromkeys(
+                    match.group(0)
+                    for match in re.finditer(
+                        r"(?<!\d)\d{4}(?:-\d{2}-\d{2})?(?!\d)",
+                        sentence,
+                    )
+                )
             ),
             causal_level="CAUSAL" if _CAUSAL_RE.search(sentence) else "NONE",
             modality=modality,
@@ -140,12 +177,18 @@ def classify_answer_claims(
 
 
 def _sentences(answer: str) -> tuple[str, ...]:
-    prose = " ".join(
-        line.strip(" -*")
-        for line in answer.splitlines()
-        if line.strip() and not line.lstrip().startswith(("#", "|", "```"))
-    )
-    return tuple(item.strip() for item in _SENTENCE_RE.split(prose) if item.strip())
+    sentences: list[str] = []
+    fence_state = None
+    for line in answer.splitlines():
+        fence_state, is_fence_boundary = advance_fence_state(fence_state, line)
+        if is_fence_boundary or fence_state is not None:
+            continue
+        if line.strip() and not line.lstrip().startswith(("#", "|")):
+            prose = line.strip(" -*>")
+            sentences.extend(
+                item.strip() for item in _SENTENCE_RE.split(prose) if item.strip()
+            )
+    return tuple(sentences)
 
 
 def _arguments_for_sentence(
@@ -174,6 +217,8 @@ def _flatten_record(record: EvidenceRecord) -> dict[str, str]:
     def walk(value: Any, path: str) -> None:
         if isinstance(value, Mapping):
             for key, nested in value.items():
+                if is_request_metadata_key(str(key)):
+                    continue
                 walk(nested, f"{path}.{key}" if path else str(key))
         elif isinstance(value, (list, tuple)):
             for index, nested in enumerate(value):
@@ -197,14 +242,171 @@ def _all_field_values(fields: Mapping[str, Mapping[str, str]]) -> tuple[str, ...
     return tuple(value for record_fields in fields.values() for value in record_fields.values())
 
 
+def _supported_high_entropy_tokens(
+    fields: Mapping[str, Mapping[str, str]],
+) -> frozenset[str]:
+    return frozenset(
+        token.casefold()
+        for value in _all_field_values(fields)
+        for token in _HIGH_ENTROPY_RE.findall(value)
+    )
+
+
 def _recomputed_relation(
     sentence: str,
     arguments: Sequence[ClaimArgument],
-    _fields: Mapping[str, Mapping[str, str]],
-) -> tuple[str, bool] | None:
+    fields: Mapping[str, Mapping[str, str]],
+) -> tuple[str, dict[str, Any]] | None:
     record_ids = tuple(dict.fromkeys(argument.record_id for argument in arguments))
     if "서로 다른" in sentence and len(record_ids) >= 2:
-        return "set_distinct", len(set(record_ids)) == len(record_ids)
+        return "set_distinct", {
+            "matched": len(set(record_ids)) == len(record_ids),
+            "record_ids": list(record_ids),
+        }
+
+    positioned = sorted(
+        (
+            sentence.casefold().find(value.casefold()),
+            argument.record_id,
+            argument.field_path,
+            value,
+        )
+        for argument in arguments
+        if (
+            value := fields.get(argument.record_id, {}).get(argument.field_path, "")
+        )
+        and sentence.casefold().find(value.casefold()) >= 0
+    )
+    numeric_values = tuple(
+        (record_id, field_path, value, _numeric_value(value))
+        for _position, record_id, field_path, value in positioned
+        if _numeric_value(value) is not None
+    )
+    if len(numeric_values) >= 2:
+        left = numeric_values[0]
+        right = numeric_values[1]
+        direction = _numeric_direction(sentence)
+        if (
+            direction is not None
+            and _numeric_dimension(left[1], left[2])
+            == _numeric_dimension(right[1], right[2])
+        ):
+            matched = (
+                left[3] > right[3] if direction == "gt" else left[3] < right[3]
+            )
+            if matched:
+                return "numeric_comparison", {
+                    "matched": True,
+                    "direction": direction,
+                    "left": {
+                        "record_id": left[0],
+                        "field_path": left[1],
+                        "value": left[2],
+                    },
+                    "right": {
+                        "record_id": right[0],
+                        "field_path": right[1],
+                        "value": right[2],
+                    },
+                }
+
+    temporal_values = tuple(
+        (record_id, field_path, value)
+        for _position, record_id, field_path, value in positioned
+        if _DATE_RE.fullmatch(value)
+    )
+    if len(temporal_values) >= 2:
+        left = temporal_values[0]
+        right = temporal_values[1]
+        direction = _temporal_direction(sentence)
+        if (
+            direction is not None
+            and _temporal_dimension(left[1]) == _temporal_dimension(right[1])
+        ):
+            matched = (
+                left[2] < right[2] if direction == "before" else left[2] > right[2]
+            )
+            if matched:
+                return "temporal_order", {
+                    "matched": True,
+                    "direction": direction,
+                    "left": {
+                        "record_id": left[0],
+                        "field_path": left[1],
+                        "value": left[2],
+                    },
+                    "right": {
+                        "record_id": right[0],
+                        "field_path": right[1],
+                        "value": right[2],
+                    },
+                }
+    return None
+
+
+def _numeric_value(value: str) -> float | None:
+    if _NUMBER_RE.fullmatch(value) is None:
+        return None
+    try:
+        return float(value.rstrip("%").replace(",", ""))
+    except ValueError:
+        return None
+
+
+def _numeric_dimension(field_path: str, value: str) -> str:
+    normalized_path = field_path.casefold()
+    leaf = re.sub(r"\[\d+\]", "", normalized_path.rsplit(".", 1)[-1])
+    if value.endswith("%") or any(
+        token in leaf for token in ("share", "rate", "ratio", "percent")
+    ):
+        return "percent"
+    currency_codes = _CURRENCY_CODE_RE.findall(leaf)
+    if any(
+        token in leaf
+        for token in (
+            "sales",
+            "revenue",
+            "amount",
+            "price",
+            "cost",
+            "krw",
+            "usd",
+            "jpy",
+            "eur",
+            "gbp",
+            "cny",
+        )
+    ):
+        if currency_codes:
+            return f"currency:{currency_codes[-1].casefold()}"
+        if "krw" in leaf or "억원" in value or "원" in value:
+            return "currency:krw"
+        if "usd" in leaf or "$" in value:
+            return "currency:usd"
+        return "currency:unspecified"
+    return leaf
+
+
+def _temporal_dimension(field_path: str) -> str:
+    normalized_path = field_path.casefold()
+    return re.sub(r"\[\d+\]", "", normalized_path.rsplit(".", 1)[-1])
+
+
+def _numeric_direction(sentence: str) -> Literal["gt", "lt"] | None:
+    lowered = sentence.casefold()
+    if re.search(r"(?:높|크|많|증가|상회|greater|higher|larger)", lowered):
+        return "gt"
+    if re.search(r"(?:낮|작|적|감소|하회|less|lower|smaller)", lowered):
+        return "lt"
+    return None
+
+
+def _temporal_direction(sentence: str) -> Literal["before", "after"] | None:
+    lowered = sentence.casefold()
+    if re.search(r"(?:먼저|앞서|이전|before|earlier)", lowered):
+        return "before"
+    if re.search(r"(?:나중|뒤|이후|after|later)", lowered):
+        return "after"
     return None
 
 
@@ -260,7 +462,11 @@ def _density_metrics(
 
 def _field_population(value: Any) -> tuple[int, int]:
     if isinstance(value, Mapping):
-        totals = [_field_population(item) for item in value.values()]
+        totals = [
+            _field_population(item)
+            for key, item in value.items()
+            if not is_request_metadata_key(str(key))
+        ]
         return sum(item[0] for item in totals), sum(item[1] for item in totals)
     if isinstance(value, (list, tuple)):
         if not value:

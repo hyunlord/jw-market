@@ -22,7 +22,11 @@ RetrievalStatus = Literal[
 ]
 
 _TIMEOUT_RE = re.compile(r"(?:timed?\s*out|timeout|시간\s*초과|응답\s*지연)", re.IGNORECASE)
-_QUOTA_RE = re.compile(r"(?:quota|usage\s*limit|plan.+limit|사용량\s*한도)", re.IGNORECASE)
+_QUOTA_RE = re.compile(
+    r"(?:\b429\b|too[_\s-]*many[_\s-]*requests|rate[_\s-]*limit|quota|"
+    r"usage\s*limit|plan.+limit|사용량\s*한도)",
+    re.IGNORECASE,
+)
 _PARSE_RE = re.compile(r"(?:parse|malformed|decode|schema|변환하지\s*못)", re.IGNORECASE)
 _UPSTREAM_RE = re.compile(r"(?:HTTP\s*5\d\d|connection|upstream|503|502|504)", re.IGNORECASE)
 
@@ -43,6 +47,11 @@ class RetrievalEvent(BaseModel):
 
 
 def classify_retrieval_status(result: SourceResult) -> RetrievalStatus:
+    notice = str(result.notice or "")
+    if result.status == "empty" and notice:
+        signaled = classify_failure_signals((result.status,), notice)
+        if signaled != "empty":
+            return signaled
     if result.status in {
         "ok",
         "empty",
@@ -53,7 +62,6 @@ def classify_retrieval_status(result: SourceResult) -> RetrievalStatus:
         "deadline_exceeded",
     }:
         return result.status
-    notice = str(result.notice or "")
     if _QUOTA_RE.search(notice):
         return "quota"
     if _TIMEOUT_RE.search(notice):
@@ -68,7 +76,11 @@ def classify_failure_signals(
     notice: str,
 ) -> RetrievalStatus:
     normalized = tuple(status.casefold() for status in statuses if status)
-    if _QUOTA_RE.search(notice):
+    if _QUOTA_RE.search(notice) or any(
+        status in {"429", "too_many_requests", "rate_limit", "quota"}
+        or "429" in status
+        for status in normalized
+    ):
         return "quota"
     if _TIMEOUT_RE.search(notice) or "timeout" in normalized:
         return "timeout"
@@ -81,6 +93,31 @@ def classify_failure_signals(
     if normalized and all(status in {"no_data", "empty"} for status in normalized):
         return "empty"
     return "upstream"
+
+
+def failure_status_from_value(value: Any) -> RetrievalStatus | None:
+    status = str(value or "").strip().casefold()
+    if not status:
+        return None
+    if (
+        status in {"429", "http_429", "too_many_requests", "rate_limit", "quota"}
+        or "429" in status
+        or _QUOTA_RE.search(status)
+    ):
+        return "quota"
+    if status == "deadline_exceeded":
+        return "deadline_exceeded"
+    if status == "timeout" or _TIMEOUT_RE.search(status):
+        return "timeout"
+    if status == "parse_error" or _PARSE_RE.search(status):
+        return "parse_error"
+    if status in {"error", "missing_key", "unsupported", "upstream"} or _UPSTREAM_RE.search(
+        status
+    ):
+        return "upstream"
+    if status in {"empty", "no_data"}:
+        return "empty"
+    return None
 
 
 def retrieval_event_from_result(
@@ -114,7 +151,7 @@ def retrieval_event_from_result(
         started_at=started,
         deadline_at=deadline_at,
         completed_at=completed,
-        received_count=_received_count(result.payload),
+        received_count=_received_count(result.payload) if status == "ok" else 0,
         reason_code=status,
     )
 
@@ -164,4 +201,8 @@ def _received_count(payload: Any) -> int:
 
 def _call_has_data(call: Mapping[str, Any]) -> bool:
     status = str(call.get("status") or "").casefold()
-    return status not in {"", "error", "no_data", "unsupported", "timeout"}
+    if not status or failure_status_from_value(status) is not None:
+        return False
+    render_data = call.get("render_data")
+    nested_status = render_data.get("status") if isinstance(render_data, Mapping) else None
+    return failure_status_from_value(nested_status) is None

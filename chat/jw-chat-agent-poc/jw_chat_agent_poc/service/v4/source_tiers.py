@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from jw_chat_agent_poc.service.v4.contracts import PlannerOutput, SourceResult
+from jw_chat_agent_poc.service.v4.evidence_payload import is_request_metadata_key
 from jw_chat_agent_poc.service.v4.lossless_contracts import EvidenceSet
 
 
@@ -50,17 +51,32 @@ def fan_out_tier_zero_queries(plan: PlannerOutput) -> PlannerOutput:
     updates: dict[str, tuple[str, ...]] = {}
     for source in plan.answer_sources:
         queries = getattr(plan.tool_queries, source)
-        if source == "clinicaltrials" or _queries_cover_entities(queries, entities):
+        if source == "clinicaltrials":
             continue
-        tail = _entity_query_tail(queries[0], entities)
-        if not tail:
-            tail = " ".join(
-                _ATTRIBUTE_QUERY_LABELS.get(attribute, attribute)
-                for attribute in plan.requested_answer_shape.measure_or_attribute
-            ).strip()
-        if not tail:
-            continue
-        updates[source] = tuple(f"{entity} {tail}" for entity in entities)
+        fallback_tail = " ".join(
+            _ATTRIBUTE_QUERY_LABELS.get(attribute, attribute)
+            for attribute in plan.requested_answer_shape.measure_or_attribute
+        ).strip()
+        intent_tails: list[str] = []
+        passthrough: list[str] = []
+        for query in queries:
+            tail = _entity_query_tail(query, entities)
+            if not tail:
+                tail = fallback_tail
+            if not tail:
+                passthrough.append(query)
+                continue
+            if tail not in intent_tails:
+                intent_tails.append(tail)
+        expanded = [
+            f"{entity} {tail}"
+            for tail in intent_tails
+            for entity in entities
+        ]
+        expanded.extend(passthrough)
+        normalized = tuple(dict.fromkeys(expanded))
+        if normalized != tuple(queries):
+            updates[source] = normalized
 
     if not updates:
         return plan
@@ -125,14 +141,23 @@ def entity_completion_rows(
     rows: list[dict[str, str]] = []
     confirmed: list[str] = []
     missing: list[str] = []
+    required_sources = set(plan.answer_sources)
     for entity in entities:
         matched = assignments.get(entity, ())
-        statuses = {result.status for result in matched}
-        if "ok" in statuses:
-            status = "PARTIAL" if statuses - {"ok"} else "COMPLETE"
+        primary_by_source = {
+            source: tuple(result for result in matched if result.source == source)
+            for source in plan.answer_sources
+        }
+        completed_sources = {
+            source
+            for source, source_results in primary_by_source.items()
+            if any(result.status == "ok" for result in source_results)
+        }
+        if required_sources and completed_sources == required_sources:
+            status = "COMPLETE"
             confirmed.append(entity)
-        elif matched:
-            status = "FAILED"
+        elif completed_sources:
+            status = "PARTIAL"
             missing.append(entity)
         else:
             status = "FAILED"
@@ -159,11 +184,13 @@ def _assign_results(
     assigned: dict[str, list[SourceResult]] = {entity: [] for entity in entities}
     ordered = sorted(entities, key=len, reverse=True)
     for result in results:
-        payload_text = _payload_text(result.payload).casefold()
+        payload_text = _payload_text(result.payload).strip().casefold()
         payload_matches = _entity_mentions(payload_text, ordered)
         if payload_matches:
             for entity in payload_matches:
                 assigned[entity].append(result)
+            continue
+        if payload_text:
             continue
         query_matches = _entity_mentions(result.query.casefold(), ordered)
         if len(query_matches) == 1:
@@ -187,6 +214,7 @@ def _entity_query_tail(query: str, entities: Sequence[str]) -> str:
     pattern = "|".join(re.escape(entity) for entity in sorted(entities, key=len, reverse=True))
     tail = re.sub(pattern, " ", query, flags=re.IGNORECASE)
     tail = re.sub(r"[,，:·/]+", " ", tail)
+    tail = re.sub(r"(?:^|\s)(?:및|와|과)(?=\s|$)", " ", tail)
     return " ".join(tail.split()).strip()
 
 
@@ -206,7 +234,11 @@ def _entity_mentions(text: str, ordered_entities: Sequence[str]) -> list[str]:
 
 def _payload_text(payload: Any) -> str:
     if isinstance(payload, Mapping):
-        return " ".join(f"{key} {_payload_text(value)}" for key, value in payload.items())
+        return " ".join(
+            f"{key} {_payload_text(value)}"
+            for key, value in payload.items()
+            if not is_request_metadata_key(str(key))
+        )
     if isinstance(payload, (list, tuple)):
         return " ".join(_payload_text(value) for value in payload)
     return str(payload or "")

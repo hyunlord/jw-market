@@ -50,6 +50,34 @@ class ParallelSourceExecutor:
         self._cache: OrderedDict[tuple[str, str, str], SourceResult] = OrderedDict()
         self._cache_lock = threading.Lock()
 
+    def prepare_plan(
+        self,
+        plan: PlannerOutput,
+        *,
+        clinical_query_anchor: str,
+    ) -> PlannerOutput:
+        """Normalize real ClinicalTrials requests without rewriting planner provenance."""
+        preparer = getattr(self._adapters["clinicaltrials"], "prepare_requests", None)
+        if not callable(preparer):
+            return plan
+        prepared = tuple(preparer(clinical_query_anchor, plan.clinical_query_specs))
+        if not prepared:
+            if plan.clinical_query_specs and any(
+                "가" <= character <= "힣" for character in clinical_query_anchor
+            ):
+                return plan.model_copy(update={"clinical_query_specs": ()})
+            return plan
+        queries = tuple(query for query, _concept in prepared)
+        concepts = tuple(concept for _query, concept in prepared)
+        return plan.model_copy(
+            update={
+                "tool_queries": plan.tool_queries.model_copy(
+                    update={"clinicaltrials": queries}
+                ),
+                "clinical_query_specs": concepts,
+            }
+        )
+
     def execute(
         self,
         plan: PlannerOutput,
@@ -158,6 +186,76 @@ class ParallelSourceExecutor:
                 },
             )
 
+        ordered_specs = sorted(
+            pending_specs,
+            key=lambda item: (source_tier(plan, item[1]), item[0]),
+        )
+        tier_zero_indices = {
+            index
+            for index, source, _query, _concept in ordered_specs
+            if source_tier(plan, source) == 0
+        }
+        unsettled_tier_zero = set(tier_zero_indices)
+        tier_zero_gate = threading.Event()
+        schedule_lock = threading.Lock()
+        actual_starts: dict[int, float] = {}
+        cancelled_indices: set[int] = set()
+        if not unsettled_tier_zero:
+            tier_zero_gate.set()
+
+        def release_tier_zero(index: int) -> None:
+            if index not in tier_zero_indices:
+                return
+            with schedule_lock:
+                unsettled_tier_zero.discard(index)
+                if not unsettled_tier_zero:
+                    tier_zero_gate.set()
+
+        def cancel_scheduled(index: int) -> None:
+            with schedule_lock:
+                cancelled_indices.add(index)
+                started_already = index in actual_starts
+            if not started_already:
+                release_tier_zero(index)
+
+        def run_scheduled(
+            index: int,
+            source: SourceName,
+            query: str,
+            clinical_concept: ClinicalTrialConcept | None,
+        ) -> SourceResult:
+            if source_tier(plan, source) > 0:
+                remaining_budget = max(0.0, deadline - time.monotonic())
+                if not tier_zero_gate.wait(timeout=remaining_budget):
+                    return SourceResult(
+                        source=source,
+                        query=query,
+                        status="deadline_exceeded",
+                        notice="Tier-0 조회 후 남은 응답 예산이 없음",
+                    )
+            actual_started = time.monotonic()
+            with schedule_lock:
+                if index in cancelled_indices:
+                    return SourceResult(
+                        source=source,
+                        query=query,
+                        status="deadline_exceeded",
+                        notice="응답 조립 전에 조회가 제외됨",
+                    )
+                actual_starts[index] = actual_started
+                tool_trace[index].update(
+                    started_ms=(actual_started - started) * 1000,
+                    status="running",
+                    deadline_remaining_ms_at_submit=max(
+                        0.0,
+                        (deadline - actual_started) * 1000,
+                    ),
+                )
+            try:
+                return self._run(source, query, clinical_concept, deadline)
+            finally:
+                release_tier_zero(index)
+
         pool = ThreadPoolExecutor(
             # The planner already bounds non-clinical fan-out. ClinicalTrials
             # static concepts must all start together so queued searches do not
@@ -169,27 +267,15 @@ class ParallelSourceExecutor:
             Future[SourceResult],
             tuple[int, SourceName, str, str, float],
         ] = {}
-        for index, source, query, clinical_concept in sorted(
-            pending_specs,
-            key=lambda item: (source_tier(plan, item[1]), item[0]),
-        ):
+        for index, source, query, clinical_concept in ordered_specs:
             submitted = time.monotonic()
             cache_query = _cache_query(query, clinical_concept)
-            futures[
-                pool.submit(self._run, source, query, clinical_concept, deadline)
-            ] = (
-                index,
-                source,
-                query,
-                cache_query,
-                submitted,
-            )
             tool_trace[index] = {
                 "source": source,
                 "query": query,
-                "started_ms": (submitted - started) * 1000,
+                "started_ms": None,
                 "ended_ms": None,
-                "status": "running",
+                "status": "queued",
                 "cache_hit": False,
                 "notice": None,
                 "exclusion_reason": None,
@@ -200,6 +286,20 @@ class ParallelSourceExecutor:
                     (deadline - submitted) * 1000,
                 ),
             }
+            future = pool.submit(
+                run_scheduled,
+                index,
+                source,
+                query,
+                clinical_concept,
+            )
+            futures[future] = (
+                index,
+                source,
+                query,
+                cache_query,
+                submitted,
+            )
         try:
             remaining = set(futures)
             while remaining:
@@ -220,11 +320,13 @@ class ParallelSourceExecutor:
                             continue
                         remaining.remove(future)
                         future.cancel()
+                        cancel_scheduled(index)
+                        actual_started = actual_starts.get(index, submitted)
                         timed_out = SourceResult(
                             source=source,
                             query=query,
                             status="timeout",
-                            elapsed_ms=(now - submitted) * 1000,
+                            elapsed_ms=(now - actual_started) * 1000,
                             notice="정답 근거 도착 후 soft deadline으로 미포함",
                         )
                         output[index] = timed_out
@@ -241,17 +343,21 @@ class ParallelSourceExecutor:
                 expired = [
                     future
                     for future in remaining
-                    if now - futures[future][4] >= self._per_tool_timeout_s
+                    if futures[future][0] in actual_starts
+                    and now - actual_starts[futures[future][0]]
+                    >= self._per_tool_timeout_s
                 ]
                 for future in expired:
                     remaining.remove(future)
                     index, source, query, _cache_query_value, submitted = futures[future]
                     future.cancel()
+                    cancel_scheduled(index)
+                    actual_started = actual_starts.get(index, submitted)
                     timed_out = SourceResult(
                         source=source,
                         query=query,
                         status="timeout",
-                        elapsed_ms=(now - submitted) * 1000,
+                        elapsed_ms=(now - actual_started) * 1000,
                         notice="응답 지연으로 미포함",
                     )
                     output[index] = timed_out
@@ -271,11 +377,13 @@ class ParallelSourceExecutor:
                         remaining.remove(future)
                         index, source, query, _cache_query_value, submitted = futures[future]
                         future.cancel()
+                        cancel_scheduled(index)
+                        actual_started = actual_starts.get(index, submitted)
                         timed_out = SourceResult(
                             source=source,
                             query=query,
                             status="timeout",
-                            elapsed_ms=(time.monotonic() - submitted) * 1000,
+                            elapsed_ms=(time.monotonic() - actual_started) * 1000,
                             notice="전체 응답 시간 상한으로 미포함",
                         )
                         output[index] = timed_out
@@ -288,11 +396,20 @@ class ParallelSourceExecutor:
                         if progress_callback is not None:
                             progress_callback(timed_out)
                     break
-                next_tool_deadline = min(
-                    self._per_tool_timeout_s - (time.monotonic() - futures[future][4])
+                started_remaining = [
+                    actual_starts[futures[future][0]]
                     for future in remaining
-                )
-                wait_candidates = [remaining_total, next_tool_deadline]
+                    if futures[future][0] in actual_starts
+                ]
+                wait_candidates = [remaining_total]
+                if started_remaining:
+                    wait_candidates.append(
+                        min(
+                            self._per_tool_timeout_s
+                            - (time.monotonic() - actual_started)
+                            for actual_started in started_remaining
+                        )
+                    )
                 if answer_sources and soft_deadline_s is not None:
                     soft_remaining = started + soft_deadline_s - time.monotonic()
                     if soft_remaining > 0:
@@ -330,6 +447,10 @@ class ParallelSourceExecutor:
                 "quorum_fired": quorum_fired,
                 "quorum_fire_ms": quorum_fire_ms,
                 "soft_deadline_exempt_sources": sorted(exempt_sources),
+                "scheduler": {
+                    "tier_zero_first": True,
+                    "auxiliary_order": "entity_round_robin",
+                },
                 "tools": [tool_trace[index] for index in sorted(tool_trace)],
             },
         )

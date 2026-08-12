@@ -23,6 +23,44 @@ _COMBINED_INTERVENTION_RE = re.compile(
 _ENTITY_SPLIT_RE = re.compile(
     r"\s*[,，]\s*|\s+(?:및|와|과)\s+|(?<=[가-힣A-Za-z0-9])(?:와|과)\s+"
 )
+_ATTRIBUTE_TERMS = (
+    "효능",
+    "효과",
+    "안전성",
+    "부작용",
+    "용법",
+    "용량",
+    "매출",
+    "점유율",
+    "특허",
+    "임상",
+    "급여",
+    "환자수",
+)
+_NON_ENTITY_CANDIDATES = {
+    "국내",
+    "대한민국",
+    "한국",
+    "일본",
+    "미국",
+    "완료",
+    "모집 전",
+    "모집 중",
+    "진행 중",
+}
+_COUNTRY_SCOPE_PATTERNS = (
+    ("Korea", re.compile(r"(?:국내|한국|대한민국|\bKorea\b)", re.IGNORECASE)),
+    ("Japan", re.compile(r"(?:일본|日本|\bJapan\b)", re.IGNORECASE)),
+)
+_NOT_YET_RECRUITING_RE = re.compile(
+    r"(?:모집\s*전|\bnot\s+yet\s+recruiting\b)",
+    re.IGNORECASE,
+)
+_RECRUITING_RE = re.compile(
+    r"(?:모집\s*중|진행\s*중|\brecruiting\b|\bactive\b|\bongoing\b)",
+    re.IGNORECASE,
+)
+_COMPLETED_RE = re.compile(r"(?:완료|完了|\bcompleted\b)", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -33,6 +71,36 @@ class ClinicalQueryDecision:
     planner_supplemented: bool = False
 
 
+def prepare_resolved_clinical_requests(
+    query_resolutions: Iterable[tuple[str, Any]],
+    planner_concepts: Iterable[ClinicalTrialConcept],
+    *,
+    scope_query: str,
+) -> tuple[tuple[str, ClinicalTrialConcept], ...]:
+    planner_items = tuple(planner_concepts)
+    stable_scope = _explicit_scope(scope_query, planner_items)
+    prepared: dict[tuple[str, str], tuple[str, ClinicalTrialConcept]] = {}
+    resolved_concepts: set[str] = set()
+    for query, resolution in query_resolutions:
+        decision = resolver_first_clinical_concepts(query, resolution, stable_scope)
+        for concept in decision.concepts:
+            concept_key = _concept_key(concept)
+            entity_key = " ".join(query.split()).casefold()
+            prepared.setdefault((entity_key, concept_key), (query, concept))
+            resolved_concepts.add(concept_key)
+    for planner_concept in planner_items:
+        scoped_concept = _apply_explicit_scope(planner_concept, stable_scope)
+        if not _concept_is_transport_safe(scoped_concept):
+            continue
+        if not _concept_is_question_grounded(planner_concept, scope_query):
+            continue
+        concept_key = _concept_key(scoped_concept)
+        if concept_key in resolved_concepts:
+            continue
+        prepared.setdefault(("planner", concept_key), (scope_query, scoped_concept))
+    return tuple(prepared.values())
+
+
 def query_entity_candidates(query: str) -> tuple[str, ...]:
     if not _ENTITY_SPLIT_RE.search(query):
         return ()
@@ -41,7 +109,16 @@ def query_entity_candidates(query: str) -> tuple[str, ...]:
         candidate = _QUERY_SUFFIX_RE.sub("", value).strip(" ,:·")
         if candidate and len(candidate) <= 40:
             candidates.append(candidate)
+    if any(not is_query_entity_candidate(candidate) for candidate in candidates):
+        return ()
     return tuple(dict.fromkeys(candidates)) if len(candidates) >= 2 else ()
+
+
+def is_query_entity_candidate(value: str) -> bool:
+    normalized = " ".join(value.split()).strip().casefold()
+    if not normalized or normalized in _NON_ENTITY_CANDIDATES:
+        return False
+    return not any(attribute in normalized for attribute in _ATTRIBUTE_TERMS)
 
 
 def resolver_first_clinical_concepts(
@@ -119,6 +196,102 @@ def _normalized_latin_values(values: Iterable[Any]) -> tuple[str, ...]:
         if item and not _HANGUL_RE.search(item):
             normalized.append(item)
     return tuple(dict.fromkeys(normalized))
+
+
+def _explicit_scope(
+    query: str,
+    planner_concepts: Iterable[ClinicalTrialConcept] = (),
+) -> ClinicalTrialConcept | None:
+    countries = [
+        country
+        for country, pattern in _COUNTRY_SCOPE_PATTERNS
+        if pattern.search(query)
+    ]
+    status_query = _NOT_YET_RECRUITING_RE.sub("", query)
+    statuses: list[str] = []
+    if _NOT_YET_RECRUITING_RE.search(query):
+        statuses.append("NOT_YET_RECRUITING")
+    if _RECRUITING_RE.search(status_query):
+        statuses.append("RECRUITING")
+    if _COMPLETED_RE.search(query):
+        statuses.append("COMPLETED")
+    question_tokens = _semantic_tokens(query)
+    for concept in planner_concepts:
+        countries.extend(
+            country
+            for country in concept.countries
+            if _contains_token_sequence(question_tokens, _semantic_tokens(country))
+        )
+        statuses.extend(
+            status
+            for status in concept.statuses
+            if _contains_token_sequence(question_tokens, _semantic_tokens(status))
+        )
+    countries = list(dict.fromkeys(countries))
+    statuses = list(dict.fromkeys(statuses))
+    if not countries and not statuses:
+        return None
+    return ClinicalTrialConcept(
+        countries=tuple(countries),
+        statuses=tuple(statuses),
+        source_queries=(query,),
+    )
+
+
+def clinical_scope_suffix(query: str) -> str:
+    scope = _explicit_scope(query)
+    if scope is None:
+        return ""
+    return " ".join((*scope.countries, *scope.statuses))
+
+
+def _concept_is_question_grounded(
+    concept: ClinicalTrialConcept,
+    scope_query: str,
+) -> bool:
+    question_tokens = _semantic_tokens(scope_query)
+    semantic_terms = (*concept.ingredients, *concept.brands)
+    terms = semantic_terms or tuple(
+        _QUERY_SUFFIX_RE.sub("", value).strip()
+        for value in concept.source_queries
+    )
+    normalized_terms = tuple(
+        _semantic_tokens(normalized)
+        for value in terms
+        if (normalized := " ".join(str(value).split()).strip())
+    )
+    return bool(normalized_terms) and all(
+        _contains_token_sequence(question_tokens, term_tokens)
+        for term_tokens in normalized_terms
+    )
+
+
+def _apply_explicit_scope(
+    concept: ClinicalTrialConcept,
+    explicit_scope: ClinicalTrialConcept | None,
+) -> ClinicalTrialConcept:
+    return concept.model_copy(
+        update={
+            "countries": explicit_scope.countries if explicit_scope is not None else (),
+            "statuses": explicit_scope.statuses if explicit_scope is not None else (),
+        }
+    )
+
+
+def _semantic_tokens(value: str) -> tuple[str, ...]:
+    return tuple(re.findall(r"[\w-]+", value.casefold()))
+
+
+def _contains_token_sequence(
+    haystack: tuple[str, ...],
+    needle: tuple[str, ...],
+) -> bool:
+    if not needle or len(needle) > len(haystack):
+        return False
+    return any(
+        haystack[index : index + len(needle)] == needle
+        for index in range(len(haystack) - len(needle) + 1)
+    )
 
 
 def _concept_is_transport_safe(concept: ClinicalTrialConcept) -> bool:
