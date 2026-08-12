@@ -82,6 +82,8 @@ def select_render_profile(
     plan: PlannerOutput,
     evidence_sets: Sequence[EvidenceSet],
 ) -> RenderProfile:
+    if plan.answer_sources == ("mart",):
+        return "market_analysis"
     question = plan.resolved_question.casefold()
     clinical = _set_for("clinicaltrials", evidence_sets)
     patent = _set_for("patent", evidence_sets)

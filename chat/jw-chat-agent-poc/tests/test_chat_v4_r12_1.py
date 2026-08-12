@@ -1519,6 +1519,40 @@ def test_lossless_shadow_and_market_profile_never_mutate_existing_answer() -> No
     ).text == original
 
 
+def test_market_primary_source_is_not_replaced_by_incidental_clinical_records() -> None:
+    plan = _plan("pitavastatin").model_copy(
+        update={
+            "resolved_question": (
+                "리바로의 최근 매출 현황, 시장 점유율, 임상 시험 결과, "
+                "안전성 정보 및 관련 뉴스는 어떠한가?"
+            ),
+            "answer_sources": ("mart",),
+        }
+    )
+    clinical = normalize_clinical_study(
+        _study("NCT00000001"),
+        matched_queries=("pitavastatin",),
+    )
+    rendered = render_deterministic_facts(
+        plan,
+        build_evidence_sets(
+            plan,
+            (_clinical_source_result("pitavastatin", [clinical], total=1),),
+            observed_on=date(2026, 8, 12),
+        ),
+        observed_on=date(2026, 8, 12),
+    )
+    original = "## 핵심 답\n기존 5단 시장 답변"
+
+    assert rendered.profile == "market_analysis"
+    assert compose_lossless_answer(
+        rendered,
+        original,
+        synthesis_trace={"status": "synthesized"},
+        mode="inject",
+    ).text == original
+
+
 def test_source_gate_returns_more_than_five_public_references() -> None:
     now = datetime.now(UTC)
     result = SourceResult(
