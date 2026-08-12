@@ -394,13 +394,7 @@ def test_automatic_publish_contract_carries_pg4_pg5_and_warnings(tmp_path):
             "rows": 10,
             "periods": ["2026-06"],
         },
-        "publish": {
-            "sha256": "c" * 64,
-            "file_count": 1,
-            "relative_paths": ["source.xlsx"],
-            "rows": 10,
-            "periods": ["2026-06"],
-        },
+        "publish": None,
     }
 
 

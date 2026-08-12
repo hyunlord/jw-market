@@ -2074,7 +2074,12 @@ def create_app(service: IngestService) -> FastAPI:
         )
         if entry is None:
             raise HTTPException(status_code=404, detail="unknown submission identity")
-        if entry.status != expected_status:
+        precompletion_validation = (
+            payload.schema_version == "1"
+            and payload.event == "complete"
+            and entry.status in {STATUS_RUNNING, STATUS_PUBLISH_RUNNING}
+        )
+        if entry.status != expected_status and not precompletion_validation:
             raise HTTPException(
                 status_code=409,
                 detail=(
@@ -2085,7 +2090,7 @@ def create_app(service: IngestService) -> FastAPI:
         agent_job_name = None
         agent_trigger_status = "weekly_schedule_only"
         agent_trigger_reason = None
-        promoted = service.promote()
+        promoted = None if precompletion_validation else service.promote()
         return {
             "accepted": True,
             "category": category,

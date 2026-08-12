@@ -11,10 +11,15 @@ from pipeline.scripts.ingest_hook.category_map import ActivationKind, resolve_ca
 from pipeline.scripts.ingest_hook.job_launcher import publish_job_name
 from pipeline.scripts.ingest_hook.job_runner import (
     _StageTracker,
+    _drain_completion_queue,
     _emit_completion_signal,
     _ledger_for_run,
+    _mark_complete_after_required_stages,
+    _measure_publish_source_set,
+    _publish_source_set_reason,
     _release_writer_lock_preserving_primary,
     _run_commands_with_writer_lock,
+    _source_set_from_contract,
 )
 from pipeline.scripts.ingest_hook.ledger import STATUS_PUBLISH_RUNNING, Ledger
 from pipeline.scripts.ingest_hook.post_gate import SourceSnapshot, TableFingerprint, fingerprint_untouched_sources
@@ -194,6 +199,10 @@ def run(
             raise RuntimeError("serving general mart changed while candidate was awaiting approval")
         update_activation_journal(activation_journal, "corpus_promotion_started")
         activation_mutated = True
+        publish_source_set = _measure_publish_source_set(
+            category,
+            _source_set_from_contract(payload),
+        )
         promote_candidate_corpus(corpus)
         update_activation_journal(activation_journal, "corpus_promoted")
         publish_shadow(
@@ -207,7 +216,7 @@ def run(
         )
         published_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         update_activation_journal(activation_journal, "mart_promoted")
-        tracker.done()
+        tracker.done(reason=_publish_source_set_reason(publish_source_set))
         tracker.enter("refresh")
         update_activation_journal(activation_journal, "refresh_started")
         if mode == "shadow":
@@ -237,10 +246,7 @@ def run(
             str(key): int(value)
             for key, value in dict(payload.get("row_counts") or {}).items()
         }
-        ledger.mark_complete(*identity, row_counts=row_counts)
-        ledger_completed = True
-        update_activation_journal(activation_journal, "ledger_complete")
-        _emit_completion_signal(
+        completion_signal = _emit_completion_signal(
             ledger=ledger,
             tracker=tracker,
             identity=identity,
@@ -260,7 +266,18 @@ def run(
                 if isinstance(payload.get("affected_scope"), dict)
                 else None
             ),
+            drain_queue=False,
         )
+        _mark_complete_after_required_stages(
+            ledger=ledger,
+            identity=identity,
+            run_ids=(build_run_id, publish_run_id),
+            row_counts=row_counts,
+        )
+        ledger_completed = True
+        update_activation_journal(activation_journal, "ledger_complete")
+        if completion_signal is not None:
+            _drain_completion_queue(completion_signal)
         update_activation_journal(activation_journal, "signal_complete")
         update_activation_journal(activation_journal, "complete")
         return 0
