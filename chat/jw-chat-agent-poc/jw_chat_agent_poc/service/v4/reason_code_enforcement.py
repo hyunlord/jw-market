@@ -24,7 +24,8 @@ _TRANSFER_RE = re.compile(r"(?:이동|흡수|전환|잠식|대체)")
 _ENTITY = r"[가-힣A-Za-z0-9][가-힣A-Za-z0-9+._-]*?"
 _TRANSFER_VERB = (
     r"(?:이동|흡수|전환|잠식|대체)(?:한|하였|했|된|됐)?"
-    r"(?:\s*것으로\s*확인)?(?:습니다|다)?[.!?]?"
+    r"(?:\s*것으로\s*(?:확인|보|판단|추정|해석))?"
+    r"(?:되었습니다|됐습니다|됩니다|입니다|습니다|다)?(?![가-힣A-Za-z0-9])[.!?]?"
 )
 _DIRECTED_TRANSFER_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
@@ -54,6 +55,11 @@ _TRANSFER_BOUNDED_RE = re.compile(
     r"(?:확인되지|미확인|추가\s*확인(?:이)?\s*필요|"
     r"단정[^.\n]{0,30}(?:근거[^.\n]{0,15}부족|어렵|할\s*수\s*없)|"
     r"근거[^.\n]{0,20}부족|판단[^.\n]{0,20}(?:어렵|할\s*수\s*없))"
+)
+_UNDIRECTED_TRANSFER_OVERCLAIM_RE = re.compile(
+    r"(?:시장\s*(?:잠식|흡수)|"
+    r"(?:매출|점유율|감소분|처방량)[^.\n]{0,40}(?:이동|흡수|전환|잠식|대체)|"
+    r"(?:이동|흡수|전환|잠식|대체)[^.\n]{0,40}(?:매출|점유율|감소분|처방량))"
 )
 _ABSENCE_CERTAINTY_RE = re.compile(
     r"(?:비급여(?:입니다|로\s*확인|로\s*분류|에\s*해당)|"
@@ -139,16 +145,25 @@ def scrub_internal_release_tokens(text: str) -> tuple[str, int]:
 
     count = 0
     repaired = text
-    for pattern in _INTERNAL_PATTERNS:
-        repaired, substitutions = pattern.subn("", repaired)
-        count += substitutions
+    repaired, substitutions = _INTERNAL_PATTERNS[0].subn("", repaired)
+    count += substitutions
 
     def remove_progress_sentence(sentence: str) -> str:
         nonlocal count
-        if _INTERNAL_MART_PROGRESS_RE.search(sentence):
-            count += 1
-            return ""
-        return sentence
+        kept: list[str] = []
+        progress_patterns = (*_INTERNAL_PATTERNS[1:], _INTERNAL_MART_PROGRESS_RE)
+        if not any(pattern.search(sentence) for pattern in progress_patterns):
+            return sentence
+        for clause in _SEMANTIC_CLAUSE_SEPARATOR_RE.split(sentence):
+            normalized = clause.strip()
+            if not normalized:
+                continue
+            matches = sum(len(pattern.findall(normalized)) for pattern in progress_patterns)
+            if matches:
+                count += matches
+                continue
+            kept.append(normalized)
+        return _join_semantic_clauses(kept)
 
     repaired = _transform_sentences(repaired, remove_progress_sentence)
     repaired = re.sub(r"(?m)^\s*[.:;,·-]+\s*$", "", repaired)
@@ -166,12 +181,14 @@ def _repair_transfer(
     if not _TRANSFER_RE.search(text):
         return None
     contradictory = _TRANSFER_UNCERTAINTY_RE.search(text) is not None
+    seen_observations: set[str] = set()
     repaired = _transform_sentences(
         text,
         lambda sentence: _repair_transfer_sentence(
             sentence,
             results,
             contradictory=contradictory,
+            seen_observations=seen_observations,
         ),
     )
     return repaired if repaired != text else None
@@ -182,6 +199,7 @@ def _repair_transfer_sentence(
     results: Sequence[SourceResult],
     *,
     contradictory: bool,
+    seen_observations: set[str],
 ) -> str:
     matches = _directed_transfer_matches(sentence)
     if not matches:
@@ -194,13 +212,16 @@ def _repair_transfer_sentence(
             normalized = clause.strip()
             if not normalized:
                 continue
-            if not _TRANSFER_RE.search(normalized) or _TRANSFER_BOUNDED_RE.search(
+            if not _UNDIRECTED_TRANSFER_OVERCLAIM_RE.search(
                 normalized
-            ):
+            ) or _TRANSFER_BOUNDED_RE.search(normalized):
                 repaired_clauses.append(normalized)
                 continue
             if not observation_inserted:
-                repaired_clauses.append(_transfer_observation(results))
+                observation = _transfer_observation(results)
+                if observation not in seen_observations:
+                    repaired_clauses.append(observation)
+                    seen_observations.add(observation)
                 observation_inserted = True
             repair_applied = True
         return _join_semantic_clauses(repaired_clauses) if repair_applied else sentence
@@ -214,13 +235,14 @@ def _repair_transfer_sentence(
         if not contradictory and _has_exact_flow(results, source_entity, target_entity):
             output.append(match.group(0))
         else:
-            output.append(
-                _transfer_observation(
-                    results,
-                    source_entity=source_entity,
-                    target_entity=target_entity,
-                )
+            observation = _transfer_observation(
+                results,
+                source_entity=source_entity,
+                target_entity=target_entity,
             )
+            if observation not in seen_observations:
+                output.append(observation)
+                seen_observations.add(observation)
         cursor = match.end()
     output.append(sentence[cursor:])
     return "".join(output)

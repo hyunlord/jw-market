@@ -1289,7 +1289,7 @@ def _apply_active_kr_clinical_empty_surface(
     active_requested = any(
         marker in normalized for marker in ("진행 중", "진행중", "모집 중", "모집중")
     )
-    kr_requested = any(marker in normalized for marker in ("국내", "한국"))
+    kr_requested = any(marker in normalized for marker in ("국내", "한국", "대한민국"))
     if not (clinical_requested and active_requested and kr_requested):
         return answer
 

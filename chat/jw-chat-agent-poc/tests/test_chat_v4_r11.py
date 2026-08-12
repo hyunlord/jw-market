@@ -242,6 +242,18 @@ def test_r11_bounded_transfer_answer_is_byte_unchanged() -> None:
     assert trace["UNSUPPORTED_TRANSFER_ATTRIBUTION"] == 0
 
 
+def test_r11_treatment_modality_transition_is_not_a_transfer_attribution() -> None:
+    answer = (
+        "당뇨망막병증 치료는 기존 주사제 중심에서 유전자 치료제와 "
+        "지속 방출형 약물 전달 시스템으로 전환되고 있습니다."
+    )
+
+    repaired, trace = enforce_reason_codes(answer, ())
+
+    assert repaired == answer
+    assert trace["UNSUPPORTED_TRANSFER_ATTRIBUTION"] == 0
+
+
 def test_r11_bounded_transfer_clause_does_not_waive_neighbor_overclaim() -> None:
     gated = apply_v4_gates(
         "리바로젯과 리피토 매출 비교",
@@ -260,6 +272,7 @@ def test_r11_bounded_transfer_clause_does_not_waive_neighbor_overclaim() -> None
     [
         "리피토 감소분이 리바로젯으로 이동했습니다.",
         "리피토에서 리바로젯으로 이동했습니다.",
+        "리피토에서 리바로젯으로 전환됐습니다.",
         "리피토 -> 리바로젯 이동했습니다.",
         "리피토를 리바로젯으로 대체했습니다.",
     ],
@@ -543,6 +556,60 @@ def test_r11_internal_release_tokens_never_reach_final_surface(leak: str) -> Non
     assert leak not in gated.text
     assert "리바로 매출은 85.87억원입니다" in gated.text
     assert gated.trace["reason_code_enforcement"]["INTERNAL_TOKEN_LEAK"] >= 1
+
+
+def test_r11_internal_progress_sentence_leaves_no_fragment() -> None:
+    result = _mart_single()
+    answer = (
+        "리바로와 같은 시장의 패밀리·경쟁 브랜드 시계열을 병렬 조회했습니다. "
+        "리바로 매출은 85.87억원입니다."
+    )
+
+    gated = apply_v4_gates("리바로 매출 알려줘", answer, (result,))
+
+    assert "병렬 조회했습니다" not in gated.text
+    assert "패밀리·경쟁 브랜드 시계열을" not in gated.text
+    assert gated.text.startswith("리바로 매출은 85.87억원입니다")
+
+
+def test_r11_internal_scrubber_preserves_clean_comma_sentence() -> None:
+    answer = "매출은 증가했지만, 점유율은 하락했습니다."
+
+    repaired, trace = enforce_reason_codes(answer, ())
+
+    assert repaired == answer
+    assert trace["INTERNAL_TOKEN_LEAK"] == 0
+
+
+def test_r11_repeated_transfer_repairs_emit_one_observation() -> None:
+    result = _mart_comparison()
+    answer = (
+        "## 종합 인사이트\n"
+        "리피토 감소분이 리바로젯으로 이동했습니다. "
+        "매출 124.54억원은 데이터마트에서 확인했습니다.\n\n"
+        "## 미확인 요소\n"
+        "리피토 감소분이 리바로젯으로 이동한 것으로 보입니다."
+    )
+
+    gated = apply_v4_gates("리바로젯과 리피토 비교", answer, (result,))
+
+    assert gated.text.count("직접 이동 여부는 현재 자료로 확인되지 않습니다") == 1
+    assert "## 종합 인사이트" in gated.text
+    assert "## 미확인 요소" in gated.text
+    assert "매출 124.54억원은 데이터마트에서 확인했습니다" in gated.text
+
+
+def test_r11_market_transition_relative_clause_is_not_a_transfer_attribution() -> None:
+    answer = (
+        "이는 단일제에서 복합제로 전환되는 전체 이상지질혈증 치료제 "
+        "시장의 흐름과 궤를 같이합니다."
+    )
+
+    repaired, trace = enforce_reason_codes(answer, ())
+
+    assert repaired == answer
+    assert ".되는 전체" not in repaired
+    assert trace["UNSUPPORTED_TRANSFER_ATTRIBUTION"] == 0
 
 
 def test_r11_numeric_copy_repairs_to_grounded_prose_without_placeholder() -> None:
@@ -970,6 +1037,55 @@ def test_r11_empty_active_kr_clinical_set_precedes_adjacent_evidence() -> None:
     assert answer.startswith("## 핵심 답\n확인된 국내 active 임상시험은 없었습니다.")
     assert "## 인접 동향" in answer
     assert "특허와 바이오시밀러 동향" in answer
+
+
+def test_r11_empty_active_kr_clinical_notice_survives_claim_gate() -> None:
+    class Client:
+        def complete(
+            self,
+            _messages: object,
+            *,
+            budget_s: float,
+            max_tokens: int,
+        ) -> str:
+            del budget_s, max_tokens
+            return "## 핵심 답\n인접 자료를 확인했습니다."
+
+    clinical = SourceResult(
+        source="clinicaltrials",
+        query="Diabetic Retinopathy | Korea, Republic of | Recruiting, Active, not recruiting",
+        status="empty",
+        payload={"items": []},
+    )
+    adjacent = SourceResult(
+        source="patent",
+        query="당뇨망막병증 인접 동향",
+        status="ok",
+        payload={"items": [{"title": "인접 자료"}]},
+        evidence=EvidenceEnvelope(
+            kind="patent",
+            entity_match="PARTIAL",
+            source_scope="KR",
+            time_match="NOT_REQUESTED",
+        ),
+    )
+    question = "대한민국 내에서 현재 진행 중인 당뇨망막병증 관련 임상시험만 알려줘"
+    answer = V4Synthesizer(Client()).synthesize(
+        _plan(question),
+        (clinical, adjacent),
+        (),
+    )
+
+    gated = apply_v4_gates(
+        question,
+        answer,
+        (clinical, adjacent),
+    )
+
+    assert gated.text.startswith(
+        "## 핵심 답\n확인된 국내 active 임상시험은 없었습니다."
+    )
+    assert "## 인접 동향\n인접 자료를 확인했습니다." in gated.text
 
 
 def test_r11_old_clinical_scope_does_not_leak_into_new_reimbursement_topic() -> None:
