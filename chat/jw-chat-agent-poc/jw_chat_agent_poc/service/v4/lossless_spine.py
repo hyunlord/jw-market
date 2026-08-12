@@ -19,6 +19,7 @@ from jw_chat_agent_poc.service.v4.lossless_contracts import (
     EvidenceSet,
     RenderNode,
 )
+from jw_chat_agent_poc.service.v4.source_labels import normalize_public_source_surface
 
 
 LosslessMode = Literal["shadow", "inject"]
@@ -32,6 +33,8 @@ _CORE_HEADINGS = {"핵심 답", "핵심 요약"}
 _CONTEXT_HEADINGS = {"근거와 맥락", "근거"}
 _INSIGHT_HEADINGS = {"종합 인사이트", "인사이트"}
 _LIMIT_HEADINGS = {"해석 상한", "해석상 주의점", "미확인 요소", "한계"}
+_TABLE_SEPARATOR_CELL_RE = re.compile(r"^:?-{3,}:?$")
+_UNPROVIDED_CELL = "원천 미제공"
 
 
 def configured_lossless_mode() -> LosslessMode:
@@ -156,7 +159,9 @@ def compose_lossless_answer(
             requested_fields_mode=requested_fields_mode,
             request_notice=rendered.request_notice if inject_request_notice else None,
         )
+    text, public_source_rewrites = normalize_public_source_surface(text)
     trace["answer_mutation"] = True
+    trace["public_source_surface"] = {"rewritten": public_source_rewrites}
     trace["requested_fields_injected"] = bool(
         inject_facts
         and requested_fields_mode == "inject"
@@ -226,6 +231,7 @@ def _assemble_injected_answer(
     fact_coverage: list[str] = []
     fact_tables: list[str] = []
     fact_limits: list[str] = []
+    omitted_columns: list[str] = []
     nodes = rendered.nodes or (
         RenderNode(block_id=f"{rendered.profile}:facts", text=rendered.text),
     )
@@ -237,15 +243,29 @@ def _assemble_injected_answer(
             continue
         if not _has_visible_node_content(node):
             continue
+        visible_text, node_omitted_columns = _omit_fully_unprovided_columns(
+            node.text.strip()
+        )
+        omitted_columns.extend(node_omitted_columns)
+        if not visible_text:
+            continue
         if node.block_id.endswith(":coverage"):
-            fact_coverage.append(node.text.strip())
+            fact_coverage.append(visible_text)
         elif node.block_id.endswith(":limits"):
-            fact_limits.append(node.text.strip())
+            fact_limits.append(visible_text)
         else:
-            fact_tables.append(node.text.strip())
+            fact_tables.append(visible_text)
 
     if request_notice:
         limits.append(("미확인 요소", request_notice.strip()))
+    if omitted_columns:
+        unique_columns = tuple(dict.fromkeys(omitted_columns))
+        limits.append(
+            (
+                "미확인 요소",
+                "전 행 원천 미제공으로 생략한 열: " + ", ".join(unique_columns),
+            )
+        )
 
     blocks = [
         *(_render_sections(core)),
@@ -260,6 +280,83 @@ def _assemble_injected_answer(
     if source_block:
         blocks.append(source_block)
     return "\n\n".join(block for block in blocks if block.strip()).strip()
+
+
+def _omit_fully_unprovided_columns(text: str) -> tuple[str, tuple[str, ...]]:
+    lines = text.splitlines()
+    output: list[str] = []
+    omitted: list[str] = []
+    index = 0
+    while index < len(lines):
+        header = _split_markdown_row(lines[index])
+        separator = (
+            _split_markdown_row(lines[index + 1])
+            if index + 1 < len(lines)
+            else None
+        )
+        if (
+            header is None
+            or separator is None
+            or len(header) != len(separator)
+            or not all(_TABLE_SEPARATOR_CELL_RE.fullmatch(cell) for cell in separator)
+        ):
+            output.append(lines[index])
+            index += 1
+            continue
+
+        data_rows: list[list[str]] = []
+        cursor = index + 2
+        while cursor < len(lines):
+            row = _split_markdown_row(lines[cursor])
+            if row is None or len(row) != len(header):
+                break
+            data_rows.append(row)
+            cursor += 1
+
+        omitted_indexes = tuple(
+            column_index
+            for column_index in range(len(header))
+            if data_rows
+            and all(
+                row[column_index].strip() == _UNPROVIDED_CELL
+                for row in data_rows
+            )
+        )
+        if omitted_indexes:
+            omitted.extend(
+                header[column_index].strip()
+                for column_index in omitted_indexes
+            )
+            retained_indexes = [
+                column_index
+                for column_index in range(len(header))
+                if column_index not in omitted_indexes
+            ]
+            if retained_indexes:
+                output.extend(
+                    _join_markdown_row(row, retained_indexes)
+                    for row in (header, separator, *data_rows)
+                )
+        else:
+            output.extend(lines[index:cursor])
+        index = cursor
+
+    visible = "\n".join(output).strip()
+    _, sections = _markdown_sections(visible)
+    if sections and all(not body for _, body in sections):
+        visible = ""
+    return visible, tuple(omitted)
+
+
+def _split_markdown_row(line: str) -> list[str] | None:
+    stripped = line.strip()
+    if not stripped.startswith("|") or not stripped.endswith("|"):
+        return None
+    return [cell.strip() for cell in re.split(r"(?<!\\)\|", stripped[1:-1])]
+
+
+def _join_markdown_row(row: Sequence[str], indexes: Sequence[int]) -> str:
+    return "| " + " | ".join(row[index] for index in indexes) + " |"
 
 
 def _markdown_sections(value: str) -> tuple[str, list[tuple[str, str]]]:

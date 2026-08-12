@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, Literal
 
+from jw_chat_agent_poc.service.v4.source_labels import patent_lane_label
+
 
 PatentLaneName = Literal["kr_primary", "us_secondary", "news"]
 _GENERIC_RELEVANCE_TOKENS = frozenset(
@@ -17,8 +19,13 @@ _GENERIC_RELEVANCE_TOKENS = frozenset(
         "pharma",
         "pharmaceutical",
         "sodium",
+        "뉴스",
+        "만료",
+        "최근",
         "제약",
         "주식회사",
+        "특허",
+        "특허현황",
     }
 )
 
@@ -32,18 +39,27 @@ def build_patent_lane_payload(
 ) -> dict[str, dict[str, Any]]:
     kr_records, kr_received = _patent_records(kr_calls, lane="kr_primary")
     us_records, us_received = _patent_records(us_calls, lane="us_secondary")
-    relevance_tokens = _relevance_tokens(
+    relevance_tokens, company_tokens = _relevance_tokens(
         entity_tokens,
         (*kr_records, *us_records),
     )
-    news_records, news_received = _news_records(
+    news_records, news_received, relevance_decisions = _news_records(
         news_calls,
         relevance_tokens=relevance_tokens,
+        company_tokens=company_tokens,
     )
+    news_lane = _lane(
+        scope="CONTEXT_ONLY",
+        authority="Tavily web search",
+        role="최근 보도 맥락이며 법적 특허 상태의 근거로 사용하지 않음",
+        records=news_records,
+        records_received=news_received,
+    )
+    news_lane["relevance_decisions"] = relevance_decisions
     return {
         "kr_primary": _lane(
             scope="KR_PRIMARY",
-            authority="식품의약품안전처 의약품 특허목록",
+            authority=patent_lane_label("kr_primary"),
             role="국내 특허 상태의 1차 근거",
             records=kr_records,
             records_received=kr_received,
@@ -55,13 +71,7 @@ def build_patent_lane_payload(
             records=us_records,
             records_received=us_received,
         ),
-        "news": _lane(
-            scope="CONTEXT_ONLY",
-            authority="Tavily web search",
-            role="최근 보도 맥락이며 법적 특허 상태의 근거로 사용하지 않음",
-            records=news_records,
-            records_received=news_received,
-        ),
+        "news": news_lane,
     }
 
 
@@ -128,7 +138,8 @@ def _news_records(
     calls: Sequence[Mapping[str, Any]],
     *,
     relevance_tokens: Sequence[str],
-) -> tuple[list[dict[str, Any]], int]:
+    company_tokens: Sequence[str],
+) -> tuple[list[dict[str, Any]], int, list[dict[str, Any]]]:
     received: list[dict[str, Any]] = []
     for call in calls:
         for item in _items(call):
@@ -151,28 +162,54 @@ def _news_records(
                     "source_record": dict(item),
                 }
             )
-    relevant = [
-        record
-        for record in received
-        if _news_record_is_relevant(record, relevance_tokens)
-    ]
-    return _deduplicate(relevant, keys=("url", "title", "snippet")), len(received)
+    relevant: list[dict[str, Any]] = []
+    decisions: list[dict[str, Any]] = []
+    for record_index, record in enumerate(received):
+        decision = _news_relevance_decision(
+            record,
+            record_index=record_index,
+            relevance_tokens=relevance_tokens,
+            company_tokens=company_tokens,
+        )
+        decisions.append(decision)
+        if decision["decision"] == "keep":
+            relevant.append(record)
+    return (
+        _deduplicate(relevant, keys=("url", "title", "snippet")),
+        len(received),
+        decisions,
+    )
 
 
 def _relevance_tokens(
     explicit: Sequence[str],
     patent_records: Sequence[Mapping[str, Any]],
-) -> tuple[str, ...]:
-    candidates = [*explicit]
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    primary_candidates = [*explicit]
+    company_candidates: list[str] = []
     for record in patent_records:
-        candidates.extend(
-            _text(record.get(field))
-            for field in ("product", "ingredient", "owner")
+        primary_candidates.extend(
+            _text(record.get(field)) for field in ("product", "ingredient")
         )
+        company_candidates.append(_text(record.get("owner")))
+    company_tokens = _normalized_relevance_tokens(company_candidates)
+    primary_tokens = tuple(
+        token
+        for token in _normalized_relevance_tokens(primary_candidates)
+        if token not in company_tokens
+    )
+    return primary_tokens, company_tokens
+
+
+def _normalized_relevance_tokens(candidates: Sequence[str]) -> tuple[str, ...]:
     normalized: list[str] = []
     for candidate in candidates:
         value = " ".join(_text(candidate).casefold().split())
-        if len(value) >= 2 and value not in normalized:
+        if (
+            len(value) >= 2
+            and value not in _GENERIC_RELEVANCE_TOKENS
+            and value not in normalized
+        ):
             normalized.append(value)
         for token in value.replace("/", " ").replace("+", " ").split():
             if (
@@ -184,16 +221,33 @@ def _relevance_tokens(
     return tuple(normalized)
 
 
-def _news_record_is_relevant(
+def _news_relevance_decision(
     record: Mapping[str, Any],
+    *,
+    record_index: int,
     relevance_tokens: Sequence[str],
-) -> bool:
-    if not relevance_tokens:
-        return False
+    company_tokens: Sequence[str],
+) -> dict[str, Any]:
     surface = " ".join(
         (_text(record.get("title")), _text(record.get("snippet")))
     ).casefold()
-    return any(token in surface for token in relevance_tokens)
+    matched_primary = [token for token in relevance_tokens if token in surface]
+    matched_company = [token for token in company_tokens if token in surface]
+    keep = bool(matched_primary)
+    reason = (
+        "brand_or_ingredient_token"
+        if keep
+        else "company_token_only"
+        if matched_company
+        else "no_brand_or_ingredient_token"
+    )
+    return {
+        "record_index": record_index,
+        "decision": "keep" if keep else "discard",
+        "reason": reason,
+        "matched_brand_or_ingredient_tokens": matched_primary,
+        "matched_company_tokens": matched_company,
+    }
 
 
 def _items(call: Mapping[str, Any]) -> list[Mapping[str, Any]]:

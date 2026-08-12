@@ -19,6 +19,9 @@ from jw_chat_agent_poc.service.v4.gates import (
 from jw_chat_agent_poc.service.v4.llm import CompletionResult, GenOSV4Client
 from jw_chat_agent_poc.service.v4.reason_code_enforcement import typed_absence_record
 from jw_chat_agent_poc.service.v4.session_state import SessionState
+from jw_chat_agent_poc.service.v4.source_labels import (
+    SOURCE_LABELS as _PUBLIC_SOURCE,
+)
 from jw_chat_agent_poc.service.v4.time_context import (
     as_of_date_instruction,
     current_kst_date as _current_kst_date,
@@ -41,15 +44,6 @@ _RETRYABLE_INTERNAL_RE = re.compile(
     r"(?:\bNCT\d{8}\b\s*[,/]\s*)+\bNCT\d{8}\b)|"
     r"\b[A-Z][A-Z0-9_]{2,}\s*[:=]\s*[^\s,;]+",
 )
-_PUBLIC_SOURCE = {
-    "mart": "내부 데이터마트",
-    "nedrug": "식품의약품안전처",
-    "hira": "HIRA",
-    "openfda": "FDA",
-    "clinicaltrials": "ClinicalTrials.gov",
-    "web": "웹 자료",
-    "patent": "특허 자료",
-}
 _SOURCE_SCOPE = {
     "mart": "KR",
     "nedrug": "KR",
@@ -900,7 +894,8 @@ def _append_absence_context_surface(
         return answer
     date_prefix = f"{published_date} 게시된 " if published_date else ""
     event_sentence = (
-        f"웹 자료에서는 {date_prefix}\"{title}\"로 보도되고 있습니다 [출처: 웹 자료]."
+        f"{_PUBLIC_SOURCE['web']}에서는 {date_prefix}\"{title}\"로 보도되고 있습니다 "
+        f"[출처: {_PUBLIC_SOURCE['web']}]."
     )
     first_break = answer.find("\n\n")
     if first_break < 0:

@@ -47,18 +47,12 @@ from jw_chat_agent_poc.service.v4.shadow import (
     build_canonical_ledger,
     build_grounding_shadow,
 )
+from jw_chat_agent_poc.service.v4.source_labels import (
+    SOURCE_LABELS as _PUBLIC_SOURCE,
+)
 from jw_chat_agent_poc.service.v4.time_context import current_kst_date
 
 
-_PUBLIC_SOURCE = {
-    "mart": "내부 데이터마트",
-    "nedrug": "식품의약품안전처",
-    "hira": "HIRA",
-    "openfda": "FDA",
-    "clinicaltrials": "ClinicalTrials.gov",
-    "web": "웹 자료",
-    "patent": "특허 자료",
-}
 _PUBLIC_PROGRESS_SOURCE = {
     **_PUBLIC_SOURCE,
     "hira": "건강보험심사평가원",

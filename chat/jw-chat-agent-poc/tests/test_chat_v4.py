@@ -2777,7 +2777,7 @@ def test_runtime_marks_successful_citations_used() -> None:
     class Synthesizer:
         def synthesize(self, _plan, results, _turns, *, budget_s):
             assert results[0].citations[0].used is True
-            assert results[0].citations[0].source == "웹 자료"
+            assert results[0].citations[0].source == "웹 뉴스"
             return "근거 기반 답변"
 
     answer = V4Runtime(
@@ -2787,7 +2787,7 @@ def test_runtime_marks_successful_citations_used() -> None:
     ).answer("질문", conversation_id="conversation-a", turns=())
 
     assert answer.trace["tool_results"][0]["citations"][0]["used"] is True
-    assert answer.trace["tool_results"][0]["citations"][0]["source"] == "웹 자료"
+    assert answer.trace["tool_results"][0]["citations"][0]["source"] == "웹 뉴스"
 
 
 def test_runtime_reserves_first_wave_for_always_on_mart_settlement() -> None:
@@ -3565,7 +3565,7 @@ def test_v4_sources_hide_internal_urls_and_iso_time_but_keep_public_links() -> N
 
     gated = apply_v4_gates("리바로 최신 근거", "확인된 내용입니다.", (result,))
 
-    assert '웹 자료 — "리바로 최신 근거" 웹 검색' in gated.text
+    assert '웹 뉴스 — "리바로 최신 근거" 웹 검색' in gated.text
     assert "https://example.org/article" in gated.text
     assert "2026-08-10" in gated.text
     assert "mcp-tavily" not in gated.text

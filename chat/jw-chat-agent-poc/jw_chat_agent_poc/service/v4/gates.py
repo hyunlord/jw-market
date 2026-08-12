@@ -17,6 +17,13 @@ from jw_chat_agent_poc.service.v4.reason_code_enforcement import (
     scrub_internal_release_tokens,
     typed_absence_record,
 )
+from jw_chat_agent_poc.service.v4.source_labels import (
+    PATENT_LANES,
+    normalize_public_source_surface,
+    patent_lane_label,
+    public_source_aliases,
+    public_source_label,
+)
 
 
 _NUMBER_RE = re.compile(r"(?<![\w.])-?\d[\d,]*(?:\.\d+)?")
@@ -130,13 +137,16 @@ _CLAIM_PATTERNS: dict[str, re.Pattern[str]] = {
     ),
 }
 _SOURCE_TAG_ALIASES: dict[str, tuple[str, ...]] = {
-    "mart": ("내부 데이터마트", "mart"),
-    "nedrug": ("식품의약품안전처", "식약처", "nedrug"),
-    "hira": ("hira", "건강보험심사평가원"),
-    "openfda": ("fda", "openfda"),
-    "clinicaltrials": ("clinicaltrials.gov", "clinicaltrials"),
-    "web": ("웹 자료", "web"),
-    "patent": ("특허 자료", "patent"),
+    source: public_source_aliases(source)
+    for source in (
+        "mart",
+        "nedrug",
+        "hira",
+        "openfda",
+        "clinicaltrials",
+        "web",
+        "patent",
+    )
 }
 _AUTOMATIC_SAFETY_NOTICES = (
     "HIRA 환자수는 주상병 기준 청구 실인원이며 유병률과 다릅니다.",
@@ -313,6 +323,9 @@ def apply_v4_gates(
     text, reason_trace = enforce_reason_codes(text, results)
     trace["reason_code_enforcement"] = reason_trace
 
+    text, public_source_rewrites = normalize_public_source_surface(text)
+    trace["public_source_surface"] = {"rewritten": public_source_rewrites}
+
     raw_won_blocked = bool(_RAW_WON_RE.search(text))
     trace["surface_raw_won"] = {"blocked": raw_won_blocked}
 
@@ -412,6 +425,8 @@ def apply_v4_gates(
     trace["final_surface"] = surface_trace
 
     text = _append_sources(text, results)
+    text, final_source_rewrites = normalize_public_source_surface(text)
+    trace["public_source_surface"]["rewritten"] += final_source_rewrites
     trace["sources_block"] = {"present": "## 출처" in text}
     return GatedAnswer(text=text, trace=trace)
 
@@ -1723,11 +1738,7 @@ def _append_patent_lane_sources(lines: list[str], result: SourceResult) -> bool:
     )
     if not isinstance(lanes, Mapping):
         return False
-    specs = (
-        ("kr_primary", "식품의약품안전처 의약품 특허목록"),
-        ("us_secondary", "FDA Orange Book"),
-        ("news", "특허·분쟁 동향 (웹 뉴스)"),
-    )
+    specs = tuple((lane, patent_lane_label(lane)) for lane in PATENT_LANES)
     added = False
     reuse = " · 이전 조회 재사용" if result.cache_hit else ""
     for lane_name, label in specs:
@@ -1764,16 +1775,7 @@ def _source_reference_detail(result: SourceResult) -> str:
 
 
 def _public_source_name(result: SourceResult) -> str:
-    names = {
-        "mart": "내부 데이터마트",
-        "nedrug": "식품의약품안전처",
-        "hira": "건강보험심사평가원",
-        "openfda": "FDA",
-        "clinicaltrials": "ClinicalTrials.gov",
-        "web": "웹 자료",
-        "patent": "특허 자료",
-    }
-    return names[result.source]
+    return public_source_label(result.source)
 
 
 def _source_reference_type(result: SourceResult) -> str:
