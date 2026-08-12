@@ -9,18 +9,24 @@ from typing import Any
 from jw_chat_agent_poc.service.v4.contracts import PlannerOutput
 from jw_chat_agent_poc.service.v4.lossless_contracts import (
     DeterministicRender,
+    EvidenceRecord,
     EvidenceSet,
     LosslessInvariantError,
     RenderNode,
     RenderProfile,
+    SourceReference,
 )
 from jw_chat_agent_poc.service.v4.render_clinical import (
     ACTIVE_CLINICAL_STATUSES,
     render_clinical,
 )
-from jw_chat_agent_poc.service.v4.render_common import text
+from jw_chat_agent_poc.service.v4.render_common import table, text
 from jw_chat_agent_poc.service.v4.render_patent import render_patent
 from jw_chat_agent_poc.service.v4.render_policy import render_policy
+from jw_chat_agent_poc.service.v4.source_labels import (
+    patent_lane_label,
+    public_source_label,
+)
 
 
 def render_deterministic_facts(
@@ -30,15 +36,20 @@ def render_deterministic_facts(
     observed_on: date,
 ) -> DeterministicRender:
     profile = select_render_profile(plan, evidence_sets)
+    source_notices = _source_failure_notices(evidence_sets)
     if profile == "market_analysis":
         return DeterministicRender(
             profile=profile,
             request_notice=_request_satisfaction_notice(plan, evidence_sets),
+            source_notices=source_notices,
         )
 
     selected = _selected_set(profile, evidence_sets)
     if selected is None:
-        return DeterministicRender(profile="market_analysis")
+        return DeterministicRender(
+            profile="market_analysis",
+            source_notices=source_notices,
+        )
     if profile in {"clinical_portfolio", "single_record_detail"}:
         nodes, required = render_clinical(
             selected,
@@ -50,17 +61,51 @@ def render_deterministic_facts(
         nodes, required = render_policy(selected)
 
     nodes = _inject_missing_field_node(nodes, selected, required)
+    auxiliary_sets = tuple(
+        evidence_set
+        for evidence_set in evidence_sets
+        if evidence_set is not selected and evidence_set.records
+    )
+    nodes = _insert_auxiliary_nodes(nodes, auxiliary_sets)
     rendered_ids = tuple(
         dict.fromkeys(record_id for node in nodes for record_id in node.record_ids)
     )
-    source_ids = {record.evidence_id for record in selected.records}
+    rendered_sets = (selected, *auxiliary_sets)
+    source_ids = {
+        record.evidence_id
+        for evidence_set in rendered_sets
+        for record in evidence_set.records
+    }
     unknown = set(rendered_ids) - source_ids
     if unknown:
         raise LosslessInvariantError(
             f"render nodes reference unknown evidence ids: {sorted(unknown)}"
         )
     surfaced = {field for node in nodes for field in node.surface_fields}
-    coverage = selected.coverage.model_copy(update={"records_rendered": len(rendered_ids)})
+    received = sum(item.coverage.records_received for item in rendered_sets)
+    total_reported = (
+        sum(item.coverage.total_reported or 0 for item in rendered_sets)
+        if all(item.coverage.total_reported is not None for item in rendered_sets)
+        else None
+    )
+    coverage = selected.coverage.model_copy(
+        update={
+            "total_reported": total_reported,
+            "records_received": received,
+            "records_unique": len(source_ids),
+            "records_rendered": len(rendered_ids),
+            "pagination_complete": all(
+                item.coverage.pagination_complete for item in rendered_sets
+            ),
+            "partial_reasons": tuple(
+                dict.fromkeys(
+                    reason
+                    for item in rendered_sets
+                    for reason in item.coverage.partial_reasons
+                )
+            ),
+        }
+    )
     if coverage.records_rendered > coverage.records_received:
         raise LosslessInvariantError("records_rendered cannot exceed records_received")
     record_rate = len(rendered_ids) / len(source_ids) if source_ids else 1.0
@@ -70,12 +115,168 @@ def render_deterministic_facts(
         text="\n\n".join(node.text for node in nodes if node.text.strip()),
         nodes=tuple(nodes),
         coverage=coverage,
-        source_refs=selected.source_refs,
+        source_refs=_source_refs(rendered_sets),
         required_fields=required,
         record_surface_rate=round(record_rate, 6),
         required_field_surface_rate=round(field_rate, 6),
         request_notice=_request_satisfaction_notice(plan, evidence_sets),
+        source_notices=source_notices,
     )
+
+
+def _insert_auxiliary_nodes(
+    primary_nodes: Sequence[RenderNode],
+    auxiliary_sets: Sequence[EvidenceSet],
+) -> list[RenderNode]:
+    coverage_nodes: list[RenderNode] = []
+    primary_fact_nodes: list[RenderNode] = []
+    primary_news_nodes: list[RenderNode] = []
+    limit_nodes: list[RenderNode] = []
+    for node in primary_nodes:
+        if node.block_id.endswith(":coverage"):
+            coverage_nodes.append(node)
+        elif node.block_id.endswith(":news"):
+            primary_news_nodes.append(node)
+        elif (
+            node.block_id.endswith(":limits")
+            or node.block_id == "requested-fields:absence"
+        ):
+            limit_nodes.append(node)
+        else:
+            primary_fact_nodes.append(node)
+
+    auxiliary_fact_nodes: list[RenderNode] = []
+    auxiliary_news_nodes: list[RenderNode] = []
+    for evidence_set in auxiliary_sets:
+        regular = tuple(
+            record for record in evidence_set.records if not _is_news_record(record)
+        )
+        news = tuple(record for record in evidence_set.records if _is_news_record(record))
+        if regular:
+            auxiliary_fact_nodes.append(
+                _auxiliary_node(evidence_set.source, regular, news=False)
+            )
+        if news:
+            auxiliary_news_nodes.append(
+                _auxiliary_node(evidence_set.source, news, news=True)
+            )
+    return [
+        *coverage_nodes,
+        *primary_fact_nodes,
+        *auxiliary_fact_nodes,
+        *primary_news_nodes,
+        *auxiliary_news_nodes,
+        *limit_nodes,
+    ]
+
+
+def _auxiliary_node(
+    source: str,
+    records: Sequence[EvidenceRecord],
+    *,
+    news: bool,
+) -> RenderNode:
+    label = (
+        patent_lane_label("news")
+        if source == "patent" and news
+        else public_source_label(source)
+    )
+    rows = tuple(
+        (
+            f"근거 {index}",
+            _record_status(record.payload),
+            _record_summary(record.payload),
+        )
+        for index, record in enumerate(records, start=1)
+    )
+    return RenderNode(
+        block_id=f"aux:{source}:{'news' if news else 'records'}",
+        record_ids=tuple(record.evidence_id for record in records),
+        surface_fields=("status", "summary"),
+        text=f"## {label} 보조 자료\n"
+        + table(("근거", "상태", "요약"), rows),
+    )
+
+
+def _is_news_record(record: EvidenceRecord) -> bool:
+    return record.source == "web" or record.result_kind == "web_document"
+
+
+def _record_status(payload: Mapping[str, Any]) -> str:
+    status = text(payload.get("status")).casefold()
+    if status in {"no_data", "empty"}:
+        return "결과 없음"
+    if status == "timeout":
+        return "시간 초과"
+    if status in {"error", "unsupported"}:
+        return "상류 오류"
+    return "수신"
+
+
+def _record_summary(payload: Mapping[str, Any]) -> str:
+    render_data = payload.get("render_data")
+    candidates: list[Mapping[str, Any]] = [payload]
+    if isinstance(render_data, Mapping):
+        candidates.append(render_data)
+        items = render_data.get("items")
+        if isinstance(items, list):
+            candidates.extend(item for item in items if isinstance(item, Mapping))
+    for candidate in candidates:
+        for key in ("title", "brief_title", "product_name", "label"):
+            value = text(candidate.get(key))
+            if value:
+                return value
+    status = _record_status(payload)
+    return "상세 근거 수신" if status == "수신" else status
+
+
+def _source_refs(
+    evidence_sets: Sequence[EvidenceSet],
+) -> tuple[SourceReference, ...]:
+    refs: dict[str, SourceReference] = {}
+    for evidence_set in evidence_sets:
+        for ref in evidence_set.source_refs:
+            current = refs.get(ref.url)
+            if current is None or (not current.title and ref.title):
+                refs[ref.url] = ref
+    return tuple(refs.values())
+
+
+def _source_failure_notices(
+    evidence_sets: Sequence[EvidenceSet],
+) -> tuple[str, ...]:
+    notices: list[str] = []
+    for evidence_set in evidence_sets:
+        label = public_source_label(evidence_set.source)
+        for failure in evidence_set.item_failures:
+            reason = _failure_reason(failure)
+            if reason == "quota":
+                notice = f"{label} 조회는 제공자 사용량 한도 초과로 이번 답변에서 제외되었습니다."
+            elif reason == "timeout":
+                notice = f"{label} 조회는 응답 시간 내 도착하지 않아 이번 답변에서 제외되었습니다."
+            elif reason == "empty":
+                notice = f"{label} 조회는 연결 원천에서 결과 없음으로 확인되었습니다."
+            else:
+                notice = f"{label} 조회는 상류 오류로 이번 답변에서 제외되었습니다."
+            notices.append(notice)
+    return tuple(dict.fromkeys(notices))
+
+
+def _failure_reason(failure: Mapping[str, Any]) -> str:
+    status = text(failure.get("status")).casefold()
+    detail = " ".join(
+        text(failure.get(key)).casefold() for key in ("notice", "summary")
+    )
+    if status == "429" or any(
+        token in detail
+        for token in ("quota", "usage limit", "usage_limit", "plan's set usage", "사용량")
+    ):
+        return "quota"
+    if status == "timeout" or "timed out" in detail or "timeout" in detail:
+        return "timeout"
+    if status in {"empty", "no_data"}:
+        return "empty"
+    return "error"
 
 
 def select_render_profile(

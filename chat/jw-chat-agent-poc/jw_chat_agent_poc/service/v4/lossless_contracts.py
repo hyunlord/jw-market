@@ -73,6 +73,7 @@ class DeterministicRender(_StrictModel):
     record_surface_rate: float = 1.0
     required_field_surface_rate: float = 1.0
     request_notice: str | None = None
+    source_notices: tuple[str, ...] = ()
 
 
 class CompositionResult(_StrictModel):

@@ -115,6 +115,8 @@ def compose_lossless_answer(
         "request_satisfaction_mode": request_satisfaction_mode,
         "request_notice_observed": bool(rendered.request_notice),
         "request_notice_injected": False,
+        "source_notices_observed": list(rendered.source_notices),
+        "source_notices_injected": False,
         "profile": rendered.profile,
         "answer_mutation": False,
         "record_surface_rate": rendered.record_surface_rate,
@@ -123,6 +125,8 @@ def compose_lossless_answer(
         "records_received": rendered.coverage.records_received,
         "records_unique": rendered.coverage.records_unique,
         "records_rendered": rendered.coverage.records_rendered,
+        "rendered_table_rows": rendered.coverage.records_rendered,
+        "lossless_records_rendered": rendered.coverage.records_rendered,
         "render_nodes": [
             {
                 "block_id": node.block_id,
@@ -140,7 +144,8 @@ def compose_lossless_answer(
     inject_request_notice = bool(
         rendered.request_notice and request_satisfaction_mode == "inject"
     )
-    if not inject_facts and not inject_request_notice:
+    inject_source_notices = bool(mode == "inject" and rendered.source_notices)
+    if not inject_facts and not inject_request_notice and not inject_source_notices:
         return CompositionResult(
             text=commentary,
             answer_mutated=False,
@@ -149,7 +154,7 @@ def compose_lossless_answer(
         )
 
     prefix = f"{rendered.request_notice}\n\n" if inject_request_notice else ""
-    if not inject_facts:
+    if not inject_facts and not inject_source_notices:
         text = prefix + commentary
     else:
         text = _assemble_injected_answer(
@@ -168,6 +173,7 @@ def compose_lossless_answer(
         and requested_fields_observed
     )
     trace["request_notice_injected"] = inject_request_notice
+    trace["source_notices_injected"] = inject_source_notices
     return CompositionResult(
         text=text.strip(),
         answer_mutated=True,
@@ -258,6 +264,13 @@ def _assemble_injected_answer(
 
     if request_notice:
         limits.append(("미확인 요소", request_notice.strip()))
+    if rendered.source_notices:
+        limits.append(
+            (
+                "미확인 요소",
+                "\n".join(f"- {notice}" for notice in rendered.source_notices),
+            )
+        )
     if omitted_columns:
         unique_columns = tuple(dict.fromkeys(omitted_columns))
         limits.append(

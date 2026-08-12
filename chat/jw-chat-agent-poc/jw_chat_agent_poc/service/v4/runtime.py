@@ -18,6 +18,7 @@ from jw_chat_agent_poc.service.v4.adapters import build_source_adapters
 from jw_chat_agent_poc.service.v4.contracts import (
     SOURCE_NAMES,
     EvidenceEnvelope,
+    SourceName,
     SourceResult,
     V4Answer,
 )
@@ -245,6 +246,9 @@ class V4Runtime:
                 answer_sources=plan.answer_sources,
                 settle_sources=("mart",),
                 soft_deadline_s=6.0,
+                soft_deadline_exempt_sources=_soft_deadline_exempt_sources(
+                    plan.resolved_question
+                ),
                 progress_callback=source_completed,
             )
             first_execution.trace.setdefault("session_result_reused", False)
@@ -279,6 +283,9 @@ class V4Runtime:
                 total_timeout_s=min(30.0, _remaining(deadline)),
                 answer_sources=linked_plan.answer_sources,
                 soft_deadline_s=6.0,
+                soft_deadline_exempt_sources=_soft_deadline_exempt_sources(
+                    linked_plan.resolved_question
+                ),
                 progress_callback=source_completed,
             )
             if linked_plan is not None and _remaining(deadline) > 0.1
@@ -1007,6 +1014,22 @@ def _execute_with_trace(executor: Any, plan: Any, **kwargs: Any) -> Any:
             "tools": [],
         },
     )
+
+
+def _soft_deadline_exempt_sources(question: str) -> tuple[SourceName, ...]:
+    normalized = question.casefold()
+    clinical_requested = any(
+        token in normalized for token in ("임상", "clinical", "nct")
+    )
+    patent_requested = any(
+        token in normalized for token in ("특허", "오렌지북", "orange book")
+    ) or (clinical_requested and "제네릭" in normalized)
+    output: list[SourceName] = []
+    if clinical_requested:
+        output.append("clinicaltrials")
+    if patent_requested:
+        output.append("patent")
+    return tuple(output)
 
 
 def _empty_usage() -> dict[str, str]:

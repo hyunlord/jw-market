@@ -58,6 +58,7 @@ class ParallelSourceExecutor:
         answer_sources: tuple[SourceName, ...] | None = None,
         settle_sources: tuple[SourceName, ...] | None = None,
         soft_deadline_s: float | None = None,
+        soft_deadline_exempt_sources: tuple[SourceName, ...] | None = None,
         source_filter: tuple[SourceName, ...] | None = None,
         progress_callback: SourceProgressCallback | None = None,
     ) -> tuple[SourceResult, ...]:
@@ -68,6 +69,7 @@ class ParallelSourceExecutor:
             answer_sources=answer_sources,
             settle_sources=settle_sources,
             soft_deadline_s=soft_deadline_s,
+            soft_deadline_exempt_sources=soft_deadline_exempt_sources,
             source_filter=source_filter,
             progress_callback=progress_callback,
         ).results
@@ -81,6 +83,7 @@ class ParallelSourceExecutor:
         answer_sources: tuple[SourceName, ...] | None = None,
         settle_sources: tuple[SourceName, ...] | None = None,
         soft_deadline_s: float | None = None,
+        soft_deadline_exempt_sources: tuple[SourceName, ...] | None = None,
         source_filter: tuple[SourceName, ...] | None = None,
         progress_callback: SourceProgressCallback | None = None,
     ) -> ExecutionOutcome:
@@ -92,6 +95,7 @@ class ParallelSourceExecutor:
         tool_trace: dict[int, dict[str, Any]] = {}
         quorum_fired = False
         quorum_fire_ms: float | None = None
+        exempt_sources = frozenset(soft_deadline_exempt_sources or ())
         query_items = {
             source: queries
             for source, queries in plan.tool_queries.items()
@@ -126,6 +130,9 @@ class ParallelSourceExecutor:
                         "ended_ms": 0.0,
                         "status": cached.status,
                         "cache_hit": True,
+                        "notice": cached.notice,
+                        "exclusion_reason": _result_exclusion_reason(cached),
+                        "soft_deadline_exempt": source in exempt_sources,
                     }
                     if progress_callback is not None:
                         progress_callback(cached_result)
@@ -141,6 +148,7 @@ class ParallelSourceExecutor:
                     "elapsed_ms": (time.monotonic() - started) * 1000,
                     "quorum_fired": False,
                     "quorum_fire_ms": None,
+                    "soft_deadline_exempt_sources": sorted(exempt_sources),
                     "tools": list(tool_trace.values()),
                 },
             )
@@ -173,6 +181,9 @@ class ParallelSourceExecutor:
                 "ended_ms": None,
                 "status": "running",
                 "cache_hit": False,
+                "notice": None,
+                "exclusion_reason": None,
+                "soft_deadline_exempt": source in exempt_sources,
             }
 
         deadline = started + min(
@@ -184,7 +195,8 @@ class ParallelSourceExecutor:
             while remaining:
                 now = time.monotonic()
                 if (
-                    answer_sources
+                    not quorum_fired
+                    and answer_sources
                     and soft_deadline_s is not None
                     and now - started >= soft_deadline_s
                     and _answer_quorum_met(output, answer_sources)
@@ -193,8 +205,10 @@ class ParallelSourceExecutor:
                     quorum_fired = True
                     quorum_fire_ms = (now - started) * 1000
                     for future in tuple(remaining):
-                        remaining.remove(future)
                         index, source, query, _cache_query_value, submitted = futures[future]
+                        if source in exempt_sources:
+                            continue
+                        remaining.remove(future)
                         future.cancel()
                         timed_out = SourceResult(
                             source=source,
@@ -207,10 +221,13 @@ class ParallelSourceExecutor:
                         tool_trace[index].update(
                             ended_ms=(now - started) * 1000,
                             status="timeout",
+                            notice=timed_out.notice,
+                            exclusion_reason="soft_deadline_after_answer_quorum",
                         )
                         if progress_callback is not None:
                             progress_callback(timed_out)
-                    break
+                    if not remaining:
+                        break
                 expired = [
                     future
                     for future in remaining
@@ -231,6 +248,8 @@ class ParallelSourceExecutor:
                     tool_trace[index].update(
                         ended_ms=(now - started) * 1000,
                         status="timeout",
+                        notice=timed_out.notice,
+                        exclusion_reason="per_tool_timeout",
                     )
                     if progress_callback is not None:
                         progress_callback(timed_out)
@@ -253,6 +272,8 @@ class ParallelSourceExecutor:
                         tool_trace[index].update(
                             ended_ms=(time.monotonic() - started) * 1000,
                             status="timeout",
+                            notice=timed_out.notice,
+                            exclusion_reason="total_timeout",
                         )
                         if progress_callback is not None:
                             progress_callback(timed_out)
@@ -279,6 +300,8 @@ class ParallelSourceExecutor:
                     tool_trace[index].update(
                         ended_ms=(time.monotonic() - started) * 1000,
                         status=result.status,
+                        notice=result.notice,
+                        exclusion_reason=_result_exclusion_reason(result),
                     )
                     if progress_callback is not None:
                         progress_callback(result)
@@ -296,6 +319,7 @@ class ParallelSourceExecutor:
                 "elapsed_ms": (time.monotonic() - started) * 1000,
                 "quorum_fired": quorum_fired,
                 "quorum_fire_ms": quorum_fire_ms,
+                "soft_deadline_exempt_sources": sorted(exempt_sources),
                 "tools": [tool_trace[index] for index in sorted(tool_trace)],
             },
         )
@@ -364,3 +388,19 @@ def _sources_settled(
         if not indices or any(output[index] is None for index in indices):
             return False
     return True
+
+
+def _result_exclusion_reason(result: SourceResult) -> str | None:
+    if result.status == "ok":
+        return None
+    notice = (result.notice or "").casefold()
+    if any(
+        token in notice
+        for token in ("quota", "usage limit", "usage_limit", "plan's set usage", "사용량")
+    ):
+        return "provider_quota"
+    if result.status == "timeout":
+        return "upstream_timeout"
+    if result.status == "empty":
+        return "empty_result"
+    return "upstream_error"
