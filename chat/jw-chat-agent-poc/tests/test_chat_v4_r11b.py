@@ -414,6 +414,40 @@ def test_r11b_active_kr_empty_contract_uses_exact_korean_surface() -> None:
     assert "## 인접 동향" in gated
 
 
+def test_r11b_active_kr_empty_uses_country_scoped_query_when_payload_omits_country() -> None:
+    question = "대한민국에서 현재 진행 중인 당뇨망막병증 임상시험 현황을 알려주세요."
+    clinical = SourceResult(
+        source="clinicaltrials",
+        query="Diabetic Retinopathy AND Korea, Republic of",
+        status="ok",
+        payload={
+            "calls": [
+                {
+                    "render_data": {
+                        "payload": {
+                            "studies": [
+                                {
+                                    "NCTId": "NCT03962296",
+                                    "overallStatus": "COMPLETED",
+                                }
+                            ]
+                        }
+                    }
+                }
+            ]
+        },
+    )
+
+    answer = V4Synthesizer(_SynthClient("## 핵심 답\n완료 임상 1건입니다.")).synthesize(
+        _plan(question),
+        (clinical,),
+        (),
+    )
+
+    assert answer.startswith("## 핵심 답\n확인된 국내 진행 중 임상시험은 없었습니다.")
+    assert "## 인접 동향" in answer
+
+
 def test_r11b_reexamination_primary_entity_precedes_related_product() -> None:
     question = "리바로 재심사 기간 알려줘"
     nedrug = SourceResult(

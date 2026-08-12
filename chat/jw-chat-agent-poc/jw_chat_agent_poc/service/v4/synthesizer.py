@@ -1659,6 +1659,9 @@ def _active_kr_clinical_subset_state(
     for result in results:
         if result.source != "clinicaltrials":
             continue
+        query_is_kr = any(
+            marker in result.query.casefold() for marker in ("korea", "대한민국", "한국")
+        )
         if result.status == "empty":
             saw_empty = True
             continue
@@ -1672,7 +1675,7 @@ def _active_kr_clinical_subset_state(
         for record in records:
             statuses = _clinical_values(record, "status")
             countries = _clinical_values(record, "country")
-            if not statuses or not countries:
+            if not statuses or (not countries and not query_is_kr):
                 continue
             record_was_explicit = True
             saw_explicit_record = True
@@ -1680,7 +1683,7 @@ def _active_kr_clinical_subset_state(
                 value.upper().replace(" ", "_") in _ACTIVE_CLINICAL_STATUSES
                 for value in statuses
             )
-            is_kr = any(
+            is_kr = query_is_kr if not countries else any(
                 marker in value.casefold()
                 for value in countries
                 for marker in ("korea", "대한민국", "한국")
