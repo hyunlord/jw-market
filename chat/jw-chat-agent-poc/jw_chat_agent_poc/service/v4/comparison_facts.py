@@ -66,6 +66,7 @@ def build_comparison_facts(results: Sequence[SourceResult]) -> dict[str, Any]:
                     "start": _fixed_display(display_start, "억원"),
                     "end": _fixed_display(display_end, "억원"),
                     "delta": _fixed_display(display_delta, "억원", signed=True),
+                    "delta_basis": "display_end_minus_display_start",
                 }
             )
             numeric_deltas.append((brand, display_delta))
@@ -164,6 +165,24 @@ def build_comparison_facts(results: Sequence[SourceResult]) -> dict[str, Any]:
                     f"점유율 변화는 {share_delta_display}이고 점유율 방향은 {direction}입니다."
                 )
 
+    observation_sentences = [
+        (
+            f"{item['brand']} 매출은 {period_start} {item['start']}에서 "
+            f"{period_end} {item['end']}까지 변했고, 표시값 기준 증감은 "
+            f"{item['delta']}입니다."
+        )
+        for item in deltas
+    ]
+    observation_sentences.extend(
+        _symmetric_pair_statement(pair) for pair in symmetric_pairs
+    )
+    if share_direction.get("statement"):
+        observation_sentences.append(str(share_direction["statement"]))
+    observation_sentences.extend(
+        f"경쟁 브랜드 {item['brand']}의 점유율 변화는 {item['change']}입니다."
+        for item in competitor_share_changes
+    )
+
     return {
         "period_start": period_start,
         "period_end": period_end,
@@ -171,6 +190,7 @@ def build_comparison_facts(results: Sequence[SourceResult]) -> dict[str, Any]:
         "symmetric_pairs": symmetric_pairs,
         "share_direction": share_direction,
         "competitor_share_changes": competitor_share_changes,
+        "observation_sentences": observation_sentences,
     }
 
 
@@ -213,6 +233,10 @@ def symmetric_observation(
         )
         if pair is None:
             return None
+    return _symmetric_pair_statement(pair)
+
+
+def _symmetric_pair_statement(pair: Mapping[str, Any]) -> str:
     return (
         f"{pair['increase_brand']}{_topic_particle(str(pair['increase_brand']))} "
         f"{pair['increase_delta']}, "

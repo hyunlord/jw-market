@@ -22,6 +22,7 @@ from jw_chat_agent_poc.service.v4.contracts import (
     SourceName,
     SourceResult,
 )
+from jw_chat_agent_poc.service.v4.time_context import current_kst_date
 
 
 LOGGER = logging.getLogger(__name__)
@@ -507,7 +508,7 @@ def _requested_hira_years(
     current_year: int | None = None,
 ) -> tuple[str, ...] | None:
     """Return the complete calendar range requested by the V4 HIRA query."""
-    year_now = current_year or datetime.now(UTC).year
+    year_now = current_year or current_kst_date().year
     named = tuple(dict.fromkeys(_YEAR_RE.findall(query)))
     if len(named) >= 2:
         first, last = sorted((int(min(named)), int(max(named))))
@@ -1072,7 +1073,10 @@ def build_source_adapters() -> dict[SourceName, Any]:
 
 def _strategic_mart_calls(layer, brand: str, query: str) -> list[dict[str, Any]]:
     lowered = query.casefold()
-    metric_period = requested_period(query) or "latest"
+    recent_year_match = _RECENT_YEAR_RE.search(query)
+    recent_years = int(recent_year_match.group(1)) if recent_year_match else None
+    metric_period = "latest" if recent_years else requested_period(query) or "latest"
+    relative_history_points = min(60, recent_years * 12 + 1) if recent_years else None
     calls: list[dict[str, Any]] = []
     try:
         scope = layer.market_scope(brand)
@@ -1090,14 +1094,17 @@ def _strategic_mart_calls(layer, brand: str, query: str) -> list[dict[str, Any]]
     )
     for metric, history_points in metric_package:
         try:
+            call = layer.brand_metric(
+                brand,
+                metric,
+                metric_period,
+                market=market,
+                history_points=relative_history_points or history_points,
+            )
             calls.append(
-                layer.brand_metric(
-                    brand,
-                    metric,
-                    metric_period,
-                    market=market,
-                    history_points=history_points,
-                )
+                _clip_recent_year_call(call, recent_years)
+                if recent_years
+                else call
             )
         except (LookupError, ValueError):
             continue
@@ -1109,7 +1116,8 @@ def _strategic_mart_calls(layer, brand: str, query: str) -> list[dict[str, Any]]
     except (LookupError, ValueError):
         pass
 
-    bundle = _entity_bundle_call(layer, brand, market, top_brands, metric_period)
+    bundle_period = f"최근 {recent_years}년" if recent_years else metric_period
+    bundle = _entity_bundle_call(layer, brand, market, top_brands, bundle_period)
     if bundle is not None:
         calls.append(bundle)
 
@@ -1212,6 +1220,8 @@ def _entity_bundle_call(
     ]
     selected = [anchor_row, *family[:2], *competitors[:5]]
     selected = list({str(row["brand"]): row for row in selected}.values())
+    recent_year_match = _RECENT_YEAR_RE.search(period)
+    recent_years = int(recent_year_match.group(1)) if recent_year_match else None
 
     def load(row: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]] | None:
         try:
@@ -1221,6 +1231,14 @@ def _entity_bundle_call(
                     str(row["brand"]),
                     market=market,
                     metric="series",
+                )
+            elif recent_years:
+                call = layer.brand_metric(
+                    str(row["brand"]),
+                    "sales",
+                    "latest",
+                    market=market,
+                    history_points=min(60, recent_years * 12 + 1),
                 )
             else:
                 call = layer.brand_metric(
@@ -1295,7 +1313,16 @@ def _entity_bundle_call(
 
 
 def _comparison_periods(periods: set[str], requested: str) -> set[str]:
-    if requested == "latest" or requested.startswith("최근 "):
+    recent_year_match = _RECENT_YEAR_RE.search(requested)
+    if recent_year_match:
+        current_year = current_kst_date().year
+        start_year = current_year - int(recent_year_match.group(1))
+        return {
+            period
+            for period in periods
+            if start_year <= int(period[:4]) <= current_year
+        }
+    if requested == "latest":
         return periods
 
     end_period: str | None = None
@@ -1349,6 +1376,40 @@ def _clip_bundle_periods(value: Any, periods: set[str]) -> Any:
             or str(item["period"]) in periods
         ]
     return value
+
+
+def _clip_recent_year_call(call: dict[str, Any], years: int) -> dict[str, Any]:
+    render_data = call.get("render_data")
+    if not isinstance(render_data, dict):
+        return call
+    today = current_kst_date()
+    start_year = today.year - years
+    periods = {
+        period
+        for period in _nested_month_periods(render_data)
+        if start_year <= int(period[:4]) <= today.year
+    }
+    if not periods:
+        return call
+    return {
+        **call,
+        "render_data": _clip_bundle_periods(render_data, periods),
+    }
+
+
+def _nested_month_periods(value: Any) -> set[str]:
+    if isinstance(value, dict):
+        period = value.get("period")
+        periods = {str(period)} if _is_month_period(period) else set()
+        for item in value.values():
+            periods.update(_nested_month_periods(item))
+        return periods
+    if isinstance(value, list):
+        periods: set[str] = set()
+        for item in value:
+            periods.update(_nested_month_periods(item))
+        return periods
+    return set()
 
 
 def align_cause_periods(

@@ -955,7 +955,11 @@ def test_r11_as_of_date_rewrites_past_dates_out_of_future_tense(
     gated = apply_v4_gates("시점 알려줘", answer, (result,))
 
     # Then: future tense is replaced by a dated current/past statement.
-    assert expected in gated.text
+    expected_surface = expected.replace(
+        "시작일이 도래했으며 현재",
+        "시작일이 도래했습니다. 현재",
+    )
+    assert expected_surface in gated.text
     assert forbidden not in gated.text
     assert gated.trace["reason_code_enforcement"]["AS_OF_DATE"] == 1
 
@@ -1200,7 +1204,7 @@ def test_r11_empty_active_kr_clinical_set_precedes_adjacent_evidence() -> None:
         state=state,
     )
 
-    assert answer.startswith("## 핵심 답\n확인된 국내 active 임상시험은 없었습니다.")
+    assert answer.startswith("## 핵심 답\n확인된 국내 진행 중 임상시험은 없었습니다.")
     assert "## 인접 동향" in answer
     assert "특허와 바이오시밀러 동향" in answer
 
@@ -1249,7 +1253,7 @@ def test_r11_empty_active_kr_clinical_notice_survives_claim_gate() -> None:
     )
 
     assert gated.text.startswith(
-        "## 핵심 답\n확인된 국내 active 임상시험은 없었습니다."
+        "## 핵심 답\n확인된 국내 진행 중 임상시험은 없었습니다."
     )
     assert "## 인접 동향\n인접 자료를 확인했습니다." in gated.text
 
@@ -1286,7 +1290,7 @@ def test_r11_old_clinical_scope_does_not_leak_into_new_reimbursement_topic() -> 
         state=old_state,
     )
 
-    assert "확인된 국내 active 임상시험은 없었습니다" not in answer
+    assert "확인된 국내 진행 중 임상시험은 없었습니다" not in answer
 
 
 def test_r11_active_kr_notice_uses_requested_subset_inside_ok_result() -> None:
@@ -1316,7 +1320,7 @@ def test_r11_active_kr_notice_uses_requested_subset_inside_ok_result() -> None:
         (),
     )
 
-    assert answer.startswith("## 핵심 답\n확인된 국내 active 임상시험은 없었습니다.")
+    assert answer.startswith("## 핵심 답\n확인된 국내 진행 중 임상시험은 없었습니다.")
     assert "## 인접 동향" in answer
 
 

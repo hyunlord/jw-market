@@ -108,6 +108,7 @@ def test_r10b_precomputes_comparison_facts_for_the_synthesis_prompt() -> None:
             "start": "10.00억원",
             "end": "12.00억원",
             "delta": "+2.00억원",
+            "delta_basis": "display_end_minus_display_start",
         },
         {
             "brand": "크레스토",
@@ -115,6 +116,7 @@ def test_r10b_precomputes_comparison_facts_for_the_synthesis_prompt() -> None:
             "start": "20.00억원",
             "end": "18.00억원",
             "delta": "-2.00억원",
+            "delta_basis": "display_end_minus_display_start",
         },
     ]
     assert facts["symmetric_pairs"] == [
@@ -192,6 +194,7 @@ def test_r10b_precomputes_share_direction_from_nested_general_view_rows() -> Non
             "start": "176.35억원",
             "end": "218.67억원",
             "delta": "+42.32억원",
+            "delta_basis": "display_end_minus_display_start",
         }
     ]
     assert facts["share_direction"]["brand_growth"] == "+24.00%"

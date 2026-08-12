@@ -2,15 +2,22 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
-from datetime import UTC, date, datetime
+from datetime import date, datetime
 from typing import Any
 
 from pydantic import ValidationError
 
-from jw_chat_agent_poc.service.v4.comparison_facts import symmetric_observation
+from jw_chat_agent_poc.service.v4.comparison_facts import (
+    build_comparison_facts,
+    symmetric_observation,
+)
 from jw_chat_agent_poc.service.v4.contracts import (
     AbsenceConfirmation,
     SourceResult,
+)
+from jw_chat_agent_poc.service.v4.time_context import (
+    current_kst_date,
+    datetime_kst_date,
 )
 
 
@@ -21,6 +28,29 @@ _REASON_CODES = (
     "AS_OF_DATE",
 )
 _TRANSFER_RE = re.compile(r"(?:이동|흡수|전환|잠식|대체)")
+_STRUCTURAL_COMMERCIAL_RE = re.compile(
+    r"(?:매출|점유율|성장|하락|감소|증가|처방|환자군|수요)"
+)
+_STRUCTURAL_RELATION_RE = re.compile(
+    r"(?:원인|영향|연관|때문|결과|기인|견인|압박|야기|유발|"
+    r"대체|이동|전환|잠식|흡수|유입|이어)"
+)
+_STRUCTURAL_HYPOTHESIS_RE = re.compile(
+    r"(?:(?:가능성|가설)[^.\n]{0,30}(?:제기|시사|해석|설명)|"
+    r"(?:제기|시사|해석|설명)[^.\n]{0,30}(?:가능성|가설))"
+)
+_STRUCTURAL_TARGET_FIRST_RE = re.compile(
+    r"(?:성장|증가|상승)[^.\n]{0,100}(?:감소|하락|변화)[^.\n]{0,60}"
+    r"(?:의\s*)?(?:결과|기인|때문|영향|가능성|가설|해석|설명)"
+)
+_ENTITY_ALIAS_GROUPS: dict[str, tuple[str, ...]] = {
+    "리바로": ("리바로", "livalo", "pitavastatin", "피타바스타틴"),
+    "리바로젯": ("리바로젯", "livalozet"),
+    "리피토": ("리피토", "lipitor", "atorvastatin", "아토르바스타틴"),
+    "아토젯": ("아토젯", "atozet"),
+    "로수젯": ("로수젯", "rosuzet"),
+    "크레스토": ("크레스토", "crestor", "rosuvastatin", "로수바스타틴"),
+}
 _ENTITY = r"[가-힣A-Za-z0-9][가-힣A-Za-z0-9+._-]*?"
 _TRANSFER_VERB = (
     r"(?:이동|흡수|전환|잠식|대체)(?:한|하였|했|된|됐)?"
@@ -95,6 +125,17 @@ _INTERNAL_MART_PROGRESS_RE = re.compile(
     r"UBIST\s*전략\s*mart\s*지표\s*:.*(?:매출|MS|점유율|순위)",
     re.IGNORECASE,
 )
+_HIRA_UI_PREFIX_RE = re.compile(
+    r"<?\s*건강보험심사평가원\s*보험인정기준\s*상세내용\s*인쇄"
+    r".*?(?=■\s*고시\s*개정\s*전체내용)",
+    re.DOTALL,
+)
+_HIRA_ATTACHMENT_UI_RE = re.compile(
+    r"첨부파일\s*다운로드\s*자료가\s*다운되지\s*않을\s*경우"
+    r".*?(?:확인해\s*주세요\.?\s*)?(?:닫기\s*)?$",
+    re.DOTALL,
+)
+_HIRA_CLOSE_UI_RE = re.compile(r"\s*닫기\s*$")
 _SEMANTIC_CLAUSE_SEPARATOR_RE = re.compile(
     r"\s*(?:,|;)\s*|(?:\s+)?(?:있으며|이며|이고|이지만|하지만|다만),?\s+"
 )
@@ -108,7 +149,7 @@ def enforce_reason_codes(
 ) -> tuple[str, dict[str, Any]]:
     """Apply deterministic, clause-bounded R11 semantic repairs."""
 
-    observed_at = (now or datetime.now(UTC)).date()
+    observed_at = datetime_kst_date(now) if now is not None else current_kst_date()
     repairs: list[tuple[str, str]] = []
 
     transfer = _repair_transfer(text, results)
@@ -160,6 +201,12 @@ def scrub_internal_release_tokens(text: str) -> tuple[str, int]:
 
     count = 0
     repaired = text
+    repaired, substitutions = _HIRA_UI_PREFIX_RE.subn("", repaired)
+    count += substitutions
+    repaired, substitutions = _HIRA_ATTACHMENT_UI_RE.subn("", repaired)
+    count += substitutions
+    repaired, substitutions = _HIRA_CLOSE_UI_RE.subn("", repaired)
+    count += substitutions
     repaired, substitutions = _INTERNAL_PATTERNS[0].subn("", repaired)
     count += substitutions
 
@@ -193,7 +240,11 @@ def _repair_transfer(
     text: str,
     results: Sequence[SourceResult],
 ) -> str | None:
-    if not _TRANSFER_RE.search(text):
+    has_structural_candidate = any(
+        _structural_transfer_entities(sentence, results) is not None
+        for sentence in re.split(r"(?<=[.!?])(?=\s)|(?<=\n)", text)
+    )
+    if not _TRANSFER_RE.search(text) and not has_structural_candidate:
         return None
     contradictory = _TRANSFER_UNCERTAINTY_RE.search(text) is not None
     seen_observations: set[str] = set()
@@ -224,6 +275,21 @@ def _repair_transfer_sentence(
         )
     ):
         return ""
+    structural_entities = _structural_transfer_entities(sentence, results)
+    if structural_entities is not None:
+        source_entity, target_entity = structural_entities
+        if _has_exact_flow(results, source_entity, target_entity):
+            return sentence
+        observation = _transfer_observation(
+            results,
+            source_entity=source_entity,
+            target_entity=target_entity,
+        )
+        if observation in seen_observations:
+            return ""
+        seen_observations.add(observation)
+        return observation
+
     matches = _directed_transfer_matches(sentence)
     if not matches:
         if not _TRANSFER_RE.search(sentence):
@@ -289,6 +355,62 @@ def _directed_transfer_matches(sentence: str) -> tuple[re.Match[str], ...]:
     return tuple(selected)
 
 
+def _structural_transfer_entities(
+    sentence: str,
+    results: Sequence[SourceResult],
+) -> tuple[str, str] | None:
+    if not _STRUCTURAL_COMMERCIAL_RE.search(sentence):
+        return None
+    if not (
+        _STRUCTURAL_RELATION_RE.search(sentence)
+        or _STRUCTURAL_HYPOTHESIS_RE.search(sentence)
+    ):
+        return None
+    mentions = _entity_mentions(sentence, results)
+    distinct: list[str] = []
+    for canonical in mentions:
+        if canonical not in distinct:
+            distinct.append(canonical)
+    if len(distinct) < 2:
+        return None
+    if _STRUCTURAL_TARGET_FIRST_RE.search(sentence):
+        return distinct[1], distinct[0]
+    return distinct[0], distinct[1]
+
+
+def _entity_mentions(
+    sentence: str,
+    results: Sequence[SourceResult],
+) -> tuple[str, ...]:
+    aliases: dict[str, str] = {}
+    for canonical, values in _ENTITY_ALIAS_GROUPS.items():
+        for value in values:
+            aliases[value.casefold()] = canonical
+    for result in results:
+        if result.source != "mart":
+            continue
+        facts = build_comparison_facts((result,))
+        for item in facts.get("brand_deltas", []):
+            if not isinstance(item, Mapping):
+                continue
+            brand = str(item.get("brand") or "").strip()
+            if brand:
+                aliases.setdefault(brand.casefold(), brand)
+
+    lowered = sentence.casefold()
+    matches: list[tuple[int, int, str]] = []
+    occupied: list[tuple[int, int]] = []
+    for alias, canonical in sorted(aliases.items(), key=lambda item: -len(item[0])):
+        for match in re.finditer(re.escape(alias), lowered):
+            span = match.span()
+            if any(span[0] < end and start < span[1] for start, end in occupied):
+                continue
+            occupied.append(span)
+            matches.append((span[0], span[1], canonical))
+    matches.sort()
+    return tuple(canonical for _, _, canonical in matches)
+
+
 def _transfer_observation(
     results: Sequence[SourceResult],
     *,
@@ -314,12 +436,31 @@ def _has_exact_flow(
     source_entity: str,
     target_entity: str,
 ) -> bool:
-    expected = f"flow:{source_entity}->{target_entity}".casefold()
-    return any(
-        evidence is not None
-        and any(value.casefold() == expected for value in evidence.eligible_attributions)
-        for evidence in (result.evidence for result in results)
-    )
+    expected_source = _canonical_entity(source_entity)
+    expected_target = _canonical_entity(target_entity)
+    for evidence in (result.evidence for result in results):
+        if evidence is None:
+            continue
+        for value in evidence.eligible_attributions:
+            match = re.fullmatch(r"flow:(.+?)->(.+)", value, flags=re.IGNORECASE)
+            if match is None:
+                continue
+            if (
+                _canonical_entity(match.group(1)) == expected_source
+                and _canonical_entity(match.group(2)) == expected_target
+            ):
+                return True
+    return False
+
+
+def _canonical_entity(value: str) -> str:
+    folded = value.strip().casefold()
+    for canonical, aliases in _ENTITY_ALIAS_GROUPS.items():
+        if folded == canonical.casefold() or folded in {
+            alias.casefold() for alias in aliases
+        }:
+            return canonical
+    return value.strip()
 
 
 def _repair_absence(
@@ -424,7 +565,7 @@ def _repair_as_of_date(
             ("recruitment_status", "overall_status"),
         ) or "확인되지 않음"
         replacement = (
-            f"시험 시작일은 {clinical_date:%Y-%m-%d}로 시작일이 도래했으며 "
+            f"시험 시작일은 {clinical_date:%Y-%m-%d}로 시작일이 도래했습니다. "
             f"현재 모집상태는 {status}입니다."
         )
         return _replace_matching_sentences(text, _FUTURE_DATE_RE, replacement)

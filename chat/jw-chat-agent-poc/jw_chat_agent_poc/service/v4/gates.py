@@ -134,6 +134,13 @@ _AUTOMATIC_SAFETY_NOTICES = (
     "ClinicalTrials.gov 모집상태는 갱신이 지연될 수 있습니다.",
     "특허 존속기간 만료가 곧 제네릭 진입 시점을 뜻하지 않습니다.",
 )
+_ACTIVE_KR_EMPTY_NOTICE = "확인된 국내 진행 중 임상시험은 없었습니다."
+_ACTIVE_TRIAL_STATUSES = {
+    "ACTIVE_NOT_RECRUITING",
+    "ENROLLING_BY_INVITATION",
+    "NOT_YET_RECRUITING",
+    "RECRUITING",
+}
 _HIRA_REQUEST_PATTERNS: tuple[tuple[re.Pattern[str], tuple[str, ...]], ...] = (
     (re.compile(r"환자\s*수|청구\s*실인원"), ("ptntCnt",)),
     (
@@ -1290,6 +1297,13 @@ def _enforce_claim_eligibility(
         for sentence in _markdown_sentences(block):
             if sentence.strip().startswith("## "):
                 continue
+            if (
+                sentence.strip() == _ACTIVE_KR_EMPTY_NOTICE
+                and _confirmed_active_kr_empty(question, results)
+            ):
+                kept.append(sentence.strip())
+                kept_claims.add("recruitment_status")
+                continue
             required = {
                 claim
                 for claim, pattern in _CLAIM_PATTERNS.items()
@@ -1337,6 +1351,71 @@ def _enforce_claim_eligibility(
         "labeled_blocks": labeled_blocks,
         "unsupported_claims": sorted(unsupported),
     }
+
+
+def _confirmed_active_kr_empty(
+    question: str,
+    results: tuple[SourceResult, ...],
+) -> bool:
+    normalized = " ".join(question.split()).casefold()
+    if not (
+        "임상" in normalized
+        and any(marker in normalized for marker in ("진행 중", "진행중", "모집 중", "모집중"))
+        and any(marker in normalized for marker in ("국내", "한국", "대한민국"))
+    ):
+        return False
+    saw_empty = False
+    saw_explicit_nonmatch = False
+    for result in results:
+        if result.source != "clinicaltrials":
+            continue
+        if result.status == "empty":
+            saw_empty = True
+            continue
+        if result.status != "ok":
+            continue
+        for record in _nested_payload_mappings(result.payload):
+            status_values = [
+                str(value).upper().replace(" ", "_")
+                for key, value in record.items()
+                if "status" in str(key).casefold() and value not in (None, "")
+            ]
+            country_values = [
+                str(value).casefold()
+                for key, value in record.items()
+                if "country" in str(key).casefold() and value not in (None, "")
+            ]
+            if not status_values or not country_values:
+                continue
+            active = any(value in _ACTIVE_TRIAL_STATUSES for value in status_values)
+            kr = any(
+                marker in value
+                for value in country_values
+                for marker in ("korea", "대한민국", "한국")
+            )
+            if active and kr:
+                return False
+            saw_explicit_nonmatch = True
+    return saw_empty or saw_explicit_nonmatch
+
+
+def _nested_payload_mappings(value: Any) -> tuple[Mapping[str, Any], ...]:
+    if isinstance(value, Mapping):
+        return (
+            value,
+            *(
+                nested
+                for item in value.values()
+                for nested in _nested_payload_mappings(item)
+            ),
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(
+            nested
+            for item in value
+            for nested in _nested_payload_mappings(item)
+        )
+    return ()
 
 
 def inspect_requested_hira_surface(

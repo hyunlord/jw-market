@@ -6,6 +6,7 @@ import re
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
 import requests
@@ -20,6 +21,10 @@ from jw_chat_agent_poc.service.v4.contracts import (
 )
 from jw_chat_agent_poc.service.v4.llm import CompletionResult, GenOSV4Client
 from jw_chat_agent_poc.service.v4.session_state import SessionState
+from jw_chat_agent_poc.service.v4.time_context import (
+    as_of_date_instruction,
+    current_kst_date as _current_kst_date,
+)
 
 
 _JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
@@ -29,6 +34,10 @@ _PRODUCT_CODE_ANCHOR_RE = re.compile(
     re.IGNORECASE,
 )
 _KCD_ANCHOR_RE = re.compile(r"(?<![A-Za-z0-9])([A-Za-z]\d{2}(?:\.?\d)?)(?![A-Za-z0-9])")
+_RELATIVE_YEAR_RE = re.compile(r"최근\s*(?P<count>\d{1,2})\s*년")
+_EXPLICIT_YEAR_RANGE_RE = re.compile(
+    r"20\d{2}\s*년?\s*(?:~|～|부터|[-–—])\s*20\d{2}\s*년?"
+)
 
 
 @dataclass(frozen=True)
@@ -63,7 +72,13 @@ class V4Planner:
         budget_s: float = 10.0,
         state: SessionState | None = None,
     ) -> PlannerOutcome:
-        messages = _planner_messages(question, turns, state=state)
+        observed_on = _current_kst_date()
+        messages = _planner_messages(
+            question,
+            turns,
+            state=state,
+            observed_on=observed_on,
+        )
         error: Exception | None = None
         deadline = time.monotonic() + max(1.0, budget_s)
         started = time.monotonic()
@@ -94,6 +109,7 @@ class V4Planner:
                 if direct_sources:
                     plan = plan.model_copy(update={"answer_sources": direct_sources})
                 plan = _lock_exact_anchor(question, plan)
+                plan = _anchor_relative_years(question, plan, observed_on)
                 return PlannerOutcome(
                     plan=plan,
                     trace={
@@ -111,9 +127,17 @@ class V4Planner:
             except (ValueError, json.JSONDecodeError) as exc:
                 error = exc
         return PlannerOutcome(
-            plan=_lock_exact_anchor(
+            plan=_anchor_relative_years(
                 question,
-                _fallback_plan(question, turns, reason=str(error or "planner returned no JSON")),
+                _lock_exact_anchor(
+                    question,
+                    _fallback_plan(
+                        question,
+                        turns,
+                        reason=str(error or "planner returned no JSON"),
+                    ),
+                ),
+                observed_on,
             ),
             trace={
                 "status": "fallback",
@@ -147,7 +171,13 @@ class V4Planner:
             for result in first_results
             if result.status == "ok"
         ]
-        messages = _planner_messages(first_plan.resolved_question, turns, state=state)
+        observed_on = _current_kst_date()
+        messages = _planner_messages(
+            first_plan.resolved_question,
+            turns,
+            state=state,
+            observed_on=observed_on,
+        )
         messages.append(
             {
                 "role": "user",
@@ -165,7 +195,8 @@ class V4Planner:
         anchor = _exact_anchor(first_plan.resolved_question)
         if anchor:
             linked = _lock_linked_anchor(anchor, linked, first_results)
-        return linked.model_copy(update={"needs_second_hop": False})
+        linked = linked.model_copy(update={"needs_second_hop": False})
+        return _anchor_relative_years(first_plan.resolved_question, linked, observed_on)
 
 
 def _exact_anchor(question: str) -> str | None:
@@ -286,6 +317,7 @@ def _planner_messages(
     turns: Sequence[ConversationTurn],
     *,
     state: SessionState | None = None,
+    observed_on: date | None = None,
 ) -> list[dict[str, str]]:
     history = [
         {"question": turn.question, "answer": turn.answer}
@@ -314,11 +346,53 @@ def _planner_messages(
                     "question": question,
                     "recent_turns": history,
                     "session_state": state.public_dict() if state else None,
+                    "as_of_date_context": as_of_date_instruction(
+                        observed_on or _current_kst_date()
+                    ),
                 },
                 ensure_ascii=False,
             ),
         },
     ]
+
+
+def _anchor_relative_years(
+    question: str,
+    plan: PlannerOutput,
+    observed_on: date,
+) -> PlannerOutput:
+    match = _RELATIVE_YEAR_RE.search(question)
+    if match is None:
+        return plan
+    count = max(1, min(20, int(match.group("count"))))
+    canonical = f"{observed_on.year - count}년~{observed_on.year}년"
+    relative = f"최근 {count}년"
+
+    def normalize(value: str) -> str:
+        normalized, replacements = _EXPLICIT_YEAR_RANGE_RE.subn(canonical, value)
+        if replacements:
+            return normalized
+        normalized, replacements = _RELATIVE_YEAR_RE.subn(
+            f"{canonical}({relative})",
+            normalized,
+        )
+        if replacements:
+            return normalized
+        return f"{normalized.rstrip()} {canonical}"
+
+    return plan.model_copy(
+        update={
+            "resolved_question": normalize(plan.resolved_question),
+            "expanded_intents": tuple(normalize(value) for value in plan.expanded_intents),
+            "tool_queries": ToolQueries(
+                **{
+                    source: tuple(normalize(query) for query in queries)
+                    for source, queries in plan.tool_queries.items()
+                }
+            ),
+            "linking_plan": normalize(plan.linking_plan),
+        }
+    )
 
 
 def _parse_plan(raw: str) -> PlannerOutput:

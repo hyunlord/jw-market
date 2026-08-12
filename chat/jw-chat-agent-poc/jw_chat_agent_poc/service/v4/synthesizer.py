@@ -5,6 +5,7 @@ import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import date
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
@@ -18,6 +19,10 @@ from jw_chat_agent_poc.service.v4.gates import (
 from jw_chat_agent_poc.service.v4.llm import CompletionResult, GenOSV4Client
 from jw_chat_agent_poc.service.v4.reason_code_enforcement import typed_absence_record
 from jw_chat_agent_poc.service.v4.session_state import SessionState
+from jw_chat_agent_poc.service.v4.time_context import (
+    as_of_date_instruction,
+    current_kst_date as _current_kst_date,
+)
 
 
 _INTERNAL_SURFACE_RE = re.compile(
@@ -137,6 +142,7 @@ class V4Synthesizer:
         budget_s: float = 60.0,
         state: SessionState | None = None,
     ) -> SynthesisOutcome:
+        observed_on = _current_kst_date()
         usable = _select_usable_results(plan, tuple(
             result
             for result in results
@@ -172,7 +178,13 @@ class V4Synthesizer:
                 },
             )
 
-        messages = _synthesis_messages(plan, usable, turns, state=state)
+        messages = _synthesis_messages(
+            plan,
+            usable,
+            turns,
+            state=state,
+            observed_on=observed_on,
+        )
         completion: CompletionResult | None = None
         error_type: str | None = None
         try:
@@ -291,6 +303,13 @@ class V4Synthesizer:
         )
         answer = _append_required_adverse_signal(answer, usable)
         answer = _append_absence_context_surface(answer, results)
+        answer = _apply_reexamination_surface(
+            answer,
+            question=plan.resolved_question,
+            results=usable,
+            state=state,
+            observed_on=observed_on,
+        )
         answer = _apply_active_kr_clinical_empty_surface(
             answer,
             question=plan.resolved_question,
@@ -374,6 +393,7 @@ def _synthesis_messages(
     turns: Sequence[ConversationTurn],
     *,
     state: SessionState | None = None,
+    observed_on: date | None = None,
 ) -> list[dict[str, str]]:
     mart = tuple(result for result in results if result.source == "mart")
     external = tuple(result for result in results if result.source != "mart")
@@ -403,6 +423,9 @@ def _synthesis_messages(
         "recent_turns": history,
         "resolved_intents": list(plan.expanded_intents),
         "user_question": plan.resolved_question,
+        "as_of_date_context": as_of_date_instruction(
+            observed_on or _current_kst_date()
+        ),
         "output_guide": [
             "핵심 답을 첫 문단에서 바로 제시",
             "근거와 맥락",
@@ -426,10 +449,11 @@ def _synthesis_messages(
             "same_period_and_denominator_only": True,
             "use_precomputed_comparison_facts": bool(comparison_facts),
             "comparison_instruction": (
-                "COMPARISON_FACTS의 계산된 사실을 서술에 반영한다. "
-                "대칭 후보와 경쟁 브랜드 점유율 변화가 있으면 빠뜨리지 않는다"
+                "COMPARISON_FACTS.observation_sentences의 완성된 사실 문장을 서술에 "
+                "그대로 반영한다. supplied delta를 다시 계산하지 않는다. 점유율 방향 "
+                "사실이 있으면 반드시 명시한다"
             ),
-            "competitor_movement_is_hypothesis_without_movement_evidence": True,
+            "free_form_cross_brand_causality_or_movement_forbidden": True,
             "adverse_signal_must_be_explicit": True,
             "explicit_share_direction_sentence": True,
         }
@@ -441,6 +465,14 @@ def _synthesis_messages(
             "separate_official_and_reported_claims": True,
             "do_not_replace_absent_document_with_other_document": True,
         }
+    reexamination_contract = _reexamination_prompt_contract(
+        plan.resolved_question,
+        external,
+        state=state,
+        observed_on=observed_on or _current_kst_date(),
+    )
+    if reexamination_contract:
+        prompt["reexamination_contract"] = reexamination_contract
     required_hira_surface = _required_hira_surface(plan.resolved_question, results)
     if required_hira_surface:
         prompt["required_hira_surface"] = required_hira_surface
@@ -1276,6 +1308,258 @@ def _finalize_answer(answer: str, results: Sequence[SourceResult]) -> str:
     return answer
 
 
+_REEXAM_NAME_KEYS = {
+    "item_name",
+    "itemname",
+    "product_name",
+    "prdlst_nm",
+    "품목명",
+}
+_REEXAM_DATE_KEYS = {
+    "reexam_date",
+    "reexamination_date",
+    "reexam_period",
+    "재심사기간",
+}
+_REEXAM_TARGET_KEYS = {
+    "reexam_target",
+    "reexamination_target",
+    "재심사대상",
+}
+_REEXAM_ENTITY_ALIASES: dict[str, tuple[str, ...]] = {
+    "리바로": ("리바로", "livalo"),
+    "리바로젯": ("리바로젯", "livalozet"),
+    "리피토": ("리피토", "lipitor"),
+    "아토젯": ("아토젯", "atozet"),
+}
+_DATE_TOKEN_RE = re.compile(r"(20\d{2})[-./](\d{1,2})[-./](\d{1,2})")
+
+
+def _apply_reexamination_surface(
+    answer: str,
+    *,
+    question: str,
+    results: Sequence[SourceResult],
+    state: SessionState | None,
+    observed_on: date,
+) -> str:
+    if "재심사" not in question:
+        return answer
+    primary = (state.primary_entity if state else None) or _reexamination_subject(question)
+    if not primary:
+        return answer
+    records = _reexamination_records(results)
+    primary_records = [record for record in records if _same_product(record["name"], primary)]
+    if not primary_records:
+        return answer
+
+    primary_record = primary_records[0]
+    primary_statement = _reexamination_statement(
+        primary,
+        primary_record,
+        observed_on=observed_on,
+    )
+    related_records = [record for record in records if record is not primary_record]
+    related_statements = [
+        _reexamination_statement(record["name"], record, observed_on=observed_on)
+        for record in related_records
+        if record.get("date") or _is_explicit_not_subject(str(record.get("target") or ""))
+    ]
+
+    known_names = tuple(str(record["name"]) for record in records)
+    remaining = _without_model_reexamination_claims(answer, known_names)
+    blocks = ["## 핵심 답", primary_statement]
+    if related_statements:
+        blocks.extend(("## 관련 제품", "\n".join(f"- {item}" for item in related_statements)))
+    if remaining:
+        if remaining.startswith("## "):
+            blocks.append(remaining)
+        else:
+            blocks.extend(("## 근거와 맥락", remaining))
+    return "\n\n".join(blocks)
+
+
+def _reexamination_prompt_contract(
+    question: str,
+    results: Sequence[SourceResult],
+    *,
+    state: SessionState | None,
+    observed_on: date,
+) -> dict[str, Any]:
+    if "재심사" not in question:
+        return {}
+    primary = (state.primary_entity if state else None) or _reexamination_subject(question)
+    if not primary:
+        return {}
+    records = _reexamination_records(results)
+    if not records:
+        return {}
+    return {
+        "primary_entity": primary,
+        "as_of_date": observed_on.isoformat(),
+        "primary_must_be_answered_first": True,
+        "related_products_use_separate_section": True,
+        "missing_date_does_not_mean_elapsed": True,
+        "records": records,
+    }
+
+
+def _reexamination_subject(question: str) -> str | None:
+    normalized = " ".join(question.split())
+    for canonical, aliases in _REEXAM_ENTITY_ALIASES.items():
+        if any(alias.casefold() in normalized.casefold() for alias in aliases):
+            return canonical
+    match = re.search(r"([가-힣A-Za-z0-9+._-]{2,40})(?:의)?\s*재심사", normalized)
+    return match.group(1) if match else None
+
+
+def _reexamination_records(results: Sequence[SourceResult]) -> list[dict[str, str]]:
+    records: list[dict[str, str]] = []
+    for result in results:
+        if result.source != "nedrug" or result.status != "ok":
+            continue
+        for item in _nested_mappings(result.payload):
+            lowered = {str(key).casefold(): value for key, value in item.items()}
+            name = _first_mapping_value(lowered, _REEXAM_NAME_KEYS)
+            if not name:
+                continue
+            date_value = _first_mapping_value(lowered, _REEXAM_DATE_KEYS)
+            target = _first_mapping_value(lowered, _REEXAM_TARGET_KEYS)
+            records.append(
+                {
+                    "name": name,
+                    "date": date_value or "",
+                    "target": target or "",
+                }
+            )
+    deduplicated: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for record in records:
+        identity = (record["name"], record["date"], record["target"])
+        if identity not in seen:
+            seen.add(identity)
+            deduplicated.append(record)
+    return deduplicated
+
+
+def _nested_mappings(value: Any) -> tuple[Mapping[str, Any], ...]:
+    if isinstance(value, Mapping):
+        children = tuple(
+            nested
+            for item in value.values()
+            for nested in _nested_mappings(item)
+        )
+        return (value, *children)
+    if isinstance(value, (list, tuple)):
+        return tuple(
+            nested
+            for item in value
+            for nested in _nested_mappings(item)
+        )
+    return ()
+
+
+def _first_mapping_value(
+    mapping: Mapping[str, Any],
+    keys: set[str],
+) -> str | None:
+    for key in keys:
+        value = mapping.get(key)
+        if value not in (None, ""):
+            return str(value).strip()
+    return None
+
+
+def _same_product(item_name: str, requested: str) -> bool:
+    item = re.sub(r"\s+", "", item_name).casefold()
+    requested_folded = re.sub(r"\s+", "", requested).casefold()
+    aliases = next(
+        (
+            values
+            for canonical, values in _REEXAM_ENTITY_ALIASES.items()
+            if requested_folded == canonical.casefold()
+            or requested_folded in {value.casefold() for value in values}
+        ),
+        (requested,),
+    )
+    for alias in aliases:
+        normalized = re.sub(r"\s+", "", alias).casefold()
+        if item == normalized:
+            return True
+        if item.startswith(normalized):
+            suffix = item[len(normalized) :]
+            if suffix.startswith(("정", "캡슐", "주", "액", "시럽", "서방")):
+                return True
+    return False
+
+
+def _is_explicit_not_subject(value: str) -> bool:
+    normalized = re.sub(r"\s+", "", value).casefold()
+    return any(marker in normalized for marker in ("대상아님", "비대상", "notsubject"))
+
+
+def _reexamination_statement(
+    label: str,
+    record: Mapping[str, str],
+    *,
+    observed_on: date,
+) -> str:
+    date_value = str(record.get("date") or "").strip()
+    target = str(record.get("target") or "").strip()
+    if date_value:
+        dates = [_parsed_date(match) for match in _DATE_TOKEN_RE.finditer(date_value)]
+        dates = [value for value in dates if value is not None]
+        if dates and dates[-1] < observed_on:
+            return (
+                f"{label}의 재심사 기간은 {date_value}였으며 종료일 "
+                f"{dates[-1].isoformat()}은 이미 경과했습니다. [출처: 식품의약품안전처]"
+            )
+        end_clause = f"이며 종료일은 {dates[-1].isoformat()}입니다" if dates else "입니다"
+        return (
+            f"{label}의 재심사 기간은 {date_value}{end_clause}. "
+            "[출처: 식품의약품안전처]"
+        )
+    if _is_explicit_not_subject(target):
+        return f"{label}는 현재 재심사 대상이 아닙니다. [출처: 식품의약품안전처]"
+    return (
+        f"식품의약품안전처 품목 자료에서 {label}의 재심사 기간을 확인할 수 없습니다. "
+        "재심사 날짜 부재만으로 기간 경과를 뜻하지는 않습니다. [출처: 식품의약품안전처]"
+    )
+
+
+def _parsed_date(match: re.Match[str]) -> date | None:
+    try:
+        return date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    except ValueError:
+        return None
+
+
+def _without_model_reexamination_claims(
+    answer: str,
+    product_names: Sequence[str],
+) -> str:
+    kept: list[str] = []
+    for line in answer.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("##"):
+            if stripped != "## 핵심 답":
+                kept.append(stripped)
+            continue
+        reexamination_status_claim = (
+            "재심사" in stripped
+            or (
+                any(marker in stripped for marker in ("끝났", "경과", "종료", "대상"))
+                and ("기간" in stripped or any(name in stripped for name in product_names))
+            )
+        )
+        if reexamination_status_claim:
+            continue
+        kept.append(stripped)
+    return "\n".join(kept)
+
+
 def _apply_active_kr_clinical_empty_surface(
     answer: str,
     *,
@@ -1296,7 +1580,7 @@ def _apply_active_kr_clinical_empty_surface(
     if _active_kr_clinical_subset_state(results) != "empty":
         return answer
 
-    notice = "확인된 국내 active 임상시험은 없었습니다."
+    notice = "확인된 국내 진행 중 임상시험은 없었습니다."
     body = answer.strip()
     if notice in body:
         return body
