@@ -6,7 +6,7 @@ import json
 import re
 from typing import Any
 
-from jw_chat_agent_poc.service.v4.contracts import PlannerOutput
+from jw_chat_agent_poc.service.v4.contracts import PlannerOutput, SourceResult
 from jw_chat_agent_poc.service.v4.lossless_contracts import (
     DeterministicRender,
     EvidenceRecord,
@@ -23,10 +23,16 @@ from jw_chat_agent_poc.service.v4.render_clinical import (
 from jw_chat_agent_poc.service.v4.render_common import table, text
 from jw_chat_agent_poc.service.v4.render_patent import render_patent
 from jw_chat_agent_poc.service.v4.render_policy import render_policy
+from jw_chat_agent_poc.service.v4.retrieval_events import (
+    classify_failure_signals,
+    public_retrieval_notice,
+    retrieval_event_from_result,
+)
 from jw_chat_agent_poc.service.v4.source_labels import (
     patent_lane_label,
     public_source_label,
 )
+from jw_chat_agent_poc.service.v4.source_tiers import source_tier
 
 
 def render_deterministic_facts(
@@ -36,16 +42,22 @@ def render_deterministic_facts(
     observed_on: date,
 ) -> DeterministicRender:
     profile = select_render_profile(plan, evidence_sets)
-    source_notices = (
+    source_notices, source_notice_bindings = (
         _source_failure_notices(evidence_sets)
         if _source_notices_enabled(plan, profile)
-        else ()
+        else ((), ())
     )
+    source_tiers = {
+        evidence_set.source: source_tier(plan, evidence_set.source)
+        for evidence_set in evidence_sets
+    }
     if profile == "market_analysis":
         return DeterministicRender(
             profile=profile,
             request_notice=_request_satisfaction_notice(plan, evidence_sets),
             source_notices=source_notices,
+            source_notice_bindings=source_notice_bindings,
+            source_tiers=source_tiers,
         )
 
     selected = _selected_set(profile, evidence_sets)
@@ -53,6 +65,8 @@ def render_deterministic_facts(
         return DeterministicRender(
             profile="market_analysis",
             source_notices=source_notices,
+            source_notice_bindings=source_notice_bindings,
+            source_tiers=source_tiers,
         )
     if profile in {"clinical_portfolio", "single_record_detail"}:
         nodes, required = render_clinical(
@@ -70,7 +84,7 @@ def render_deterministic_facts(
         for evidence_set in evidence_sets
         if evidence_set is not selected and evidence_set.records
     )
-    nodes = _insert_auxiliary_nodes(nodes, auxiliary_sets)
+    nodes = _insert_auxiliary_nodes(plan, nodes, auxiliary_sets)
     rendered_ids = tuple(
         dict.fromkeys(record_id for node in nodes for record_id in node.record_ids)
     )
@@ -125,10 +139,13 @@ def render_deterministic_facts(
         required_field_surface_rate=round(field_rate, 6),
         request_notice=_request_satisfaction_notice(plan, evidence_sets),
         source_notices=source_notices,
+        source_notice_bindings=source_notice_bindings,
+        source_tiers=source_tiers,
     )
 
 
 def _insert_auxiliary_nodes(
+    plan: PlannerOutput,
     primary_nodes: Sequence[RenderNode],
     auxiliary_sets: Sequence[EvidenceSet],
 ) -> list[RenderNode]:
@@ -151,7 +168,10 @@ def _insert_auxiliary_nodes(
 
     auxiliary_fact_nodes: list[RenderNode] = []
     auxiliary_news_nodes: list[RenderNode] = []
-    for evidence_set in auxiliary_sets:
+    for evidence_set in sorted(
+        auxiliary_sets,
+        key=lambda item: (source_tier(plan, item.source), item.source),
+    ):
         regular = tuple(
             record for record in evidence_set.records if not _is_news_record(record)
         )
@@ -248,22 +268,41 @@ def _source_refs(
 
 def _source_failure_notices(
     evidence_sets: Sequence[EvidenceSet],
-) -> tuple[str, ...]:
+) -> tuple[tuple[str, ...], tuple[dict[str, Any], ...]]:
     notices: list[str] = []
+    bindings: list[dict[str, Any]] = []
     for evidence_set in evidence_sets:
         label = public_source_label(evidence_set.source)
         for failure in evidence_set.item_failures:
-            reason = _failure_reason(failure)
-            if reason == "quota":
-                notice = f"{label} 조회는 제공자 사용량 한도 초과로 이번 답변에서 제외되었습니다."
-            elif reason == "timeout":
-                notice = f"{label} 조회는 응답 시간 내 도착하지 않아 이번 답변에서 제외되었습니다."
-            elif reason == "empty":
-                notice = f"{label} 조회는 연결 원천에서 결과 없음으로 확인되었습니다."
-            else:
-                notice = f"{label} 조회는 상류 오류로 이번 답변에서 제외되었습니다."
+            result = SourceResult(
+                source=evidence_set.source,
+                query=text(failure.get("query")) or "source retrieval",
+                status=_failure_source_status(failure),
+                notice=(
+                    text(failure.get("notice"))
+                    or text(failure.get("summary"))
+                    or None
+                ),
+            )
+            event = retrieval_event_from_result(result)
+            notice = public_retrieval_notice(event, label=label)
             notices.append(notice)
-    return tuple(dict.fromkeys(notices))
+            bindings.append(
+                {
+                    "record_id": event.record_id,
+                    "notice": notice,
+                    "reason_code": event.reason_code,
+                    "tool": event.tool,
+                }
+            )
+    return tuple(dict.fromkeys(notices)), tuple(bindings)
+
+
+def _failure_source_status(failure: Mapping[str, Any]) -> str:
+    return classify_failure_signals(
+        (text(failure.get("status")),),
+        " ".join(text(failure.get(key)) for key in ("notice", "summary")),
+    )
 
 
 def _source_notices_enabled(plan: PlannerOutput, profile: RenderProfile) -> bool:
@@ -284,23 +323,6 @@ def _source_notices_enabled(plan: PlannerOutput, profile: RenderProfile) -> bool
             "reimbursement",
         )
     )
-
-
-def _failure_reason(failure: Mapping[str, Any]) -> str:
-    status = text(failure.get("status")).casefold()
-    detail = " ".join(
-        text(failure.get(key)).casefold() for key in ("notice", "summary")
-    )
-    if status == "429" or any(
-        token in detail
-        for token in ("quota", "usage limit", "usage_limit", "plan's set usage", "사용량")
-    ):
-        return "quota"
-    if status == "timeout" or "timed out" in detail or "timeout" in detail:
-        return "timeout"
-    if status in {"empty", "no_data"}:
-        return "empty"
-    return "error"
 
 
 def select_render_profile(

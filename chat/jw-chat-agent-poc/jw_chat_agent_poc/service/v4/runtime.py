@@ -4,8 +4,11 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
+from datetime import timedelta
 import inspect
+from hashlib import sha256
 import logging
+import os
 import re
 import threading
 from types import SimpleNamespace
@@ -15,6 +18,7 @@ from uuid import uuid4
 
 from jw_chat_agent_poc.service.conversation import ConversationTurn
 from jw_chat_agent_poc.service.v4.adapters import build_source_adapters
+from jw_chat_agent_poc.service.v4.claim_ir import classify_answer_claims
 from jw_chat_agent_poc.service.v4.contracts import (
     SOURCE_NAMES,
     EvidenceEnvelope,
@@ -41,6 +45,10 @@ from jw_chat_agent_poc.service.v4.lossless_spine import (
     deterministic_fact_text,
 )
 from jw_chat_agent_poc.service.v4.planner import V4Planner
+from jw_chat_agent_poc.service.v4.retrieval_events import (
+    retrieval_event_from_result,
+    utc_now,
+)
 from jw_chat_agent_poc.service.v4.session_state import SessionState, SessionStateStore
 from jw_chat_agent_poc.service.v4.synthesizer import SynthesisOutcome, V4Synthesizer
 from jw_chat_agent_poc.service.v4.shadow import (
@@ -51,6 +59,12 @@ from jw_chat_agent_poc.service.v4.shadow import (
 from jw_chat_agent_poc.service.v4.source_labels import (
     SOURCE_LABELS as _PUBLIC_SOURCE,
 )
+from jw_chat_agent_poc.service.v4.source_tiers import (
+    entity_completion_rows,
+    fan_out_tier_zero_queries,
+    tier_funnel,
+)
+from jw_chat_agent_poc.service.v4.surface_binding import sanitize_bound_surface
 from jw_chat_agent_poc.service.v4.time_context import current_kst_date
 
 
@@ -115,6 +129,7 @@ class V4Runtime:
     ) -> V4Answer:
         started = time.monotonic()
         deadline = started + self._total_timeout_s
+        deadline_at = utc_now() + timedelta(seconds=self._total_timeout_s)
         selected_turns = tuple(turns)[-10:]
         session_id = conversation_id or uuid4().hex
         session_state = self._state_store.load(session_id) if self._state_store is not None else None
@@ -146,6 +161,7 @@ class V4Runtime:
         plan = _bind_always_on_mart_query(planner_outcome.plan, question)
         plan = _bind_session_state_contract(plan, question, session_state)
         plan = _preserve_period_in_answer_queries(plan)
+        plan = fan_out_tier_zero_queries(plan)
         _emit_progress(
             progress_callback,
             "질문 해석",
@@ -473,6 +489,97 @@ class V4Runtime:
             request_satisfaction_mode=request_satisfaction_mode,
         )
         final_text = composition.text
+        completed_at = utc_now()
+        retrieval_events = tuple(
+            retrieval_event_from_result(
+                result,
+                entity_id=_result_entity_id(plan, result),
+                completed_at=completed_at,
+                deadline_at=deadline_at,
+            )
+            for result in results
+        )
+        entity_completion = entity_completion_rows(plan, results)
+        final_text, entity_surface_trace = _inject_entity_completion_surface(
+            final_text,
+            entity_completion,
+        )
+        final_text, surface_binding_trace = sanitize_bound_surface(
+            "\n".join(
+                (
+                    question,
+                    *plan.requested_answer_shape.entities,
+                )
+            ),
+            final_text,
+            evidence_sets,
+            retrieval_events,
+        )
+        claim_ir_input_sha256 = sha256(final_text.encode("utf-8")).hexdigest()
+        claim_ir_enabled = _claim_ir_shadow_enabled()
+        if claim_ir_enabled:
+            try:
+                claim_classification = classify_answer_claims(final_text, evidence_sets)
+                classifier_output_sha256 = sha256(
+                    claim_classification.answer.encode("utf-8")
+                ).hexdigest()
+                classifier_attempted_mutation = (
+                    claim_classification.answer_mutation
+                    or classifier_output_sha256 != claim_ir_input_sha256
+                )
+                claim_ir_trace = {
+                    "enabled": True,
+                    "status": (
+                        "contract_violation"
+                        if classifier_attempted_mutation
+                        else "classified"
+                    ),
+                    # This is the observed answer-path result. The classifier's
+                    # attempted mutation is retained separately for diagnostics.
+                    "answer_mutation": False,
+                    "classifier_attempted_mutation": classifier_attempted_mutation,
+                    "input_answer_sha256": claim_ir_input_sha256,
+                    "output_answer_sha256": claim_ir_input_sha256,
+                    "classifier_output_answer_sha256": classifier_output_sha256,
+                    "claim_ir": [
+                        claim.model_dump(mode="json")
+                        for claim in claim_classification.claim_ir
+                    ],
+                    "recomputation_evidence": list(
+                        claim_classification.recomputation_evidence
+                    ),
+                    "density_metrics": {
+                        **claim_classification.density_metrics,
+                        "gate_deletion_rate": _gate_deletion_rate(
+                            synthesis.text,
+                            gated.text,
+                        ),
+                    },
+                }
+            except Exception as exc:  # noqa: BLE001 - SHADOW failure is observable, never mutating
+                LOGGER.exception("v4 claim IR shadow classification failed")
+                claim_ir_trace = {
+                    "enabled": True,
+                    "status": "error",
+                    "answer_mutation": False,
+                    "input_answer_sha256": claim_ir_input_sha256,
+                    "output_answer_sha256": claim_ir_input_sha256,
+                    "error_type": type(exc).__name__,
+                    "claim_ir": [],
+                    "recomputation_evidence": [],
+                    "density_metrics": {},
+                }
+        else:
+            claim_ir_trace = {
+                "enabled": False,
+                "status": "disabled",
+                "answer_mutation": False,
+                "input_answer_sha256": claim_ir_input_sha256,
+                "output_answer_sha256": claim_ir_input_sha256,
+                "claim_ir": [],
+                "recomputation_evidence": [],
+                "density_metrics": {},
+            }
         if grounding_future is None:
             grounding_shadow = {
                 "mode": "SHADOW_RECORD_ONLY",
@@ -578,6 +685,34 @@ class V4Runtime:
                     for evidence_set in evidence_sets
                 ],
             },
+            "surface_binding": surface_binding_trace,
+            "retrieval_events": [
+                event.model_dump(mode="json") for event in retrieval_events
+            ],
+            "source_tier_funnel": tier_funnel(
+                plan,
+                results,
+                evidence_sets,
+                tuple(
+                    record_id
+                    for node in deterministic_render.nodes
+                    for record_id in node.record_ids
+                ),
+                tuple(
+                    argument["record_id"]
+                    for claim in claim_ir_trace["claim_ir"]
+                    for argument in claim["arguments"]
+                ),
+            ),
+            "entity_completion": {
+                "rows": list(entity_completion.rows),
+                "scope_notice": entity_completion.scope_notice,
+                "surface": entity_surface_trace,
+                "snapshot_sha256": sha256(
+                    repr(entity_completion.rows).encode("utf-8")
+                ).hexdigest(),
+            },
+            "claim_ir_shadow": claim_ir_trace,
             "typed_grounding_shadow": grounding_shadow,
         }
         source_names = [
@@ -1013,6 +1148,84 @@ def _execute_with_trace(executor: Any, plan: Any, **kwargs: Any) -> Any:
             "quorum_fire_ms": None,
             "tools": [],
         },
+    )
+
+
+def _claim_ir_shadow_enabled() -> bool:
+    value = os.environ.get("CHAT_CLAIM_IR_SHADOW", "true").strip().casefold()
+    return value not in {"0", "false", "off", "disabled", "no"}
+
+
+def _result_entity_id(plan: Any, result: SourceResult) -> str | None:
+    entities = tuple(getattr(plan.requested_answer_shape, "entities", ()))
+    matched = [
+        entity
+        for entity in sorted(entities, key=len, reverse=True)
+        if entity.casefold() in result.query.casefold()
+    ]
+    return matched[0] if len(matched) == 1 else None
+
+
+def _inject_entity_completion_surface(
+    answer: str,
+    completion: Any,
+) -> tuple[str, dict[str, Any]]:
+    rows = tuple(completion.rows)
+    if len(rows) < 2 or all(row["status"] == "COMPLETE" for row in rows):
+        return answer, {"injected": False, "row_count": len(rows)}
+    status_labels = {
+        "COMPLETE": "완료",
+        "PARTIAL": "부분 수집",
+        "FAILED": "미도착",
+    }
+    table_lines = [
+        "## 조회 대상별 수집 상태",
+        "| 대상 | 상태 |",
+        "| --- | --- |",
+        *(
+            f"| {row['entity']} | {status_labels[row['status']]} |"
+            for row in rows
+        ),
+    ]
+    if completion.scope_notice:
+        table_lines.append(completion.scope_notice)
+    block = "\n".join(table_lines)
+    insertion = re.search(
+        r"(?m)^##\s+(?:근거와 맥락|근거|종합 인사이트|해석 상한|미확인 요소|출처)\s*$",
+        answer,
+    )
+    if insertion is None:
+        updated = f"{answer.rstrip()}\n\n{block}".strip()
+    else:
+        updated = (
+            f"{answer[:insertion.start()].rstrip()}\n\n{block}\n\n"
+            f"{answer[insertion.start():].lstrip()}"
+        ).strip()
+    return updated, {
+        "injected": True,
+        "row_count": len(rows),
+        "incomplete_count": sum(row["status"] != "COMPLETE" for row in rows),
+    }
+
+
+def _gate_deletion_rate(before: str, after: str) -> float:
+    before_count = len(tuple(_surface_sentences(before)))
+    after_count = len(tuple(_surface_sentences(after)))
+    if before_count == 0:
+        return 0.0
+    return round(max(0, before_count - after_count) / before_count, 6)
+
+
+def _surface_sentences(value: str) -> tuple[str, ...]:
+    prose = " ".join(
+        line.strip()
+        for line in value.splitlines()
+        if line.strip() and not line.lstrip().startswith(("#", "|", "```"))
+    )
+    return tuple(
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?。])\s+", prose)
+        if sentence.strip()
     )
 
 
@@ -1532,7 +1745,11 @@ def _tag_absence_context(
     filtered, usable = _absence_context_payload(payload, request)
     return result.model_copy(
         update={
-            "status": result.status if usable else "empty",
+            "status": (
+                result.status
+                if result.status != "ok"
+                else ("ok" if usable else "empty")
+            ),
             "payload": {
                 **filtered,
                 "absence_context": {
@@ -1588,7 +1805,11 @@ def _tag_gap_result(result: SourceResult, request: Mapping[str, Any]) -> SourceR
     filtered_payload, usable = _official_gap_payload(payload)
     return result.model_copy(
         update={
-            "status": result.status if usable else "empty",
+            "status": (
+                result.status
+                if result.status != "ok"
+                else ("ok" if usable else "empty")
+            ),
             "payload": {
                 **filtered_payload,
                 "gap_fill": {

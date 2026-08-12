@@ -33,6 +33,7 @@ ACTIVE_CLINICAL_STATUSES = {
     "ENROLLING_BY_INVITATION",
     "NOT_YET_RECRUITING",
 }
+MIN_ROWS_FOR_AGGREGATION = 3
 
 
 def render_clinical(
@@ -138,7 +139,10 @@ def render_clinical(
         ),
         text=f"{table_title}\n{table(headers, rows)}",
     )
-    nodes = [scope, summary, groups, record_table]
+    nodes = [scope]
+    if len(records) >= MIN_ROWS_FOR_AGGREGATION:
+        nodes.extend((summary, groups))
+    nodes.append(record_table)
     card_records = _major_clinical_records(records)
     if card_records:
         cards = []

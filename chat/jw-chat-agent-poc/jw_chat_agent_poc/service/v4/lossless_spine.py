@@ -116,6 +116,8 @@ def compose_lossless_answer(
         "request_notice_observed": bool(rendered.request_notice),
         "request_notice_injected": False,
         "source_notices_observed": list(rendered.source_notices),
+        "source_notice_bindings": list(rendered.source_notice_bindings),
+        "source_tiers": dict(rendered.source_tiers),
         "source_notices_injected": False,
         "profile": rendered.profile,
         "answer_mutation": False,

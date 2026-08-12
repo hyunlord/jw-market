@@ -74,6 +74,8 @@ class DeterministicRender(_StrictModel):
     required_field_surface_rate: float = 1.0
     request_notice: str | None = None
     source_notices: tuple[str, ...] = ()
+    source_notice_bindings: tuple[dict[str, Any], ...] = ()
+    source_tiers: dict[str, int] = Field(default_factory=dict)
 
 
 class CompositionResult(_StrictModel):

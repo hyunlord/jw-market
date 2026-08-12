@@ -152,7 +152,16 @@ class AbsenceConfirmation(_StrictModel):
 class SourceResult(_StrictModel):
     source: SourceName
     query: str
-    status: Literal["ok", "empty", "error", "timeout"]
+    status: Literal[
+        "ok",
+        "empty",
+        "error",
+        "timeout",
+        "quota",
+        "upstream",
+        "parse_error",
+        "deadline_exceeded",
+    ]
     payload: Any = None
     citations: tuple[Citation, ...] = ()
     elapsed_ms: float = 0.0

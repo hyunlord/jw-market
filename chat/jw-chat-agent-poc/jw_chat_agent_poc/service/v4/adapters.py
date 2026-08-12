@@ -27,7 +27,12 @@ from jw_chat_agent_poc.service.v4.clinical import (
     compile_clinical_query,
     concept_from_query,
 )
+from jw_chat_agent_poc.service.v4.clinical_query_policy import (
+    query_entity_candidates,
+    resolver_first_clinical_concepts,
+)
 from jw_chat_agent_poc.service.v4.patent import build_patent_lane_payload
+from jw_chat_agent_poc.service.v4.retrieval_events import classify_failure_signals
 from jw_chat_agent_poc.service.v4.time_context import current_kst_date
 
 
@@ -860,7 +865,16 @@ def build_source_adapters() -> dict[SourceName, Any]:
             for call, payload in zip(calls, payloads, strict=True)
             if call.status not in {"error", "no_data", "unsupported"} and _has_payload(payload)
         ]
-        status = "ok" if usable else "empty"
+        notice = None if usable else _first_notice(calls)
+        if usable:
+            status = "ok"
+        elif not calls:
+            status = "empty"
+        else:
+            status = classify_failure_signals(
+                tuple(str(call.status or "") for call in calls),
+                notice or "",
+            )
         return SourceResult(
             source=source,
             query=query,
@@ -877,7 +891,7 @@ def build_source_adapters() -> dict[SourceName, Any]:
                 )
                 for call in usable
             ),
-            notice=None if status == "ok" else _first_notice(calls),
+            notice=notice,
         )
 
     def resolved(query: str):
@@ -885,6 +899,23 @@ def build_source_adapters() -> dict[SourceName, Any]:
             return dependencies.resolver.resolve(_base_query(query), allow_default=False)
         except LookupError:
             return None
+
+    def resolved_entities(query: str) -> tuple[Any, ...]:
+        found: list[Any] = []
+        seen: set[tuple[str, tuple[str, ...]]] = set()
+        for candidate in query_entity_candidates(_base_query(query)):
+            try:
+                resolution = dependencies.resolver.resolve(candidate, allow_default=False)
+            except LookupError:
+                continue
+            key = (
+                str(resolution.canonical_brand),
+                tuple(str(value) for value in resolution.molecule_en),
+            )
+            if key not in seen:
+                seen.add(key)
+                found.append(resolution)
+        return tuple(found)
 
     def ingredient_brand_resolutions(query: str) -> tuple[Any, ...]:
         search_term = _ingredient_search_term(query)
@@ -1113,58 +1144,85 @@ def build_source_adapters() -> dict[SourceName, Any]:
             return external_calls(
                 "clinicaltrials", query, [external.clinicaltrials_study_details(nct_id)]
             )
-        resolution = resolved(query)
-        if concept is not None:
-            concepts = (concept,)
-        elif resolution is not None and resolution.molecule_en:
-            molecules = tuple(dict.fromkeys(str(value) for value in resolution.molecule_en))
-            combined = len(molecules) > 1 and bool(
-                re.search(
-                    r"(?:복합|조합|combination|\band\b|\+|(?:^|\s)(?:및|와|과)(?:\s|$))",
-                    query,
-                    re.IGNORECASE,
-                )
-            )
-            concepts = (
-                (
-                    ClinicalTrialConcept(
-                        ingredients=molecules,
-                        brands=(str(resolution.canonical_brand),),
-                        search_area="intervention",
-                        match="both",
-                        source_queries=(query,),
-                    ),
-                )
-                if combined
-                else tuple(
-                    ClinicalTrialConcept(
-                        ingredients=(molecule,),
-                        brands=(str(resolution.canonical_brand),),
-                        search_area="intervention",
-                        match="any",
-                        source_queries=(query,),
-                    )
-                    for molecule in molecules
-                )
-            )
-        else:
+        resolutions = resolved_entities(query)
+        resolution = resolved(query) if not resolutions else None
+        if concept is None and resolution is None and not resolutions:
             term, query_type = _clinical_query(query)
-            concepts = (
-                concept_from_query(
-                    query,
-                    search_area=query_type,
-                    matched_terms=(term,),
-                ),
+            concept = concept_from_query(
+                query,
+                search_area=query_type,
+                matched_terms=(term,),
+            )
+        decisions = tuple(
+            resolver_first_clinical_concepts(
+                query,
+                candidate_resolution,
+                concept,
+            )
+            for candidate_resolution in resolutions or (resolution,)
+        )
+        if not decisions:
+            decisions = (resolver_first_clinical_concepts(query, None, concept),)
+        concepts = tuple(
+            dict(
+                (
+                    json.dumps(
+                        compile_clinical_query(selected).parameters,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    selected,
+                )
+                for decision in decisions
+                for selected in decision.concepts
+            ).values()
+        )
+        blocked_reason = next(
+            (decision.blocked_reason for decision in decisions if decision.blocked_reason),
+            None,
+        )
+        if not concepts:
+            return SourceResult(
+                source="clinicaltrials",
+                query=query,
+                status="upstream",
+                payload={
+                    "calls": [],
+                    "query_policy": {
+                        "resolver_used": any(item.resolver_used for item in decisions),
+                        "resolution_count": len(resolutions) or int(resolution is not None),
+                        "planner_supplemented": any(
+                            item.planner_supplemented for item in decisions
+                        ),
+                        "blocked_reason": blocked_reason,
+                    },
+                },
+                notice=blocked_reason,
             )
         calls = [
             _clinical_lossless_external_call(
                 query,
-                concept,
+                selected_concept,
                 timeout_s=float(external.timeout_s),
             )
-            for concept in concepts
+            for selected_concept in concepts
         ]
-        return external_calls("clinicaltrials", query, calls)
+        result = external_calls("clinicaltrials", query, calls)
+        return result.model_copy(
+            update={
+                "payload": {
+                    **(result.payload if isinstance(result.payload, dict) else {}),
+                    "query_policy": {
+                        "resolver_used": any(item.resolver_used for item in decisions),
+                        "resolution_count": len(resolutions) or int(resolution is not None),
+                        "planner_supplemented": any(
+                            item.planner_supplemented for item in decisions
+                        ),
+                        "blocked_reason": blocked_reason,
+                    },
+                }
+            }
+        )
 
     def patent(query: str) -> SourceResult:
         base = _base_query(query)

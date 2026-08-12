@@ -15,6 +15,7 @@ from jw_chat_agent_poc.service.v4.contracts import (
     SourceName,
     SourceResult,
 )
+from jw_chat_agent_poc.service.v4.source_tiers import source_tier
 
 
 SourceAdapter = Callable[..., SourceResult]
@@ -88,6 +89,10 @@ class ParallelSourceExecutor:
         progress_callback: SourceProgressCallback | None = None,
     ) -> ExecutionOutcome:
         started = time.monotonic()
+        deadline = started + min(
+            self._total_timeout_s,
+            total_timeout_s if total_timeout_s is not None else self._total_timeout_s,
+        )
         output: list[SourceResult | None] = []
         pending_specs: list[
             tuple[int, SourceName, str, ClinicalTrialConcept | None]
@@ -164,10 +169,15 @@ class ParallelSourceExecutor:
             Future[SourceResult],
             tuple[int, SourceName, str, str, float],
         ] = {}
-        for index, source, query, clinical_concept in pending_specs:
+        for index, source, query, clinical_concept in sorted(
+            pending_specs,
+            key=lambda item: (source_tier(plan, item[1]), item[0]),
+        ):
             submitted = time.monotonic()
             cache_query = _cache_query(query, clinical_concept)
-            futures[pool.submit(self._run, source, query, clinical_concept)] = (
+            futures[
+                pool.submit(self._run, source, query, clinical_concept, deadline)
+            ] = (
                 index,
                 source,
                 query,
@@ -184,12 +194,12 @@ class ParallelSourceExecutor:
                 "notice": None,
                 "exclusion_reason": None,
                 "soft_deadline_exempt": source in exempt_sources,
+                "source_tier": source_tier(plan, source),
+                "deadline_remaining_ms_at_submit": max(
+                    0.0,
+                    (deadline - submitted) * 1000,
+                ),
             }
-
-        deadline = started + min(
-            self._total_timeout_s,
-            total_timeout_s if total_timeout_s is not None else self._total_timeout_s,
-        )
         try:
             remaining = set(futures)
             while remaining:
@@ -329,8 +339,16 @@ class ParallelSourceExecutor:
         source: SourceName,
         query: str,
         clinical_concept: ClinicalTrialConcept | None,
+        deadline: float,
     ) -> SourceResult:
         started = time.monotonic()
+        if deadline - started < 0.05:
+            return SourceResult(
+                source=source,
+                query=query,
+                status="deadline_exceeded",
+                notice="남은 응답 예산이 최소 파싱 시간보다 짧아 조회하지 않음",
+            )
         try:
             result = (
                 self._adapters[source](query, concept=clinical_concept)
@@ -341,7 +359,7 @@ class ParallelSourceExecutor:
             return SourceResult(
                 source=source,
                 query=query,
-                status="error",
+                status="upstream",
                 elapsed_ms=(time.monotonic() - started) * 1000,
                 notice=f"{type(exc).__name__}: {exc}",
             )
@@ -399,8 +417,12 @@ def _result_exclusion_reason(result: SourceResult) -> str | None:
         for token in ("quota", "usage limit", "usage_limit", "plan's set usage", "사용량")
     ):
         return "provider_quota"
-    if result.status == "timeout":
+    if result.status == "quota":
+        return "provider_quota"
+    if result.status in {"timeout", "deadline_exceeded"}:
         return "upstream_timeout"
     if result.status == "empty":
         return "empty_result"
+    if result.status == "parse_error":
+        return "parse_error"
     return "upstream_error"

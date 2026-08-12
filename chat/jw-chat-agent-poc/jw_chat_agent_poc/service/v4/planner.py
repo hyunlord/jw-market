@@ -25,6 +25,7 @@ from jw_chat_agent_poc.service.v4.clinical import (
     compile_clinical_query,
     concept_from_query,
 )
+from jw_chat_agent_poc.service.v4.clinical_query_policy import query_entity_candidates
 from jw_chat_agent_poc.service.v4.llm import CompletionResult, GenOSV4Client
 from jw_chat_agent_poc.service.v4.session_state import SessionState
 from jw_chat_agent_poc.service.v4.time_context import (
@@ -537,6 +538,7 @@ def _requested_answer_shape(question: str) -> RequestedAnswerShape:
     if any(marker in lowered for marker in ("국내", "한국", "korea")):
         entities.append("country:KR")
     entities.extend(_NCT_ANCHOR_RE.findall(question.upper()))
+    entities.extend(query_entity_candidates(question))
     subject_match = re.search(
         r"(?P<entity>[가-힣A-Za-z0-9_-]{2,40})\s*(?:의\s*)?"
         r"(?:API|원료의약품|원료|매출|점유율|특허|임상|급여)",
