@@ -241,6 +241,7 @@ class V4Synthesizer:
                 usable,
                 question=plan.resolved_question,
             )
+            answer = _append_comparison_observations(answer, usable)
         elif _RETRYABLE_INTERNAL_RE.search(answer):
             answer = _replace_internal_blocks(answer, usable)
 
@@ -522,6 +523,28 @@ def _synthesis_messages(
 
 def _comparison_facts(results: Sequence[SourceResult]) -> dict[str, Any]:
     return build_comparison_facts(results)
+
+
+def _append_comparison_observations(
+    answer: str,
+    results: Sequence[SourceResult],
+) -> str:
+    raw_sentences = _comparison_facts(results).get("observation_sentences")
+    if not isinstance(raw_sentences, list):
+        return answer
+    missing = [
+        sentence.strip()
+        for sentence in raw_sentences
+        if isinstance(sentence, str)
+        and sentence.strip()
+        and sentence.strip() not in answer
+    ]
+    if not missing:
+        return answer
+    observations = "\n".join(
+        f"{sentence} [출처: 내부 데이터마트]" for sentence in missing
+    )
+    return f"{answer.rstrip()}\n\n## 비교 관측\n{observations}"
 
 
 def _legacy_comparison_facts(results: Sequence[SourceResult]) -> dict[str, Any]:
@@ -1345,28 +1368,37 @@ def _apply_reexamination_surface(
 ) -> str:
     if "재심사" not in question:
         return answer
-    primary = (state.primary_entity if state else None) or _reexamination_subject(question)
+    primary = _reexamination_primary(question, state)
     if not primary:
         return answer
     records = _reexamination_records(results)
-    primary_records = [record for record in records if _same_product(record["name"], primary)]
-    if not primary_records:
+    if not records:
         return answer
-
-    primary_record = primary_records[0]
+    primary_records = [
+        record for record in records if _same_product(record["name"], primary)
+    ]
+    primary_record = primary_records[0] if primary_records else {
+        "name": primary,
+        "date": "",
+        "target": "",
+    }
     primary_statement = _reexamination_statement(
         primary,
         primary_record,
         observed_on=observed_on,
     )
-    related_records = [record for record in records if record is not primary_record]
+    related_records = [
+        record for record in records if not _same_product(record["name"], primary)
+    ]
     related_statements = [
         _reexamination_statement(record["name"], record, observed_on=observed_on)
         for record in related_records
         if record.get("date") or _is_explicit_not_subject(str(record.get("target") or ""))
     ]
 
-    known_names = tuple(str(record["name"]) for record in records)
+    known_names = tuple(
+        dict.fromkeys((primary, *(str(record["name"]) for record in records)))
+    )
     remaining = _without_model_reexamination_claims(answer, known_names)
     blocks = ["## 핵심 답", primary_statement]
     if related_statements:
@@ -1388,7 +1420,7 @@ def _reexamination_prompt_contract(
 ) -> dict[str, Any]:
     if "재심사" not in question:
         return {}
-    primary = (state.primary_entity if state else None) or _reexamination_subject(question)
+    primary = _reexamination_primary(question, state)
     if not primary:
         return {}
     records = _reexamination_records(results)
@@ -1402,6 +1434,15 @@ def _reexamination_prompt_contract(
         "missing_date_does_not_mean_elapsed": True,
         "records": records,
     }
+
+
+def _reexamination_primary(
+    question: str,
+    state: SessionState | None,
+) -> str | None:
+    return _reexamination_subject(question) or (
+        state.primary_entity if state else None
+    )
 
 
 def _reexamination_subject(question: str) -> str | None:

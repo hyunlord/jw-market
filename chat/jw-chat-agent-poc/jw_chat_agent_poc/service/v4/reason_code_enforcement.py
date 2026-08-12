@@ -29,7 +29,7 @@ _REASON_CODES = (
 )
 _TRANSFER_RE = re.compile(r"(?:이동|흡수|전환|잠식|대체)")
 _STRUCTURAL_COMMERCIAL_RE = re.compile(
-    r"(?:매출|점유율|성장|하락|감소|증가|처방|환자군|수요)"
+    r"(?:매출|점유율|비중|성장|하락|감소|증가|처방|환자군|수요)"
 )
 _STRUCTURAL_RELATION_RE = re.compile(
     r"(?:원인|영향|연관|때문|결과|기인|견인|압박|야기|유발|"

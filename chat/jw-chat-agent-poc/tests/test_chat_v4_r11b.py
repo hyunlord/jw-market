@@ -273,6 +273,20 @@ def test_r11b_structural_cross_brand_transfer_is_replaced_with_observation(
     assert len(repaired) >= len(answer) * 0.9
 
 
+def test_r11b_live_market_share_transfer_sentence_is_structurally_repaired() -> None:
+    answer = (
+        "결과적으로 리피토와 같은 기존 단일제 시장의 비중이 리바로젯을 "
+        "비롯한 복합제 시장으로 점진적으로 전환되는 흐름이 나타나고 있습니다."
+    )
+
+    repaired, trace = enforce_reason_codes(answer, (_comparison_result(),))
+
+    assert trace["UNSUPPORTED_TRANSFER_ATTRIBUTION"] == 1
+    assert "반대 방향의 변화가 관측됐습니다" in repaired
+    assert "직접 이동 여부는 현재 자료로 확인되지 않습니다" in repaired
+    assert len(repaired) >= len(answer) * 0.9
+
+
 @pytest.mark.parametrize(
     "answer",
     [
@@ -435,6 +449,66 @@ def test_r11b_reexamination_primary_entity_precedes_related_product() -> None:
     assert "리바로젯" in related
     assert "2029-12-31" in related
     assert "기간이 경과" not in core
+
+
+def test_r11b_explicit_reexamination_subject_overrides_stale_session_entity() -> None:
+    question = "재심사 언제 끝나? 리바로"
+    nedrug = SourceResult(
+        source="nedrug",
+        query="리바로젯 재심사",
+        status="ok",
+        payload={
+            "items": [
+                {
+                    "ITEM_NAME": "리바로젯정",
+                    "REEXAM_DATE": "2023-01-01~2029-12-31",
+                }
+            ]
+        },
+    )
+    stale_state = SessionState(
+        primary_entity="리바로젯",
+        canonical_entities=("리바로", "리바로젯"),
+    )
+
+    answer = V4Synthesizer(
+        _SynthClient("## 핵심 답\n리바로젯 재심사 기간은 2029년까지입니다.")
+    ).synthesize(
+        _plan(question),
+        (nedrug,),
+        (),
+        state=stale_state,
+    )
+
+    core, related = answer.split("## 관련 제품", 1)
+    assert "리바로의 재심사 기간을 확인할 수 없습니다" in core
+    assert "날짜 부재만으로 기간 경과를 뜻하지는 않습니다" in core
+    assert "리바로젯" not in core
+    assert "리바로젯" in related
+    assert "2029-12-31" in related
+
+
+def test_r11b_comparison_facts_survive_synthesis_transport_fallback() -> None:
+    class FailingSynthClient:
+        def complete(
+            self,
+            _messages: object,
+            *,
+            budget_s: float,
+            max_tokens: int,
+        ) -> str:
+            del budget_s, max_tokens
+            raise TimeoutError("synthetic transport timeout")
+
+    outcome = V4Synthesizer(FailingSynthClient()).synthesize_with_trace(
+        _plan("리바로젯과 리피토 매출 비교"),
+        (_comparison_result(),),
+        (),
+    )
+
+    assert outcome.trace["fallback_reason"] == "empty_or_transport_error"
+    assert "반대 방향의 변화가 관측됐습니다" in outcome.text
+    assert "직접 이동 여부는 현재 자료로 확인되지 않습니다" in outcome.text
 
 
 def test_r11b_missing_reexamination_fields_do_not_imply_not_subject_or_elapsed() -> None:
