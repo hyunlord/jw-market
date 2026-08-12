@@ -254,6 +254,69 @@ def test_r11_treatment_modality_transition_is_not_a_transfer_attribution() -> No
     assert trace["UNSUPPORTED_TRANSFER_ATTRIBUTION"] == 0
 
 
+def test_r11_commercial_prescription_transition_is_bounded_without_flow_evidence() -> None:
+    answer = (
+        "리바로젯의 매출 증가와 리피토의 매출 감소가 대칭적으로 나타나며, "
+        "이는 단일제에서 복합제로의 처방 전환 트렌드를 보여주는 것으로 해석될 수 있습니다."
+    )
+
+    repaired, trace = enforce_reason_codes(answer, (_mart_comparison(),))
+
+    assert "처방 전환 트렌드" not in repaired
+    assert "반대 방향의 변화가 관측됐습니다" in repaired
+    assert "직접 이동 여부는 현재 자료로 확인되지 않습니다" in repaired
+    assert trace["UNSUPPORTED_TRANSFER_ATTRIBUTION"] == 1
+
+
+def test_r11_commercial_prescription_demand_replacement_is_bounded() -> None:
+    answer = (
+        "리바로젯의 매출 증가는 리피토의 매출 감소와 맞물려, "
+        "리바로젯이 기존 리피토 처방 수요 일부를 대체했을 가능성을 시사합니다."
+    )
+
+    repaired, trace = enforce_reason_codes(answer, (_mart_comparison(),))
+
+    assert "처방 수요 일부를 대체" not in repaired
+    assert "반대 방향의 변화가 관측됐습니다" in repaired
+    assert "직접 이동 여부는 현재 자료로 확인되지 않습니다" in repaired
+    assert trace["UNSUPPORTED_TRANSFER_ATTRIBUTION"] == 1
+
+
+def test_r11_commercial_transition_repair_does_not_duplicate_existing_observation() -> None:
+    observation = (
+        "리바로젯은 +약 14억원, 리피토는 -약 12억원으로 반대 방향의 변화가 관측됐습니다. "
+        "증감 규모는 유사하지만, 환자·처방자 수준의 직접 이동 여부는 현재 자료로 확인되지 않습니다."
+    )
+    answer = (
+        "단일제에서 복합제로의 처방 전환 트렌드가 반영된 결과로 해석됩니다. "
+        f"{observation}"
+    )
+
+    repaired, trace = enforce_reason_codes(answer, (_mart_comparison(),))
+
+    assert repaired.count("반대 방향의 변화가 관측됐습니다") == 1
+    assert repaired.count("직접 이동 여부는 현재 자료로 확인되지 않습니다") == 1
+    assert trace["UNSUPPORTED_TRANSFER_ATTRIBUTION"] == 1
+
+
+def test_r11_clinical_prescription_switch_description_is_not_a_sales_attribution() -> None:
+    answer = "임상시험은 단일제에서 복합제로 처방을 전환했을 때의 LDL-C 변화를 평가했습니다."
+
+    repaired, trace = enforce_reason_codes(answer, ())
+
+    assert repaired == answer
+    assert trace["UNSUPPORTED_TRANSFER_ATTRIBUTION"] == 0
+
+
+def test_r11_clinical_prescription_switch_trend_is_not_a_sales_attribution() -> None:
+    answer = "임상시험은 처방 전환 추세에 따른 LDL-C 변화를 평가했습니다."
+
+    repaired, trace = enforce_reason_codes(answer, ())
+
+    assert repaired == answer
+    assert trace["UNSUPPORTED_TRANSFER_ATTRIBUTION"] == 0
+
+
 def test_r11_bounded_transfer_clause_does_not_waive_neighbor_overclaim() -> None:
     gated = apply_v4_gates(
         "리바로젯과 리피토 매출 비교",
@@ -534,6 +597,35 @@ def test_r11_absence_repair_preserves_grounded_neighbor_clause() -> None:
     assert gated.trace["reason_code_enforcement"]["ABSENCE_OVERCLAIM"] == 1
 
 
+@pytest.mark.parametrize("status", ["doc_not_found", "coverage_unknown"])
+def test_r11_unconfirmed_absence_cannot_imply_a_non_reimbursed_market(
+    status: str,
+) -> None:
+    answer = (
+        "급여 등재 여부는 확인되지 않으나 비급여 시장에서의 수요가 "
+        "클 것으로 예상됩니다."
+    )
+
+    gated = apply_v4_gates(
+        "마운자로 급여기준",
+        answer,
+        (_absence(status),),
+    )
+
+    assert "비급여 시장" not in gated.text
+    assert "비급여 여부를 확정할 수는 없습니다" in gated.text
+    assert gated.trace["reason_code_enforcement"]["ABSENCE_OVERCLAIM"] == 1
+
+
+def test_r11_generic_non_reimbursed_market_description_is_not_an_absence_claim() -> None:
+    answer = "국내 비급여 시장의 전체 규모는 별도 자료로 분석해야 합니다."
+
+    repaired, trace = enforce_reason_codes(answer, ())
+
+    assert repaired == answer
+    assert trace["ABSENCE_OVERCLAIM"] == 0
+
+
 @pytest.mark.parametrize(
     "leak",
     [
@@ -579,6 +671,21 @@ def test_r11_internal_scrubber_preserves_clean_comma_sentence() -> None:
 
     assert repaired == answer
     assert trace["INTERNAL_TOKEN_LEAK"] == 0
+
+
+def test_r11_parenthesized_raw_units_are_normalized_for_the_public_surface() -> None:
+    from jw_chat_agent_poc.service.v4.display import normalize_answer_surface
+
+    answer = "매출은 8587458961.25(KRW)이고 처방량은 15642402.69(Rx)입니다."
+
+    repaired, trace = normalize_answer_surface(answer)
+
+    assert "85.87억원" in repaired
+    assert "약 1,564만 Rx" in repaired
+    assert "8587458961.25" not in repaired
+    assert "15642402.69" not in repaired
+    assert trace["raw_won_values"] == 1
+    assert trace["rx_values"] == 1
 
 
 def test_r11_repeated_transfer_repairs_emit_one_observation() -> None:
@@ -664,6 +771,65 @@ def test_r11_comparison_facts_delta_is_allowed_by_numeric_copy_gate() -> None:
     assert "+13.54억원" in gated.text
     assert "-13.49억원" in gated.text
     assert gated.trace["mart_numeric_copy_only"]["blocked"] is False
+
+
+def test_r11_negative_comparison_delta_allows_unsigned_decrease_wording() -> None:
+    result = _negative_delta_result()
+
+    gated = apply_v4_gates(
+        "리바로 매출은 왜 줄었어?",
+        "리바로 매출은 89.29억원에서 85.87억원으로 3.42억원 감소했습니다.",
+        (result,),
+    )
+
+    assert "3.42억원 감소" in gated.text
+    assert "85.87억원 감소" not in gated.text
+    assert gated.trace["mart_numeric_copy_only"]["blocked"] is False
+
+
+def test_r11_negative_comparison_delta_does_not_authorize_unsigned_increase() -> None:
+    result = _negative_delta_result()
+
+    gated = apply_v4_gates(
+        "리바로 매출은 왜 줄었어?",
+        "리바로 매출은 89.29억원에서 85.87억원으로 3.42억원 증가했습니다.",
+        (result,),
+    )
+
+    assert "3.42억원 증가" not in gated.text
+    assert gated.trace["mart_numeric_copy_only"]["blocked"] is True
+
+
+def _negative_delta_result() -> SourceResult:
+    return SourceResult(
+        source="mart",
+        query="리바로 매출 원인",
+        status="ok",
+        payload={
+            "calls": [
+                {
+                    "entity_bundle": {
+                        "anchor": "리바로",
+                        "period_start": "2025-06",
+                        "period_end": "2026-06",
+                        "same_period_and_denominator": True,
+                        "members": [
+                            {
+                                "brand": "리바로",
+                                "role": "target",
+                                "render_data": {
+                                    "brand_value_series_10pt": [
+                                        {"period": "2025-06", "value_억원": 89.29},
+                                        {"period": "2026-06", "value_억원": 85.87},
+                                    ]
+                                },
+                            }
+                        ],
+                    }
+                }
+            ]
+        },
+    )
 
 
 def test_r11_comparison_delta_uses_displayed_start_and_end_values() -> None:

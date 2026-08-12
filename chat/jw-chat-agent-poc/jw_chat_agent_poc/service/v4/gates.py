@@ -20,8 +20,14 @@ from jw_chat_agent_poc.service.v4.reason_code_enforcement import (
 
 
 _NUMBER_RE = re.compile(r"(?<![\w.])-?\d[\d,]*(?:\.\d+)?")
+_UNSIGNED_DECREASE_RE = re.compile(
+    r"(?<![-\w.])(?P<value>\d[\d,]*(?:\.\d+)?)\s*"
+    r"(?:억원|%p|%|Rx)?(?:이|가)?\s*(?:감소|하락|줄(?:었|어|었습니다|었다))",
+    re.IGNORECASE,
+)
 _RAW_WON_RE = re.compile(
-    r"(?<![\w.])\d[\d,]{6,}(?:\.\d+)?\s*(?:\(\s*원\s*\)|원|KRW)"
+    r"(?<![\w.])\d[\d,]{6,}(?:\.\d+)?\s*"
+    r"(?:\(\s*(?:원|KRW)\s*\)|원|KRW)"
     r"(?:은|는|이|가|을|를|으로|에서|의)?",
     re.IGNORECASE,
 )
@@ -202,7 +208,9 @@ def apply_v4_gates(
             () if asks_cause else metric_fields
         ) if mart_numeric_question else (),
     )
-    allowed.update(comparison_numeric_tokens(mart_results))
+    comparison_tokens = comparison_numeric_tokens(mart_results)
+    allowed.update(comparison_tokens)
+    allowed.update(_unsigned_comparison_decreases(text, comparison_tokens))
     answer_numbers = _answer_mart_metric_numbers(text, question)
     invented = sorted(token for token in answer_numbers if _normalize_number(token) not in allowed)
     if invented and mart_results and mart_numeric_question:
@@ -389,6 +397,20 @@ def apply_v4_gates(
     text = _append_sources(text, results)
     trace["sources_block"] = {"present": "## 출처" in text}
     return GatedAnswer(text=text, trace=trace)
+
+
+def _unsigned_comparison_decreases(
+    text: str,
+    comparison_tokens: set[str],
+) -> set[str]:
+    negative_magnitudes = {
+        token[1:] for token in comparison_tokens if token.startswith("-")
+    }
+    return {
+        value
+        for match in _UNSIGNED_DECREASE_RE.finditer(text)
+        if (value := _normalize_number(match.group("value"))) in negative_magnitudes
+    }
 
 
 def _requested_source(question: str) -> str | None:

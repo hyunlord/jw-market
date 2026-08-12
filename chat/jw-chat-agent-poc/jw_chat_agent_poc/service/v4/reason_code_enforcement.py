@@ -61,10 +61,25 @@ _UNDIRECTED_TRANSFER_OVERCLAIM_RE = re.compile(
     r"(?:매출|점유율|감소분|처방량)[^.\n]{0,40}(?:이동|흡수|전환|잠식|대체)|"
     r"(?:이동|흡수|전환|잠식|대체)[^.\n]{0,40}(?:매출|점유율|감소분|처방량))"
 )
+_COMMERCIAL_PRESCRIPTION_TRANSFER_RE = re.compile(
+    r"(?:처방[^.\n]{0,40}(?:이동|흡수|전환|잠식|대체)[^.\n]{0,40}"
+    r"(?:시장|트렌드|추세)|"
+    r"(?:시장|트렌드|추세)[^.\n]{0,40}처방[^.\n]{0,40}"
+    r"(?:이동|흡수|전환|잠식|대체)|"
+    r"(?:매출|점유율)[^.\n]{0,100}처방(?:\s*수요|\s*량)?[^.\n]{0,40}"
+    r"(?:이동|흡수|전환|잠식|대체)|"
+    r"처방\s*수요[^.\n]{0,40}(?:이동|흡수|전환|잠식|대체))"
+)
+_CLINICAL_PRESCRIPTION_STUDY_RE = re.compile(
+    r"(?:임상(?:시험|\s*연구)|clinical\s+trial)[^.\n]{0,120}"
+    r"(?:평가|분석|비교)",
+    re.IGNORECASE,
+)
 _ABSENCE_CERTAINTY_RE = re.compile(
     r"(?:비급여(?:입니다|로\s*확인|로\s*분류|에\s*해당)|"
     r"급여\s*기준이?\s*없습니다|허가\s*문서가?\s*없습니다)"
 )
+_NONREIMBURSED_MARKET_RE = re.compile(r"비급여\s*시장")
 _ABSENCE_UNCERTAINTY_RE = re.compile(
     r"(?:비급여|급여|허가)[^.\n]{0,50}(?:확인되지|미확인|확정할\s*수\s*없)|"
     r"(?:확인되지|미확인|확정할\s*수\s*없)[^.\n]{0,50}(?:비급여|급여|허가)"
@@ -201,6 +216,14 @@ def _repair_transfer_sentence(
     contradictory: bool,
     seen_observations: set[str],
 ) -> str:
+    if (
+        seen_observations
+        and (
+            "반대 방향의 변화가 관측됐습니다" in sentence
+            or "직접 이동 여부는 현재 자료로 확인되지 않습니다" in sentence
+        )
+    ):
+        return ""
     matches = _directed_transfer_matches(sentence)
     if not matches:
         if not _TRANSFER_RE.search(sentence):
@@ -212,9 +235,14 @@ def _repair_transfer_sentence(
             normalized = clause.strip()
             if not normalized:
                 continue
-            if not _UNDIRECTED_TRANSFER_OVERCLAIM_RE.search(
+            commercial_prescription_transfer = (
+                _COMMERCIAL_PRESCRIPTION_TRANSFER_RE.search(normalized)
+                and not _CLINICAL_PRESCRIPTION_STUDY_RE.search(normalized)
+            )
+            unsupported = _UNDIRECTED_TRANSFER_OVERCLAIM_RE.search(
                 normalized
-            ) or _TRANSFER_BOUNDED_RE.search(normalized):
+            ) or commercial_prescription_transfer
+            if not unsupported or _TRANSFER_BOUNDED_RE.search(normalized):
                 repaired_clauses.append(normalized)
                 continue
             if not observation_inserted:
@@ -299,7 +327,9 @@ def _repair_absence(
     results: Sequence[SourceResult],
 ) -> str | None:
     records = [record for result in results if (record := typed_absence_record(result))]
-    if not _ABSENCE_CERTAINTY_RE.search(text):
+    if not _ABSENCE_CERTAINTY_RE.search(text) and not (
+        records and _NONREIMBURSED_MARKET_RE.search(text)
+    ):
         return None
     contradictory = _ABSENCE_UNCERTAINTY_RE.search(text) is not None
     repaired = _transform_sentences(
@@ -319,7 +349,14 @@ def _repair_absence_sentence(
     *,
     contradictory: bool,
 ) -> str:
-    if not _ABSENCE_CERTAINTY_RE.search(sentence):
+    certainty_pattern = (
+        _ABSENCE_CERTAINTY_RE
+        if _ABSENCE_CERTAINTY_RE.search(sentence)
+        else _NONREIMBURSED_MARKET_RE
+    )
+    if not certainty_pattern.search(sentence) or (
+        certainty_pattern is _NONREIMBURSED_MARKET_RE and not records
+    ):
         return sentence
     doc_type = "approval" if "허가" in sentence else "reimbursement"
     subject = _absence_subject(sentence, doc_type)
@@ -346,7 +383,7 @@ def _repair_absence_sentence(
         )
     return _replace_matching_clauses(
         sentence,
-        _ABSENCE_CERTAINTY_RE,
+        certainty_pattern,
         replacement,
     )
 

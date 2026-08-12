@@ -20,12 +20,13 @@ _METRIC_SUMMARY_RE = re.compile(
     re.IGNORECASE,
 )
 _RAW_WON_RE = re.compile(
-    r"(?P<value>\d[\d,]*(?:\.\d+)?)\s*(?:\(\s*원\s*\)|원|KRW)",
+    r"(?P<value>\d[\d,]*(?:\.\d+)?)\s*(?:\(\s*(?:원|KRW)\s*\)|원|KRW)",
     re.IGNORECASE,
 )
 _EOK_RE = re.compile(r"(?P<approx>약\s*)?(?P<value>\d[\d,]*(?:\.\d+)?)\s*억원")
 _RX_RE = re.compile(
-    r"(?P<approx>약\s*)?(?P<value>\d[\d,]*(?:\.\d+)?)\s*Rx(?![A-Za-z])",
+    r"(?P<approx>약\s*)?(?P<value>\d[\d,]*(?:\.\d+)?)\s*"
+    r"(?:\(\s*Rx\s*\)|Rx)(?![A-Za-z])",
     re.IGNORECASE,
 )
 _PERCENT_RE = re.compile(
