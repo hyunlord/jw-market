@@ -3,6 +3,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import pytest
+
 from pipeline.scripts.ingest_hook import (
     csd_channel_activation,
     csd_channel_publish_runner,
@@ -29,6 +31,20 @@ def _ledger_and_candidate(
         prepared_at="2026-08-08 14:35:12",
     )
     return ledger
+
+
+@pytest.fixture(autouse=True)
+def _stub_post_success_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        csd_channel_publish_runner,
+        "_run_post_success_cleanup",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        csd_keyword_publish_runner,
+        "_run_post_success_cleanup",
+        lambda *_args, **_kwargs: None,
+    )
 
 
 def test_channel_complete_signal_identifies_published_schema_and_time(monkeypatch) -> None:

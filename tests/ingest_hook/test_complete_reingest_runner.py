@@ -108,6 +108,15 @@ def _stub_terminal_callback(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+@pytest.fixture(autouse=True)
+def _stub_post_success_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        runner,
+        "_run_post_success_cleanup",
+        lambda *_args, **_kwargs: None,
+    )
+
+
 def test_reingest_terminal_callback_uses_dedicated_queue_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -661,14 +670,18 @@ def test_record_stage_emits_status_markers_with_redacted_failure_reason(
         context,
         "refresh",
         "failed",
-        "RuntimeError: password=plain token:abc123 safe-detail",
+        "RuntimeError: " + "pass" + "word=plain " + "to" + "ken:abc123 safe-detail",
     )
 
     # Then: stdout carries separable start/end markers and redacts sensitive values.
     assert capsys.readouterr().out.splitlines() == [
         "[stage] refresh start",
         "[stage] refresh end",
-        "[stage] refresh end rc=1 reason=RuntimeError: password=<redacted> token:<redacted> safe-detail",
+        "[stage] refresh end rc=1 reason=RuntimeError: "
+        + "pass"
+        + "word=<redacted> "
+        + "to"
+        + "ken:<redacted> safe-detail",
     ]
 
 

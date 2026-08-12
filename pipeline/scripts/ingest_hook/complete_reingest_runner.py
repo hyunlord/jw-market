@@ -22,6 +22,7 @@ from pipeline.scripts.ingest_hook import config
 from pipeline.scripts.ingest_hook import csd_channel_activation
 from pipeline.scripts.ingest_hook import csd_keyword_activation
 from pipeline.scripts.ingest_hook import iqvia_nsa_mart_activation as iqvia_activation
+from pipeline.scripts.ingest_hook import post_success_cleanup
 from pipeline.scripts.ingest_hook import ubist_mart_activation
 from pipeline.scripts.ingest_hook.category_map import CategorySpec, resolve_category
 from pipeline.scripts.ingest_hook.completion_signal import PublishResult
@@ -166,6 +167,7 @@ def run(
                     finished_at=publication.dashboard_finished_at,
                     duration_ms=publication.dashboard_duration_ms,
                 )
+                _run_post_success_cleanup(context, publication.target_db)
                 return _complete_terminal(
                     active_ledger,
                     context,
@@ -185,6 +187,7 @@ def run(
                     finished_at=publication.dashboard_finished_at,
                     duration_ms=publication.dashboard_duration_ms,
                 )
+                _run_post_success_cleanup(context, publication.target_db)
                 return _complete_terminal(
                     active_ledger,
                     context,
@@ -216,7 +219,8 @@ def run(
             "post_gate",
             reason="numeric post-gates passed for recomputed mart",
         )
-        _publish_and_refresh_numeric(context, active_ledger, prepared, spec)
+        publication = _publish_and_refresh_numeric(context, active_ledger, prepared, spec)
+        _run_post_success_cleanup(context, publication.target_db)
         return _complete_terminal(
             active_ledger,
             context,
@@ -659,6 +663,25 @@ def _run_refresh_argv(
         argv,
         connection=connection,
         lock_name=lock_name,
+    )
+
+
+def _run_post_success_cleanup(context: RequestContext, target_db: str) -> None:
+    conn = config.open_mart_connection(target_db)
+    try:
+        result = post_success_cleanup.run_post_success_cleanup(
+            conn,
+            serving_db=target_db,
+            source=context.category,
+            run_id=context.run_id,
+        )
+    finally:
+        conn.close()
+    print(
+        "phase=post_success_cleanup status=complete "
+        f"dry_run={result.dry_run} dropped={len(result.dropped)} "
+        f"plan={result.plan_path} sha256={result.plan_sha256}",
+        flush=True,
     )
 
 

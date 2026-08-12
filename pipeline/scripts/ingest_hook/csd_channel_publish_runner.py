@@ -4,6 +4,7 @@ from __future__ import annotations
 import sys
 
 from pipeline.scripts.ingest_hook import config, csd_channel_activation
+from pipeline.scripts.ingest_hook import post_success_cleanup
 from pipeline.scripts.ingest_hook.job_launcher import publish_job_name
 from pipeline.scripts.ingest_hook.job_runner import (
     _StageTracker,
@@ -138,6 +139,11 @@ def run(
             plan.raw.live.table: current.raw.row_count,
             plan.stage.live.table: current.stage.row_count,
         }
+        _run_post_success_cleanup(
+            source=category,
+            run_id=publish_run_id,
+            target_db=stage_schema,
+        )
         completion_signal = _emit_completion_signal(
             ledger=ledger,
             tracker=tracker,
@@ -180,3 +186,22 @@ def run(
             )
         if connection is not None:
             connection.close()
+
+
+def _run_post_success_cleanup(*, source: str, run_id: str, target_db: str) -> None:
+    conn = config.open_mart_connection(target_db)
+    try:
+        result = post_success_cleanup.run_post_success_cleanup(
+            conn,
+            serving_db=target_db,
+            source=source,
+            run_id=run_id,
+        )
+    finally:
+        conn.close()
+    print(
+        "phase=post_success_cleanup status=complete "
+        f"dry_run={result.dry_run} dropped={len(result.dropped)} "
+        f"plan={result.plan_path} sha256={result.plan_sha256}",
+        flush=True,
+    )

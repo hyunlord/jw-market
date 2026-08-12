@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any
 
 from pipeline.scripts.ingest_hook import config
+from pipeline.scripts.ingest_hook import post_success_cleanup
 from pipeline.scripts.ingest_hook.category_map import (
     ActivationKind,
     CategorySpec,
@@ -2155,11 +2156,18 @@ def run(
                     ubist_mart_activation.update_activation_journal(
                         activation_journal, "complete"
                     )
-            if (
-                activation_journal is None
-                and load_result["epoch_rows"] is not None
-            ):
-                report.file_rows[f"epoch:{manifest.epoch}"] = load_result["epoch_rows"]
+        if (
+            activation_journal is None
+            and load_result["epoch_rows"] is not None
+        ):
+            report.file_rows[f"epoch:{manifest.epoch}"] = load_result["epoch_rows"]
+
+        if mode == "production" and published_target_schema:
+            _run_post_success_cleanup(
+                source=manifest.category,
+                run_id=run_id,
+                target_db=published_target_schema,
+            )
 
         completion_signal = None
         if not completion_signal_emitted:
@@ -2322,6 +2330,25 @@ def run(
             mart_conn.close()
         if writer_conn is not None:
             writer_conn.close()
+
+
+def _run_post_success_cleanup(*, source: str, run_id: str, target_db: str) -> None:
+    conn = config.open_mart_connection(target_db)
+    try:
+        result = post_success_cleanup.run_post_success_cleanup(
+            conn,
+            serving_db=target_db,
+            source=source,
+            run_id=run_id,
+        )
+    finally:
+        conn.close()
+    print(
+        "phase=post_success_cleanup status=complete "
+        f"dry_run={result.dry_run} dropped={len(result.dropped)} "
+        f"plan={result.plan_path} sha256={result.plan_sha256}",
+        flush=True,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
