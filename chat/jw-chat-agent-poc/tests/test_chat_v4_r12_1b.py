@@ -140,6 +140,50 @@ def test_lossless_surface_reorders_commentary_and_facts_with_one_source_block() 
     )
 
 
+def test_lossless_surface_does_not_duplicate_commentary_when_core_headings_are_empty() -> None:
+    rendered = DeterministicRender(
+        profile="patent_portfolio",
+        nodes=(
+            RenderNode(
+                block_id="patent:coverage",
+                text="## 조사 범위와 완전성\n원천 검색 1건 · 수신 1건 · 중복 제거 후 1건 · 상세 표시 1건",
+            ),
+            RenderNode(
+                block_id="patent:kr-primary",
+                record_ids=("kr-1",),
+                text="## 국내 NeDrug 특허목록 정본\n| 특허 |\n| --- |\n| KR-1 |",
+            ),
+        ),
+    )
+    commentary = """## 핵심 답
+## 핵심 답
+
+## 근거와 맥락
+공식 목록에서 확인된 상태를 설명합니다.
+
+## 종합 인사이트
+경쟁 진입 시점은 추가 확인이 필요합니다.
+
+## 출처
+- 식품의약품안전처 의약품 특허목록 — 조회 "리바로젯 특허현황"""  # noqa: E501
+
+    composed = compose_lossless_answer(
+        rendered,
+        commentary,
+        synthesis_trace={"status": "synthesized"},
+        mode="inject",
+    )
+
+    assert composed.text.count("## 핵심 답") == 1
+    assert composed.text.count("## 근거와 맥락") == 0
+    assert composed.text.count("## 종합 인사이트") == 1
+    assert composed.text.count("## 출처") == 1
+    assert composed.text.count("공식 목록에서 확인된 상태를 설명합니다.") == 1
+    assert composed.text.index("## 조사 범위와 완전성") < composed.text.index(
+        "## 종합 인사이트"
+    )
+
+
 def test_lossless_surface_omits_empty_fact_sections_and_uses_exact_fallback_copy() -> None:
     rendered = DeterministicRender(
         profile="patent_portfolio",

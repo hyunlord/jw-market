@@ -211,7 +211,17 @@ def _assemble_injected_answer(
     elif preamble:
         core.insert(0, ("핵심 답", preamble))
     if not core and not fallback:
-        core = [("핵심 답", commentary.strip())]
+        # A claim gate can remove every sentence under the model's core
+        # heading while leaving later sections intact. Promote the first
+        # surviving section instead of wrapping the complete markdown answer,
+        # which would duplicate headings, facts, and sources.
+        for candidates in (context, other, insights, limits):
+            if candidates:
+                _, body = candidates.pop(0)
+                core = [("핵심 답", body)]
+                break
+        if not core and not commentary_sections:
+            core = [("핵심 답", commentary.strip())]
 
     fact_coverage: list[str] = []
     fact_tables: list[str] = []
