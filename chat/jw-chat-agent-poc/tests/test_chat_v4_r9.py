@@ -237,6 +237,8 @@ def test_r9_gates_preserve_all_requested_dimensions_with_public_display() -> Non
 
 
 def test_r9_cause_payload_is_clipped_to_one_common_period() -> None:
+    # Preserve the historical node ID while R11 intentionally reverses the old
+    # clipping behavior and keeps every source-native cause period.
     payload = {
         "company_ranking_series": [
             {
@@ -282,13 +284,17 @@ def test_r9_cause_payload_is_clipped_to_one_common_period() -> None:
     aligned, anchor = v4_adapters.align_cause_periods(payload)
 
     assert anchor == {"period_start": "2025-09", "period_end": "2026-06"}
-    for path in ("company_ranking_series", "analysis_level_trend", "customer_competition"):
-        assert [point["period"] for point in aligned[path][0]["series"]] == [
-            "2025-09",
-            "2026-06",
-        ]
-    assert aligned["company_ranking_series"][0]["from_period"] == "2025-09"
-    assert aligned["company_ranking_series"][0]["value_delta_억원"] == 22.01
+    assert [
+        point["period"] for point in aligned["company_ranking_series"][0]["series"]
+    ] == ["2025-07", "2025-09", "2026-01", "2026-06"]
+    assert [
+        point["period"] for point in aligned["analysis_level_trend"][0]["series"]
+    ] == ["2025-07", "2025-09", "2026-06"]
+    assert [
+        point["period"] for point in aligned["customer_competition"][0]["series"]
+    ] == ["2025-07", "2025-09", "2026-06"]
+    assert aligned["company_ranking_series"][0]["from_period"] == "2025-07"
+    assert "value_delta_억원" not in aligned["company_ranking_series"][0]
 
 
 def test_r9_cause_alignment_requires_two_shared_observed_months() -> None:

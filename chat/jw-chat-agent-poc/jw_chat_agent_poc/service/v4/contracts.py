@@ -15,6 +15,11 @@ SourceName = Literal[
     "web",
     "patent",
 ]
+AbsenceStatus = Literal[
+    "doc_not_found",
+    "coverage_unknown",
+    "confirmed_non_reimbursed",
+]
 SOURCE_NAMES: tuple[SourceName, ...] = (
     "mart",
     "nedrug",
@@ -111,6 +116,13 @@ class EvidenceEnvelope(_StrictModel):
     period_end: str | None = None
     parent_entity: str | None = None
     eligible_attributions: tuple[str, ...] = ()
+
+
+class AbsenceConfirmation(_StrictModel):
+    source: Literal["hira", "nedrug"]
+    doc_type: Literal["reimbursement", "approval"]
+    status: AbsenceStatus
+    subject: str = Field(min_length=1)
 
 
 class SourceResult(_StrictModel):

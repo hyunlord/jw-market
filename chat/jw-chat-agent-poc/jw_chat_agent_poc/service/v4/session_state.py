@@ -22,6 +22,11 @@ SCHEMA_SQL = f"""CREATE TABLE {STATE_TABLE} (
 @dataclass(frozen=True, slots=True)
 class SessionState:
     canonical_entities: tuple[str, ...] = ()
+    primary_entity: str | None = None
+    mentioned_related_entities: tuple[str, ...] = ()
+    record_type: str | None = None
+    status_filter: tuple[str, ...] = ()
+    country_filter: tuple[str, ...] = ()
     requested_grain: str | None = None
     referenced_entity_set: tuple[str, ...] = ()
     active_filters: tuple[str, ...] = ()
@@ -41,6 +46,13 @@ class SessionState:
             return cls()
         return cls(
             canonical_entities=_strings(value.get("canonical_entities")),
+            primary_entity=_optional_text(value.get("primary_entity")),
+            mentioned_related_entities=_strings(
+                value.get("mentioned_related_entities")
+            ),
+            record_type=_optional_text(value.get("record_type")),
+            status_filter=_strings(value.get("status_filter")),
+            country_filter=_strings(value.get("country_filter")),
             requested_grain=_optional_text(value.get("requested_grain")),
             referenced_entity_set=_strings(value.get("referenced_entity_set")),
             active_filters=_strings(value.get("active_filters")),

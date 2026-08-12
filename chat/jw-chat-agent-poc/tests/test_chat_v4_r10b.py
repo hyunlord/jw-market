@@ -218,7 +218,7 @@ def test_r10b_absence_bridge_requires_typed_document_absence() -> None:
                 "calls": [],
                 "document_lookup": {
                     "document": "reimbursement",
-                    "outcome": "confirmed_absent",
+                    "outcome": "doc_not_found",
                     "subject": "마운자로",
                     "error_code": "REALTIME_NO_EVIDENCE",
                 },
@@ -229,6 +229,7 @@ def test_r10b_absence_bridge_requires_typed_document_absence() -> None:
         "source": "hira",
         "document": "reimbursement",
         "subject": "마운자로",
+        "absence_status": "doc_not_found",
         "query": "마운자로 급여기준",
     }
 
@@ -255,13 +256,13 @@ def test_r10b_reimbursement_metadata_distinguishes_absence_from_unavailable() ->
 
     assert _reimbursement_lookup_metadata(confirmed_absent, "마운자로") == {
         "document": "reimbursement",
-        "outcome": "confirmed_absent",
+        "outcome": "doc_not_found",
         "subject": "마운자로",
         "error_code": "REALTIME_NO_EVIDENCE",
     }
     assert _reimbursement_lookup_metadata(timeout, "마운자로") == {
         "document": "reimbursement",
-        "outcome": "unavailable",
+        "outcome": "coverage_unknown",
         "subject": "마운자로",
         "error_code": "TOOL_TIMEOUT",
     }
@@ -307,7 +308,8 @@ def test_r10b_absence_surface_is_first_paragraph_and_reads_nested_web_items() ->
     )
 
     assert answer.startswith(
-        "## 핵심 답\n마운자로는 현재 급여기준이 없습니다(비급여). [출처: HIRA]\n\n"
+        "## 핵심 답\n현재 조회한 HIRA 세부 급여기준에서는 별도 기준을 찾지 못했습니다. "
+        "이 결과만으로 비급여 여부를 확정할 수는 없습니다. [출처: HIRA]\n\n"
     )
     assert "마운자로 급여 협상 결렬 뒤 재신청" in answer
     assert "로 보도되고 있습니다" in answer
@@ -358,5 +360,6 @@ def test_r10b_synthesis_keeps_official_absence_when_web_context_is_empty() -> No
 
     # Then: supplemental web failure cannot erase the official absence fact.
     assert answer.startswith(
-        "## 핵심 답\n마운자로는 현재 급여기준이 없습니다(비급여). [출처: HIRA]\n\n"
+        "## 핵심 답\n현재 조회한 HIRA 세부 급여기준에서는 별도 기준을 찾지 못했습니다. "
+        "이 결과만으로 비급여 여부를 확정할 수는 없습니다. [출처: HIRA]\n\n"
     )

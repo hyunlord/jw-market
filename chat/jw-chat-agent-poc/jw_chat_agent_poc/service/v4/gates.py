@@ -9,8 +9,14 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 from urllib.parse import unquote, urlparse
 
+from jw_chat_agent_poc.service.v4.comparison_facts import comparison_numeric_tokens
 from jw_chat_agent_poc.service.v4.contracts import GatedAnswer, SourceResult
 from jw_chat_agent_poc.service.v4.display import normalize_answer_surface
+from jw_chat_agent_poc.service.v4.reason_code_enforcement import (
+    enforce_reason_codes,
+    scrub_internal_release_tokens,
+    typed_absence_record,
+)
 
 
 _NUMBER_RE = re.compile(r"(?<![\w.])-?\d[\d,]*(?:\.\d+)?")
@@ -185,16 +191,36 @@ def apply_v4_gates(
     mart_numeric_question = any(term in question.casefold() for term in _MART_TERMS)
     metric_fields = _requested_metric_fields(question)
     asks_cause = any(marker in question.casefold() for marker in ("원인", "왜 ", "이유"))
+    requested_display_numbers = _requested_display_numbers(
+        mart_results,
+        question,
+        metric_fields,
+    )
     allowed = _payload_numbers(
         mart_results if mart_numeric_question else results,
         allowed_fields=(
             () if asks_cause else metric_fields
         ) if mart_numeric_question else (),
     )
+    allowed.update(comparison_numeric_tokens(mart_results))
     answer_numbers = _answer_mart_metric_numbers(text, question)
     invented = sorted(token for token in answer_numbers if _normalize_number(token) not in allowed)
     if invented and mart_results and mart_numeric_question:
-        text = _redact_invented_metric_values(text, invented)
+        requested_metric_terms = {
+            metric for metric in _MART_VALUE_PATTERNS if metric.casefold() in question.casefold()
+        }
+        natural_replacement = (
+            next(iter(requested_display_numbers))
+            if len(invented) == 1
+            and len(requested_display_numbers) == 1
+            and len(requested_metric_terms) == 1
+            else None
+        )
+        text = _redact_invented_metric_values(
+            text,
+            invented,
+            replacement=natural_replacement,
+        )
         remaining = sorted(
             token
             for token in _answer_mart_metric_numbers(text, question)
@@ -213,15 +239,11 @@ def apply_v4_gates(
             "full_fallback": False,
         }
 
-    requested_display_numbers = _requested_display_numbers(
-        mart_results,
-        question,
-        metric_fields,
-    )
     rendered_numbers = {_normalize_number(token) for token in _NUMBER_RE.findall(text)}
-    metric_missing = bool(requested_display_numbers) and requested_display_numbers.isdisjoint(
-        rendered_numbers
-    )
+    metric_missing = (
+        bool(requested_display_numbers)
+        and requested_display_numbers.isdisjoint(rendered_numbers)
+    ) or bool(invented and _render_mart_history(mart_results, question))
     can_repair = not trace["source_impersonation"]["blocked"] and not trace[
         "cross_source_sum"
     ]["blocked"]
@@ -231,6 +253,7 @@ def apply_v4_gates(
             question=question,
             allowed_fields=metric_fields,
         )
+        verified_summary, _ = normalize_answer_surface(verified_summary)
         text = _merge_unique_blocks(verified_summary, text)
     trace["requested_metric_surface"] = {
         "repaired": metric_missing and can_repair,
@@ -261,6 +284,9 @@ def apply_v4_gates(
             evidence.causal is True for evidence in usable_evidence
         ),
     }
+
+    text, reason_trace = enforce_reason_codes(text, results)
+    trace["reason_code_enforcement"] = reason_trace
 
     raw_won_blocked = bool(_RAW_WON_RE.search(text))
     trace["surface_raw_won"] = {"blocked": raw_won_blocked}
@@ -356,6 +382,8 @@ def apply_v4_gates(
     text = _merge_unique_blocks(text)
 
     text, surface_trace = normalize_answer_surface(text)
+    text, late_internal_count = scrub_internal_release_tokens(text)
+    trace["reason_code_enforcement"]["INTERNAL_TOKEN_LEAK"] += late_internal_count
     trace["final_surface"] = surface_trace
 
     text = _append_sources(text, results)
@@ -415,21 +443,61 @@ def _answer_mart_metric_numbers(text: str, question: str) -> set[str]:
     return numbers
 
 
-def _redact_invented_metric_values(text: str, invented: list[str]) -> str:
+def _redact_invented_metric_values(
+    text: str,
+    invented: list[str],
+    *,
+    replacement: str | None,
+) -> str:
     blocked = {_normalize_number(token) for token in invented}
 
     def replace(match: re.Match[str]) -> str:
         if _normalize_number(match.group(0)) not in blocked:
             return match.group(0)
-        return "확인된 수치"
+        return replacement or ""
 
-    repaired = _NUMBER_RE.sub(replace, text)
-    return re.sub(
-        r"확인된 수치\s*(?:억원?|원|KRW|%(?:p)?|퍼센트|Rx|건|개|위)",
-        "확인된 수치",
-        repaired,
-        flags=re.IGNORECASE,
-    )
+    if replacement:
+        return _NUMBER_RE.sub(replace, text)
+    return "\n".join(
+        line
+        for raw_line in text.splitlines()
+        if (line := _without_blocked_numeric_clauses(raw_line, blocked)).strip()
+    ).strip()
+
+
+_NUMERIC_CLAUSE_SEPARATOR_RE = re.compile(
+    r"(\s*(?:,|;|·)\s*|\s*(?:이며|이고|이지만|하지만|다만)\s*)"
+)
+
+
+def _without_blocked_numeric_clauses(line: str, blocked: set[str]) -> str:
+    if not any(
+        _normalize_number(match.group(0)) in blocked for match in _NUMBER_RE.finditer(line)
+    ):
+        return line
+    parts = _NUMERIC_CLAUSE_SEPARATOR_RE.split(line)
+    clauses = parts[::2]
+    separators = parts[1::2]
+    keep = [
+        not any(
+            _normalize_number(match.group(0)) in blocked
+            for match in _NUMBER_RE.finditer(clause)
+        )
+        for clause in clauses
+    ]
+    kept_indexes = [index for index, include in enumerate(keep) if include and clauses[index].strip()]
+    if not kept_indexes:
+        return ""
+    output = clauses[kept_indexes[0]].rstrip()
+    previous = kept_indexes[0]
+    for index in kept_indexes[1:]:
+        separator = separators[previous] if index == previous + 1 else ". "
+        output += separator + clauses[index].lstrip()
+        previous = index
+    original_end = line.rstrip()[-1:] if line.rstrip() else ""
+    if original_end in ".!?" and not output.rstrip().endswith((".", "!", "?")):
+        output = output.rstrip() + original_end
+    return output
 
 
 def _payload_numbers(
@@ -1128,25 +1196,22 @@ def _render_mart_history(results: tuple[SourceResult, ...], question: str) -> st
 
 
 def is_typed_absence_confirmation(result: SourceResult) -> bool:
-    if result.status != "empty" or not isinstance(result.payload, Mapping):
+    record = typed_absence_record(result)
+    if record is None or result.evidence is None:
         return False
-    record = result.payload.get("absence_confirmation")
-    if not isinstance(record, Mapping) or result.evidence is None:
-        return False
-    document = str(record.get("doc_type") or "")
-    required_source = {"reimbursement": "hira", "approval": "nedrug"}.get(document)
     claims = set(result.evidence.eligible_claims)
     return bool(
-        required_source == result.source
-        and record.get("source") == result.source
-        and record.get("status") == "confirmed_absent"
-        and str(record.get("subject") or "").strip()
+        record.status == "confirmed_non_reimbursed"
         and {
-            document,
+            record.doc_type,
             "absence_confirmation",
-            f"absence_confirmation:{document}",
+            f"absence_confirmation:{record.doc_type}",
         }.issubset(claims)
     )
+
+
+def is_typed_absence_record(result: SourceResult) -> bool:
+    return typed_absence_record(result) is not None and result.evidence is not None
 
 
 def _enforce_claim_eligibility(
@@ -1158,9 +1223,13 @@ def _enforce_claim_eligibility(
     for result in results:
         if result.evidence is None:
             continue
-        if result.status != "ok" and not is_typed_absence_confirmation(result):
+        record = typed_absence_record(result)
+        if result.status != "ok" and record is None:
             continue
         claims = set(result.evidence.eligible_claims)
+        if record is not None and record.status != "confirmed_non_reimbursed":
+            claims.discard("absence_confirmation")
+            claims.discard(f"absence_confirmation:{record.doc_type}")
         if result.source == "hira" and "reimbursement" in claims:
             claims.add("eligibility")
         source_claims.append(
@@ -1510,7 +1579,7 @@ def _append_sources(text: str, results: tuple[SourceResult, ...]) -> str:
     lines: list[str] = []
     seen: set[tuple[str, str]] = set()
     for result in results:
-        if result.status != "ok" and not is_typed_absence_confirmation(result):
+        if result.status != "ok" and not is_typed_absence_record(result):
             continue
         source = _public_source_name(result)
         key = (source, result.query)
@@ -1563,11 +1632,11 @@ def _public_source_name(result: SourceResult) -> str:
 
 
 def _source_reference_type(result: SourceResult) -> str:
-    if is_typed_absence_confirmation(result):
-        record = result.payload["absence_confirmation"]
+    record = typed_absence_record(result)
+    if record is not None:
         return (
             "고시 무결과 확인"
-            if record["doc_type"] == "reimbursement"
+            if record.doc_type == "reimbursement"
             else "허가 문서 무결과 확인"
         )
     if result.source == "hira" and result.evidence is not None:

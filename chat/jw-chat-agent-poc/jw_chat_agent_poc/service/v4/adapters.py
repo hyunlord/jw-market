@@ -3,17 +3,19 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import logging
 import os
 import re
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, replace
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from datetime import UTC, datetime
 from typing import Any
 
+from jw_chat_agent_poc.common.periods import requested_period
 from jw_chat_agent_poc.service.v4.contracts import (
     Citation,
     EvidenceEnvelope,
@@ -22,6 +24,22 @@ from jw_chat_agent_poc.service.v4.contracts import (
 )
 
 
+LOGGER = logging.getLogger(__name__)
+_CANONICAL_DEEP_ANALYSIS_SQL = """
+SELECT brand, market_id,
+       ai_analysis_json, ai_analysis_short_json, ai_analysis_long_json,
+       updated_at, short_generated_at, long_generated_at,
+       short_generation_status, long_generation_status
+FROM cache_deep_analysis_ai_analysis
+WHERE brand = %s
+  AND market_id IN ({market_placeholders})
+ORDER BY GREATEST(
+    COALESCE(long_generated_at, '1000-01-01 00:00:00'),
+    COALESCE(short_generated_at, '1000-01-01 00:00:00'),
+    COALESCE(updated_at, '1000-01-01 00:00:00')
+) DESC, market_id ASC
+LIMIT 1
+"""
 _NCT_RE = re.compile(r"\bNCT\d{8}\b", re.IGNORECASE)
 _HIRA_CODE_RE = re.compile(r"(?<![A-Za-z0-9])([A-Za-z]\d{2}(?:\.?\d)?)(?![A-Za-z0-9])")
 _RECENT_YEAR_RE = re.compile(r"최근\s*(\d{1,2})\s*년")
@@ -557,9 +575,9 @@ def _reimbursement_lookup_metadata(result: Any, subject: str) -> dict[str, Any]:
         error_code == "REALTIME_NO_EVIDENCE"
         and cache_lookup_status == "brand_unmatched"
     ):
-        outcome = "confirmed_absent"
+        outcome = "doc_not_found"
     else:
-        outcome = "unavailable"
+        outcome = "coverage_unknown"
     return {
         "document": "reimbursement",
         "outcome": outcome,
@@ -602,6 +620,135 @@ def _base_query(query: str) -> str:
                 changed = True
                 break
     return value or query
+
+
+def _needs_deep_analysis(query: str) -> bool:
+    normalized = query.casefold()
+    return any(
+        marker in normalized
+        for marker in ("원인", "왜 ", "이유", "요즘", "시장 어때", "동향", "분석", "전망")
+    )
+
+
+def _load_canonical_deep_analysis(
+    brand: str,
+    market_ids: tuple[str, ...],
+) -> dict[str, Any] | None:
+    import pymysql
+
+    if not market_ids:
+        return None
+    config = {
+        "host": os.environ.get("CHAT_QUERY_DB_HOST")
+        or os.environ.get("CHAT_CACHE_DB_HOST", ""),
+        "port": int(
+            os.environ.get("CHAT_QUERY_DB_PORT")
+            or os.environ.get("CHAT_CACHE_DB_PORT", "3306")
+        ),
+        "database": os.environ.get("CHAT_QUERY_DB_NAME")
+        or os.environ.get("CHAT_CACHE_DB_NAME", ""),
+        "user": os.environ.get("CHAT_QUERY_DB_USER")
+        or os.environ.get("CHAT_CACHE_DB_USER", ""),
+        "password": os.environ.get("CHAT_QUERY_DB_PASSWORD")
+        or os.environ.get("CHAT_CACHE_DB_PASSWORD", ""),
+    }
+    if not all(config.values()):
+        return None
+    try:
+        with pymysql.connect(
+            **config,
+            connect_timeout=3,
+            read_timeout=5,
+            write_timeout=5,
+            charset="utf8mb4",
+            cursorclass=pymysql.cursors.DictCursor,
+            autocommit=True,
+        ) as connection:
+            with connection.cursor() as cursor:
+                market_placeholders = ", ".join("%s" for _ in market_ids)
+                query = _CANONICAL_DEEP_ANALYSIS_SQL.format(
+                    market_placeholders=market_placeholders
+                )
+                cursor.execute(query, (brand, *market_ids))
+                row = cursor.fetchone()
+    except Exception as exc:  # noqa: BLE001 - fan-out continues without this optional source
+        LOGGER.warning(
+            "v4 canonical deep analysis read failed error_type=%s",
+            type(exc).__name__,
+        )
+        return None
+    return _deep_analysis_call_from_row(row, allowed_market_ids=market_ids)
+
+
+def _deep_analysis_call_from_row(
+    row: Mapping[str, Any] | None,
+    *,
+    allowed_market_ids: tuple[str, ...],
+) -> dict[str, Any] | None:
+    if not row:
+        return None
+    market_id = str(row.get("market_id") or "").strip()
+    if allowed_market_ids and market_id not in allowed_market_ids:
+        return None
+    candidates: list[tuple[datetime, int, str, dict[str, Any]]] = []
+    variants = (
+        ("long", "ai_analysis_long_json", "long_generated_at", "long_generation_status", 2),
+        ("short", "ai_analysis_short_json", "short_generated_at", "short_generation_status", 1),
+        ("legacy", "ai_analysis_json", "updated_at", "", 0),
+    )
+    for variant, payload_key, generated_key, status_key, priority in variants:
+        status = str(row.get(status_key) or "").casefold() if status_key else "complete"
+        if status and not status.startswith("complete"):
+            continue
+        payload = _json_mapping(row.get(payload_key))
+        generated_at = _analysis_timestamp(row.get(generated_key) or row.get("updated_at"))
+        if payload is None or generated_at is None:
+            continue
+        candidates.append((generated_at, priority, variant, payload))
+    if not candidates:
+        return None
+    generated_at, _, variant, payload = max(candidates, key=lambda item: (item[0], item[1]))
+    iso_year, iso_week, _ = generated_at.isocalendar()
+    return {
+        "source": "내부 심층분석",
+        "tool": "agent2_deep_analysis",
+        "canonical_table": "cache_deep_analysis_ai_analysis",
+        "brand": str(row.get("brand") or "").strip(),
+        "market_id": market_id or None,
+        "subject_grain": "brand",
+        "analysis_variant": variant,
+        "analysis": payload,
+        "generated_at": generated_at.isoformat(),
+        "freshness_label": f"내부 심층분석 · {iso_year}-W{iso_week:02d} 생성분",
+    }
+
+
+def _json_mapping(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, Mapping):
+        return dict(value)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        payload = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    return dict(payload) if isinstance(payload, Mapping) else None
+
+
+def _analysis_timestamp(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def build_source_adapters() -> dict[SourceName, Any]:
@@ -721,6 +868,13 @@ def build_source_adapters() -> dict[SourceName, Any]:
                 if layer is not None
                 else []
             )
+            if _needs_deep_analysis(query):
+                deep_analysis = _load_canonical_deep_analysis(
+                    str(item.canonical_brand),
+                    tuple(str(value) for value in (market_ids or ()) if str(value)),
+                )
+                if deep_analysis is not None:
+                    strategic.append(deep_analysis)
             payloads.extend(strategic)
             if not strategic and not has_general_payload:
                 general = general_mart(str(item.canonical_brand))
@@ -918,6 +1072,7 @@ def build_source_adapters() -> dict[SourceName, Any]:
 
 def _strategic_mart_calls(layer, brand: str, query: str) -> list[dict[str, Any]]:
     lowered = query.casefold()
+    metric_period = requested_period(query) or "latest"
     calls: list[dict[str, Any]] = []
     try:
         scope = layer.market_scope(brand)
@@ -939,7 +1094,7 @@ def _strategic_mart_calls(layer, brand: str, query: str) -> list[dict[str, Any]]
                 layer.brand_metric(
                     brand,
                     metric,
-                    "latest",
+                    metric_period,
                     market=market,
                     history_points=history_points,
                 )
@@ -954,7 +1109,7 @@ def _strategic_mart_calls(layer, brand: str, query: str) -> list[dict[str, Any]]
     except (LookupError, ValueError):
         pass
 
-    bundle = _entity_bundle_call(layer, brand, market, top_brands)
+    bundle = _entity_bundle_call(layer, brand, market, top_brands, metric_period)
     if bundle is not None:
         calls.append(bundle)
 
@@ -1027,8 +1182,9 @@ def _entity_bundle_call(
     anchor_brand: str,
     market: str | None,
     top_brands: dict[str, Any] | None,
+    period: str = "latest",
 ) -> dict[str, Any] | None:
-    if top_brands is None or not callable(getattr(layer, "market_member_metric", None)):
+    if top_brands is None:
         return None
     render_data = top_brands.get("render_data")
     if not isinstance(render_data, dict):
@@ -1059,12 +1215,21 @@ def _entity_bundle_call(
 
     def load(row: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]] | None:
         try:
-            call = layer.market_member_metric(
-                anchor_brand,
-                str(row["brand"]),
-                market=market,
-                metric="series",
-            )
+            if period == "latest":
+                call = layer.market_member_metric(
+                    anchor_brand,
+                    str(row["brand"]),
+                    market=market,
+                    metric="series",
+                )
+            else:
+                call = layer.brand_metric(
+                    str(row["brand"]),
+                    "sales",
+                    period,
+                    market=market,
+                    history_points=60,
+                )
         except (LookupError, ValueError):
             return None
         return row, call
@@ -1084,6 +1249,7 @@ def _entity_bundle_call(
     common_periods = set(period_sets[0])
     for periods in period_sets[1:]:
         common_periods.intersection_update(periods)
+    common_periods = _comparison_periods(common_periods, period)
     if not common_periods:
         return None
 
@@ -1119,12 +1285,38 @@ def _entity_bundle_call(
         "entity_bundle": {
             "anchor": anchor_brand,
             "market_id": market,
+            "requested_period": period,
             "period_start": ordered_periods[0],
             "period_end": ordered_periods[-1],
             "same_period_and_denominator": True,
             "members": members,
         },
     }
+
+
+def _comparison_periods(periods: set[str], requested: str) -> set[str]:
+    if requested == "latest" or requested.startswith("최근 "):
+        return periods
+
+    end_period: str | None = None
+    if re.fullmatch(r"20\d{2}", requested):
+        matches = sorted(period for period in periods if period.startswith(f"{requested}-"))
+        end_period = matches[-1] if matches else None
+    else:
+        month_match = re.fullmatch(r"(20\d{2})-(0[1-9]|1[0-2])", requested)
+        quarter_match = re.fullmatch(r"(20\d{2})-Q([1-4])", requested)
+        if month_match is not None:
+            end_period = requested
+        elif quarter_match is not None:
+            year, quarter = map(int, quarter_match.groups())
+            end_period = f"{year:04d}-{quarter * 3:02d}"
+    if end_period is None or end_period not in periods:
+        return set()
+    year, month = map(int, end_period.split("-"))
+    start_period = f"{year - 1:04d}-{month:02d}"
+    if start_period not in periods:
+        return set()
+    return {start_period, end_period}
 
 
 def _member_periods(call: dict[str, Any]) -> set[str]:
@@ -1162,7 +1354,7 @@ def _clip_bundle_periods(value: Any, periods: set[str]) -> Any:
 def align_cause_periods(
     payload: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, str] | None]:
-    """Clip cause-card time series to their common observed month range."""
+    """Annotate the shared comparison range without shrinking source tables."""
 
     aligned = copy.deepcopy(payload)
     period_sets: list[set[str]] = []
@@ -1196,30 +1388,6 @@ def align_cause_periods(
         return aligned, None
     period_start = min(common_periods)
     period_end = max(common_periods)
-
-    def clip(value: Any, parent_key: str = "") -> None:
-        if isinstance(value, dict):
-            for key, item in tuple(value.items()):
-                if isinstance(item, list) and _is_cause_series_key(str(key)):
-                    clipped = [
-                        point
-                        for point in item
-                        if not isinstance(point, dict)
-                        or not _is_month_period(point.get("period"))
-                        or str(point["period"]) in common_periods
-                    ]
-                    value[key] = clipped
-                    if str(key) == "series":
-                        _refresh_cause_row(value, clipped)
-                    for point in clipped:
-                        clip(point, str(key))
-                else:
-                    clip(item, str(key))
-        elif isinstance(value, list):
-            for item in value:
-                clip(item, parent_key)
-
-    clip(aligned)
     anchor = {"period_start": period_start, "period_end": period_end}
     aligned["cause_period_anchor"] = anchor
     return aligned, anchor
@@ -1232,40 +1400,6 @@ def _is_cause_series_key(key: str) -> bool:
 
 def _is_month_period(value: Any) -> bool:
     return bool(re.fullmatch(r"20\d{2}-(?:0[1-9]|1[0-2])", str(value or "").strip()))
-
-
-def _refresh_cause_row(row: dict[str, Any], series: list[Any]) -> None:
-    points = [
-        point
-        for point in series
-        if isinstance(point, dict) and _is_month_period(point.get("period"))
-    ]
-    if len(points) < 2:
-        return
-    points.sort(key=lambda point: str(point["period"]))
-    first, last = points[0], points[-1]
-    row["from_period"] = str(first["period"])
-    row["to_period"] = str(last["period"])
-    for source_key, target_key in (
-        ("ms_pct", "from_ms_pct"),
-        ("ms_pct", "to_ms_pct"),
-    ):
-        point = first if target_key.startswith("from_") else last
-        if point.get(source_key) is not None:
-            row[target_key] = point[source_key]
-    if first.get("ms_pct") is not None and last.get("ms_pct") is not None:
-        row["share_delta_pctp"] = _decimal_delta(
-            first["ms_pct"],
-            last["ms_pct"],
-            Decimal("0.0001"),
-        )
-    for key in ("value", "value_krw"):
-        if last.get(key) is not None:
-            row["value_recent"] = last[key]
-            if first.get(key) is not None:
-                row["value_delta"] = float(Decimal(str(last[key])) - Decimal(str(first[key])))
-                row["value_delta_krw"] = row["value_delta"]
-            break
     if last.get("value_억원") is not None:
         row["value_recent_억원"] = last["value_억원"]
         if first.get("value_억원") is not None:

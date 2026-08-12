@@ -9,12 +9,14 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
 from jw_chat_agent_poc.service.conversation import ConversationTurn
+from jw_chat_agent_poc.service.v4.comparison_facts import build_comparison_facts
 from jw_chat_agent_poc.service.v4.contracts import PlannerOutput, SourceResult
 from jw_chat_agent_poc.service.v4.gates import (
     inspect_requested_hira_surface,
     render_mart_dimension_facts,
 )
 from jw_chat_agent_poc.service.v4.llm import CompletionResult, GenOSV4Client
+from jw_chat_agent_poc.service.v4.reason_code_enforcement import typed_absence_record
 from jw_chat_agent_poc.service.v4.session_state import SessionState
 
 
@@ -73,6 +75,7 @@ _SYNTHESIS_SYSTEM_PROMPT = (
     "붙인다. 해석은 '~로 해석될 수 있습니다' 또는 '~할 것으로 추정됩니다'로 구분하며 근거에 없는 숫자를 "
     "만들지 않는다. 못 찾은 부분만 마지막 한 줄에 적는다. 내부 도구명, MCP 상태 문구, totalCount, slot id, "
     "식별자 목록과 대문자 레코드 필드명을 노출하지 않는다. <INTERNAL_DATAMART> 안의 숫자와 표기는 한 글자도 바꾸지 않는다. "
+    "<INTERNAL_DEEP_ANALYSIS>는 사전 생성된 내부 분석이며 freshness_label을 출처명에 그대로 붙여 실시간 데이터마트와 시점을 구분한다. "
     "단위 환산, 반올림, 계산, 합산을 금지하며 UBIST와 IQVIA를 합산하지 않는다. "
     "MISMATCH 근거는 이미 제외됐고 PARTIAL, US, 기간 불일치는 한계를 본문에 명시한다. "
     "질문이 매출·점유율·순위·판매량·시장 규모·추이를 직접 물으면 내부 데이터마트를 핵심 답으로 쓴다. "
@@ -145,8 +148,14 @@ class V4Synthesizer:
             fallback = "이번 조회에서 확인된 근거가 없어 구체적인 답을 구성하지 못했습니다."
             absence_answer = _append_absence_context_surface("", results)
             has_typed_absence = bool(absence_answer)
+            empty_answer = absence_answer if has_typed_absence else fallback
+            empty_answer = _apply_active_kr_clinical_empty_surface(
+                empty_answer,
+                question=plan.resolved_question,
+                results=results,
+            )
             return SynthesisOutcome(
-                text=absence_answer if has_typed_absence else fallback,
+                text=empty_answer,
                 trace={
                     "status": (
                         "typed_absence"
@@ -282,6 +291,11 @@ class V4Synthesizer:
         )
         answer = _append_required_adverse_signal(answer, usable)
         answer = _append_absence_context_surface(answer, results)
+        answer = _apply_active_kr_clinical_empty_surface(
+            answer,
+            question=plan.resolved_question,
+            results=results,
+        )
         answer = _finalize_answer(answer, usable)
         return SynthesisOutcome(
             text=answer,
@@ -369,6 +383,11 @@ def _synthesis_messages(
     ]
     asks_cause = any(marker in plan.resolved_question.casefold() for marker in _CAUSE_MARKERS)
     comparison_facts = _comparison_facts(mart)
+    deep_analysis_blocks = [
+        block
+        for result in mart
+        for block in _deep_analysis_blocks(result)
+    ]
     prompt = {
         "internal_datamart": [_mart_block(result) for result in mart],
         "external_evidence": [_evidence_packet(result) for result in external],
@@ -392,6 +411,14 @@ def _synthesis_messages(
             "출처는 본문 문장 끝에 [출처: 이름]으로 표시",
         ],
     }
+    if deep_analysis_blocks:
+        prompt["internal_deep_analysis"] = deep_analysis_blocks
+        prompt["deep_analysis_contract"] = {
+            "canonical_source_only": "cache_deep_analysis_ai_analysis",
+            "separate_from_realtime_mart": True,
+            "cite_with_freshness_label": True,
+            "absence_rule": "구획이 없으면 심층분석을 언급하지 않는다",
+        }
     if comparison_facts:
         prompt["COMPARISON_FACTS"] = comparison_facts
     if any("entity_bundle" in _mart_block(result) for result in mart):
@@ -408,7 +435,8 @@ def _synthesis_messages(
         }
     if any(_is_absence_context_result(result) for result in external):
         prompt["absence_context_contract"] = {
-            "official_absence_is_confirmed": True,
+            "official_document_lookup_is_typed": True,
+            "non_reimbursed_requires_confirmed_non_reimbursed": True,
             "web_context_uses_reported_language": True,
             "separate_official_and_reported_claims": True,
             "do_not_replace_absent_document_with_other_document": True,
@@ -461,6 +489,10 @@ def _synthesis_messages(
 
 
 def _comparison_facts(results: Sequence[SourceResult]) -> dict[str, Any]:
+    return build_comparison_facts(results)
+
+
+def _legacy_comparison_facts(results: Sequence[SourceResult]) -> dict[str, Any]:
     calls: list[Mapping[str, Any]] = []
     for result in results:
         if result.source != "mart" or not isinstance(result.payload, Mapping):
@@ -707,7 +739,10 @@ def _is_absence_context_result(result: SourceResult) -> bool:
     context = result.payload.get("absence_context")
     return bool(
         isinstance(context, Mapping)
-        and context.get("official_absence") is True
+        and (
+            context.get("official_document_not_found") is True
+            or context.get("official_absence") is True
+        )
         and context.get("reported_context_only") is True
     )
 
@@ -740,11 +775,19 @@ def _append_absence_context_surface(
     if not subject or not source or not document:
         return answer
     official_label = "HIRA" if source == "hira" else "식품의약품안전처"
+    absence_status = str(context.get("absence_status") or "doc_not_found")
     if document == "reimbursement":
-        official_sentence = (
-            f"{subject}{_topic_particle(subject)} 현재 급여기준이 없습니다(비급여). "
-            f"[출처: {official_label}]"
-        )
+        if absence_status == "confirmed_non_reimbursed":
+            official_sentence = (
+                f"{subject}{_topic_particle(subject)} 현재 급여기준이 없습니다(비급여). "
+                f"[출처: {official_label}]"
+            )
+        else:
+            official_sentence = (
+                "현재 조회한 HIRA 세부 급여기준에서는 별도 기준을 찾지 못했습니다. "
+                "이 결과만으로 비급여 여부를 확정할 수는 없습니다. "
+                f"[출처: {official_label}]"
+            )
     else:
         official_sentence = (
             f"{subject}{_topic_particle(subject)} 현재 허가 문서를 확인할 수 없습니다. "
@@ -807,30 +850,24 @@ def _typed_absence_context(
     results: Sequence[SourceResult],
 ) -> dict[str, str] | None:
     for result in results:
-        if result.status != "empty" or not isinstance(result.payload, Mapping):
+        record = typed_absence_record(result)
+        if record is None or result.evidence is None:
             continue
-        record = result.payload.get("absence_confirmation")
-        if not isinstance(record, Mapping) or result.evidence is None:
-            continue
-        document = str(record.get("doc_type") or "")
-        expected_source = {"reimbursement": "hira", "approval": "nedrug"}.get(document)
-        subject = str(record.get("subject") or "").strip()
         claims = set(result.evidence.eligible_claims)
-        if (
-            expected_source == result.source
-            and record.get("source") == result.source
-            and record.get("status") == "confirmed_absent"
-            and subject
-            and {
-                document,
-                "absence_confirmation",
-                f"absence_confirmation:{document}",
-            }.issubset(claims)
-        ):
+        required = {record.doc_type}
+        if record.status == "confirmed_non_reimbursed":
+            required.update(
+                {
+                    "absence_confirmation",
+                    f"absence_confirmation:{record.doc_type}",
+                }
+            )
+        if required.issubset(claims):
             return {
                 "source": result.source,
-                "document": document,
-                "subject": subject,
+                "document": record.doc_type,
+                "subject": record.subject,
+                "absence_status": record.status,
             }
     return None
 
@@ -951,11 +988,102 @@ def _clinical_study_classification(payload: Any) -> list[dict[str, Any]]:
 
 
 def _mart_block(result: SourceResult) -> str:
-    payload = _public_mart_payload(result.payload)
+    payload = _public_mart_payload(_without_deep_analysis_calls(result.payload))
+    cause_tables = _cause_table_packets(result)
+    if cause_tables and isinstance(payload, Mapping):
+        payload = {**payload, "cause_tables": cause_tables}
     tables = _markdown_tables(payload)
     raw = json.dumps(payload, ensure_ascii=False, default=str)
     body = "\n\n".join((*tables, f"원형 JSON: {raw}"))
     return f"<INTERNAL_DATAMART source=\"{_PUBLIC_SOURCE[result.source]}\">\n{body}\n</INTERNAL_DATAMART>"
+
+
+def _cause_table_packets(result: SourceResult) -> list[dict[str, Any]]:
+    packets: list[dict[str, Any]] = []
+    payload = result.payload
+    calls = payload.get("calls") if isinstance(payload, Mapping) else None
+    if not isinstance(calls, list):
+        return packets
+    for call in calls:
+        if not isinstance(call, Mapping) or call.get("tool") != "cause_card_data":
+            continue
+        render_data = call.get("render_data")
+        if not isinstance(render_data, Mapping):
+            continue
+        anchor = call.get("cause_period_anchor")
+        if not isinstance(anchor, Mapping):
+            anchor = render_data.get("cause_period_anchor")
+        period = {
+            "start": str(anchor.get("period_start") or "") if isinstance(anchor, Mapping) else "",
+            "end": str(anchor.get("period_end") or "") if isinstance(anchor, Mapping) else "",
+        }
+        analysis_level = str(render_data.get("analysis_level") or "market")
+        for table, values in render_data.items():
+            if table == "cause_period_anchor":
+                continue
+            packets.append(
+                {
+                    "table": str(table),
+                    "subject_grain": _cause_subject_grain(str(table), analysis_level),
+                    "period": period,
+                    "values": _public_mart_payload(values),
+                }
+            )
+    return packets
+
+
+def _cause_subject_grain(table: str, analysis_level: str) -> str:
+    normalized = table.casefold()
+    if "company" in normalized:
+        return "company"
+    if "customer" in normalized or "channel" in normalized:
+        return "channel"
+    if normalized in {"analysis_level", "analysis_level_trend"}:
+        return analysis_level
+    if normalized in {"ei_ms", "growth_contribution"}:
+        return "brand"
+    return "market"
+
+
+def _without_deep_analysis_calls(value: Any) -> Any:
+    if not isinstance(value, Mapping):
+        return value
+    copied = dict(value)
+    calls = copied.get("calls")
+    if isinstance(calls, list):
+        copied["calls"] = [
+            call
+            for call in calls
+            if not isinstance(call, Mapping) or call.get("tool") != "agent2_deep_analysis"
+        ]
+    return copied
+
+
+def _deep_analysis_blocks(result: SourceResult) -> list[str]:
+    payload = result.payload
+    calls = payload.get("calls") if isinstance(payload, Mapping) else None
+    if not isinstance(calls, list):
+        return []
+    blocks: list[str] = []
+    for call in calls:
+        if not isinstance(call, Mapping) or call.get("tool") != "agent2_deep_analysis":
+            continue
+        freshness = str(call.get("freshness_label") or "내부 심층분석 · 생성시점 미확인")
+        public = {
+            "brand": call.get("brand"),
+            "market_id": call.get("market_id"),
+            "subject_grain": call.get("subject_grain"),
+            "analysis_variant": call.get("analysis_variant"),
+            "analysis": call.get("analysis"),
+            "generated_at": call.get("generated_at"),
+            "freshness_label": freshness,
+        }
+        blocks.append(
+            f'<INTERNAL_DEEP_ANALYSIS source="{freshness}">\n'
+            f"{json.dumps(public, ensure_ascii=False, default=str)}\n"
+            "</INTERNAL_DEEP_ANALYSIS>"
+        )
+    return blocks
 
 
 def _public_mart_payload(value: Any) -> Any:
@@ -1134,8 +1262,161 @@ def _finalize_answer(answer: str, results: Sequence[SourceResult]) -> str:
     # source block first so deterministic footnotes remain.
     if "## 출처" in answer:
         answer = answer.split("## 출처", 1)[0].rstrip()
+    freshness_labels = _deep_analysis_freshness_labels(results)
+    if freshness_labels:
+        answer = (
+            f"{answer.rstrip()}\n\n"
+            + "\n".join(
+                f"- {label}: 사전 생성 분석이며 실시간 데이터마트와 생성 시점이 다릅니다."
+                for label in freshness_labels
+                if label not in answer
+            )
+        ).rstrip()
     answer = _append_automatic_footnotes(answer, results)
     return answer
+
+
+def _apply_active_kr_clinical_empty_surface(
+    answer: str,
+    *,
+    question: str,
+    results: Sequence[SourceResult],
+) -> str:
+    """Keep an empty requested trial set distinct from adjacent evidence."""
+
+    normalized = " ".join(question.split()).casefold()
+    clinical_requested = "임상" in normalized
+    active_requested = any(
+        marker in normalized for marker in ("진행 중", "진행중", "모집 중", "모집중")
+    )
+    kr_requested = any(marker in normalized for marker in ("국내", "한국"))
+    if not (clinical_requested and active_requested and kr_requested):
+        return answer
+
+    if _active_kr_clinical_subset_state(results) != "empty":
+        return answer
+
+    notice = "확인된 국내 active 임상시험은 없었습니다."
+    body = answer.strip()
+    if notice in body:
+        return body
+    heading = "## 핵심 답"
+    if body.startswith(heading):
+        remainder = body[len(heading) :].lstrip()
+        if remainder.startswith("## 인접 동향"):
+            return f"{heading}\n{notice}\n\n{remainder}"
+        return f"{heading}\n{notice}\n\n## 인접 동향\n{remainder}"
+    return f"{heading}\n{notice}\n\n## 인접 동향\n{body}"
+
+
+_ACTIVE_CLINICAL_STATUSES = {
+    "ACTIVE_NOT_RECRUITING",
+    "ENROLLING_BY_INVITATION",
+    "NOT_YET_RECRUITING",
+    "RECRUITING",
+}
+_CLINICAL_RECORD_KEYS = {
+    "nctid",
+    "nct_id",
+    "studyid",
+    "study_id",
+    "protocolsection",
+    "protocol_section",
+}
+
+
+def _active_kr_clinical_subset_state(
+    results: Sequence[SourceResult],
+) -> str:
+    saw_empty = False
+    saw_explicit_record = False
+    saw_unknown_ok = False
+    for result in results:
+        if result.source != "clinicaltrials":
+            continue
+        if result.status == "empty":
+            saw_empty = True
+            continue
+        if result.status != "ok":
+            continue
+        records = _clinical_records(result.payload)
+        if not records:
+            saw_unknown_ok = True
+            continue
+        record_was_explicit = False
+        for record in records:
+            statuses = _clinical_values(record, "status")
+            countries = _clinical_values(record, "country")
+            if not statuses or not countries:
+                continue
+            record_was_explicit = True
+            saw_explicit_record = True
+            is_active = any(
+                value.upper().replace(" ", "_") in _ACTIVE_CLINICAL_STATUSES
+                for value in statuses
+            )
+            is_kr = any(
+                marker in value.casefold()
+                for value in countries
+                for marker in ("korea", "대한민국", "한국")
+            )
+            if is_active and is_kr:
+                return "present"
+        if not record_was_explicit:
+            saw_unknown_ok = True
+    if saw_unknown_ok:
+        return "unknown"
+    if saw_explicit_record or saw_empty:
+        return "empty"
+    return "unknown"
+
+
+def _clinical_records(value: Any) -> tuple[Mapping[str, Any], ...]:
+    records: list[Mapping[str, Any]] = []
+
+    def collect(item: Any) -> None:
+        if isinstance(item, Mapping):
+            keys = {str(key).casefold() for key in item}
+            if keys.intersection(_CLINICAL_RECORD_KEYS) or (
+                any("status" in key for key in keys)
+                and any("country" in key for key in keys)
+            ):
+                records.append(item)
+                return
+            for nested in item.values():
+                collect(nested)
+        elif isinstance(item, (list, tuple)):
+            for nested in item:
+                collect(nested)
+
+    collect(value)
+    return tuple(records)
+
+
+def _clinical_values(record: Mapping[str, Any], marker: str) -> tuple[str, ...]:
+    return tuple(
+        str(value).strip()
+        for path, value in _walk_scalars(record)
+        if marker in path.casefold() and value not in (None, "")
+    )
+
+
+def _deep_analysis_freshness_labels(
+    results: Sequence[SourceResult],
+) -> tuple[str, ...]:
+    labels: list[str] = []
+    for result in results:
+        payload = result.payload
+        calls = payload.get("calls") if isinstance(payload, Mapping) else None
+        if not isinstance(calls, list):
+            continue
+        for call in calls:
+            if not isinstance(call, Mapping) or call.get("tool") != "agent2_deep_analysis":
+                continue
+            label = str(call.get("freshness_label") or "").strip()
+            if label:
+                labels.append(label)
+    return tuple(dict.fromkeys(labels))
 
 
 def _coverage_notices(results: Sequence[SourceResult]) -> tuple[str, ...]:

@@ -179,7 +179,7 @@ def test_r10_absence_context_separates_official_absence_from_web_reporting() -> 
         payload={
             "document_lookup": {
                 "document": "reimbursement",
-                "outcome": "confirmed_absent",
+                "outcome": "doc_not_found",
                 "subject": "마운자로",
                 "error_code": "REALTIME_NO_EVIDENCE",
             }
@@ -192,6 +192,7 @@ def test_r10_absence_context_separates_official_absence_from_web_reporting() -> 
         "source": "hira",
         "document": "reimbursement",
         "subject": "마운자로",
+        "absence_status": "doc_not_found",
         "query": "마운자로 급여기준",
     }
 
@@ -212,13 +213,13 @@ def test_r10_absence_context_separates_official_absence_from_web_reporting() -> 
     tagged = _tag_absence_context(web, request)
     item = tagged.payload["items"][0]
     assert item["trust_tier"] == "TIER2"
-    assert tagged.payload["absence_context"]["official_absence"] is True
+    assert tagged.payload["absence_context"]["official_document_not_found"] is True
     assert tagged.payload["absence_context"]["reported_context_only"] is True
 
     synth_prompt = json.loads(
         _synthesis_messages(plan, (official, tagged), ())[-1]["content"]
     )
-    assert synth_prompt["absence_context_contract"]["official_absence_is_confirmed"] is True
+    assert synth_prompt["absence_context_contract"]["official_document_lookup_is_typed"] is True
     assert synth_prompt["absence_context_contract"]["web_context_uses_reported_language"] is True
     assert tuple(synth_prompt)[-1] == "session_state"
 
@@ -295,7 +296,8 @@ def test_r10_absence_context_surface_keeps_official_absence_and_reported_event()
 
     answer = _append_absence_context_surface("## 핵심 답\n허가사항은 확인됐습니다.", (result,))
 
-    assert "마운자로는 현재 급여기준이 없습니다(비급여). [출처: HIRA]" in answer
+    assert "현재 조회한 HIRA 세부 급여기준에서는 별도 기준을 찾지 못했습니다" in answer
+    assert "비급여 여부를 확정할 수는 없습니다" in answer
     assert "협상 결렬" in answer
     assert "보도되고 있습니다" in answer
 
@@ -744,7 +746,7 @@ def test_r10_runtime_runs_one_web_wave_after_confirmed_official_absence() -> Non
                         payload={
                             "document_lookup": {
                                 "document": "reimbursement",
-                                "outcome": "confirmed_absent",
+                                    "outcome": "doc_not_found",
                                 "subject": "마운자로",
                                 "error_code": "REALTIME_NO_EVIDENCE",
                             }
@@ -756,7 +758,7 @@ def test_r10_runtime_runs_one_web_wave_after_confirmed_official_absence() -> Non
     class Synthesizer:
         def synthesize_with_trace(self, _plan, results, _turns, *, budget_s):
             context = next(result.payload["absence_context"] for result in results if result.source == "web")
-            assert context["official_absence"] is True
+            assert context["official_document_not_found"] is True
             return SynthesisOutcome(text="현재 급여기준은 없고 협상 결렬 경과가 보도되고 있습니다.", trace={"elapsed_ms": 1.0})
 
     executor = Executor()
@@ -793,7 +795,7 @@ def test_r10_runtime_reuses_first_wave_web_when_absence_wave_is_empty() -> None:
                         payload={
                             "document_lookup": {
                                 "document": "reimbursement",
-                                "outcome": "confirmed_absent",
+                                    "outcome": "doc_not_found",
                                 "subject": "마운자로",
                                 "error_code": "REALTIME_NO_EVIDENCE",
                             }
@@ -819,7 +821,7 @@ def test_r10_runtime_reuses_first_wave_web_when_absence_wave_is_empty() -> None:
     class Synthesizer:
         def synthesize_with_trace(self, _plan, results, _turns, *, budget_s):
             tagged = next(result for result in results if result.source == "web" and result.status == "ok")
-            assert tagged.payload["absence_context"]["official_absence"] is True
+            assert tagged.payload["absence_context"]["official_document_not_found"] is True
             return SynthesisOutcome(text="협상 결렬 경과가 보도되고 있습니다.", trace={"elapsed_ms": 1.0})
 
     answer = V4Runtime(

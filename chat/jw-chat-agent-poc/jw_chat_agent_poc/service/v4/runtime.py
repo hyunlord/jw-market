@@ -24,7 +24,7 @@ from jw_chat_agent_poc.service.v4.contracts import (
 from jw_chat_agent_poc.service.v4.executor import ParallelSourceExecutor
 from jw_chat_agent_poc.service.v4.gates import (
     apply_v4_gates,
-    is_typed_absence_confirmation,
+    is_typed_absence_record,
 )
 from jw_chat_agent_poc.service.v4.llm import planner_client, synthesizer_client
 from jw_chat_agent_poc.service.v4.planner import V4Planner
@@ -136,6 +136,7 @@ class V4Runtime:
                 },
             )
         plan = _bind_always_on_mart_query(planner_outcome.plan, question)
+        plan = _bind_session_state_contract(plan, question, session_state)
         plan = _preserve_period_in_answer_queries(plan)
         _emit_progress(
             progress_callback,
@@ -515,7 +516,7 @@ class V4Runtime:
         source_names.extend(
             result.source
             for result in results
-            if is_typed_absence_confirmation(result)
+            if is_typed_absence_record(result)
         )
         sources = tuple(dict.fromkeys(source_names))
         next_state = _derive_session_state(
@@ -576,6 +577,9 @@ def _derive_session_state(
 ) -> SessionState:
     previous = previous or SessionState()
     entities = tuple(dict.fromkeys(_state_entities(results)))
+    explicit_entities = tuple(
+        entity for entity in entities if entity.casefold() in question.casefold()
+    )
     topic_switched = bool(
         entities
         and previous.canonical_entities
@@ -585,15 +589,34 @@ def _derive_session_state(
     retained_entities = () if topic_switched else previous.canonical_entities
     canonical_entities = tuple(dict.fromkeys((*retained_entities, *entities)))[:16]
     referenced = canonical_entities or previous.referenced_entity_set
+    primary_entity = (
+        explicit_entities[0]
+        if explicit_entities
+        else previous.primary_entity
+        if previous.primary_entity and not topic_switched
+        else entities[0]
+        if entities
+        else None
+    )
+    related_entities = tuple(
+        entity for entity in canonical_entities if entity != primary_entity
+    )
     numeric_facts = tuple(_state_numeric_facts(results))[:64]
     record_ids = tuple(dict.fromkeys(_state_record_ids(results)))[:64]
     return SessionState(
         canonical_entities=canonical_entities,
+        primary_entity=primary_entity,
+        mentioned_related_entities=related_entities,
+        record_type=_record_type(question) or (None if topic_switched else previous.record_type),
+        status_filter=_status_filter(question)
+        or (() if topic_switched else previous.status_filter),
+        country_filter=_country_filter(question)
+        or (() if topic_switched else previous.country_filter),
         requested_grain=_requested_grain(question) or previous.requested_grain,
         referenced_entity_set=referenced,
         active_filters=_active_filters(question) or (() if topic_switched else previous.active_filters),
         time_window=_time_window(question) or (() if topic_switched else previous.time_window),
-        comparison_anchor=(canonical_entities[0] if canonical_entities else previous.comparison_anchor),
+        comparison_anchor=primary_entity or previous.comparison_anchor,
         last_numeric_facts=numeric_facts or (() if topic_switched else previous.last_numeric_facts),
         last_source_record_ids=record_ids or (() if topic_switched else previous.last_source_record_ids),
     )
@@ -634,8 +657,13 @@ def _results_from_session_state(state: SessionState) -> tuple[SourceResult, ...]
                 status="ok",
                 payload={
                     "session_state_reuse": True,
-                    "anchor_brand": state.comparison_anchor,
+                    "anchor_brand": state.primary_entity or state.comparison_anchor,
                     "canonical_entities": state.canonical_entities,
+                    "primary_entity": state.primary_entity,
+                    "mentioned_related_entities": state.mentioned_related_entities,
+                    "record_type": state.record_type,
+                    "status_filter": state.status_filter,
+                    "country_filter": state.country_filter,
                     "referenced_entity_set": state.referenced_entity_set,
                     "active_filters": state.active_filters,
                     "time_window": state.time_window,
@@ -756,6 +784,49 @@ def _active_filters(question: str) -> tuple[str, ...]:
         for marker in ("국내", "진행 중", "모집 중", "완료", "급여", "허가")
         if marker in normalized
     )
+
+
+def _record_type(question: str) -> str | None:
+    normalized = question.casefold()
+    if any(marker in normalized for marker in ("임상시험", "임상 시험", "임상")):
+        return "clinical_trial"
+    if any(marker in normalized for marker in ("특허", "재심사")):
+        return "patent"
+    if "급여" in normalized:
+        return "reimbursement"
+    if "허가" in normalized:
+        return "approval"
+    if "환자" in normalized:
+        return "patient_count"
+    if any(marker in normalized for marker in ("부작용", "안전성")):
+        return "safety"
+    if any(marker in normalized for marker in ("효능", "효과", "용법", "용량")):
+        return "label"
+    if any(marker in normalized for marker in ("매출", "점유율", "순위")):
+        return "market_metric"
+    return None
+
+
+def _status_filter(question: str) -> tuple[str, ...]:
+    normalized = question.casefold()
+    values: list[str] = []
+    if any(marker in normalized for marker in ("진행 중", "진행중", "모집 중", "모집중")):
+        values.append("active")
+    if "완료" in normalized:
+        values.append("completed")
+    return tuple(values)
+
+
+def _country_filter(question: str) -> tuple[str, ...]:
+    normalized = question.casefold()
+    values: list[str] = []
+    if any(marker in normalized for marker in ("국내", "한국")):
+        values.append("KR")
+    if any(marker in normalized for marker in ("미국", "미 FDA", "fda")):
+        values.append("US")
+    if any(marker in normalized for marker in ("글로벌", "전세계", "전 세계")):
+        values.append("GLOBAL")
+    return tuple(values)
 
 
 def _time_window(question: str) -> tuple[str, ...]:
@@ -1028,6 +1099,146 @@ def _bind_always_on_mart_query(plan: Any, question: str) -> Any:
     return plan.model_copy(update={"tool_queries": queries})
 
 
+_RECORD_TYPE_QUERY_LABELS = {
+    "clinical_trial": "임상시험",
+    "patent": "특허",
+    "reimbursement": "급여기준",
+    "approval": "허가",
+    "patient_count": "환자수",
+    "market_metric": "시장 지표",
+    "safety": "안전성",
+    "label": "허가사항",
+}
+_STATUS_QUERY_LABELS = {
+    "active": "진행 중",
+    "completed": "완료",
+}
+_COUNTRY_QUERY_LABELS = {
+    "KR": "국내",
+    "US": "미국",
+    "GLOBAL": "글로벌",
+}
+_SUBJECT_BEFORE_INTENT_RE = re.compile(
+    r"^\s*(?P<subject>[0-9A-Za-z가-힣+_.-]{2,40})(?:의|은|는|이|가)?\s+"
+    r"(?:급여|재심사|특허|허가|임상|환자|매출|점유율|순위|효능|부작용)"
+)
+
+
+def _bind_session_state_contract(
+    plan: Any,
+    question: str,
+    state: SessionState | None,
+) -> Any:
+    """Bind omitted follow-up slots without carrying them onto a new subject."""
+
+    if state is None or not _should_inherit_session_contract(question, state):
+        return plan
+    constraints = _session_query_constraints(state, question)
+    if not constraints:
+        return plan
+    resolved_question = _append_missing_constraints(plan.resolved_question, constraints)
+    updates = {
+        source: tuple(
+            _append_missing_constraints(query, constraints)
+            for query in source_queries
+        )
+        for source, source_queries in plan.tool_queries.items()
+    }
+    return plan.model_copy(
+        update={
+            "resolved_question": resolved_question,
+            "tool_queries": plan.tool_queries.model_copy(update=updates),
+        }
+    )
+
+
+def _should_inherit_session_contract(question: str, state: SessionState) -> bool:
+    normalized = " ".join(question.split()).casefold()
+    if not normalized:
+        return False
+    if _is_prior_result_reference(question):
+        return True
+    subject_match = _SUBJECT_BEFORE_INTENT_RE.match(question)
+    if subject_match is not None:
+        subject = subject_match.group("subject").casefold()
+        if subject not in {"그", "그중", "해당", "이번", "최근"}:
+            primary = (state.primary_entity or state.comparison_anchor or "").casefold()
+            return bool(primary and subject == primary)
+    known_entities = tuple(
+        dict.fromkeys(
+            entity
+            for entity in (
+                state.primary_entity,
+                *state.canonical_entities,
+                *state.mentioned_related_entities,
+            )
+            if entity
+        )
+    )
+    if any(entity.casefold() in normalized for entity in known_entities):
+        return True
+    return any(
+        marker in normalized
+        for marker in (
+            "그 중",
+            "그중",
+            "아까",
+            "방금",
+            "왜",
+            "재심사 언제",
+            "언제 끝",
+            "결과 알려",
+            "그 결과",
+            "그 자료",
+        )
+    )
+
+
+def _session_query_constraints(
+    state: SessionState,
+    question: str,
+) -> tuple[str, ...]:
+    values: list[str] = []
+    primary = state.primary_entity or state.comparison_anchor
+    if primary:
+        values.append(primary)
+    requested_record_type = _record_type(question)
+    inherit_record_scope = (
+        requested_record_type is None or requested_record_type == state.record_type
+    )
+    if requested_record_type is None and state.record_type in _RECORD_TYPE_QUERY_LABELS:
+        values.append(_RECORD_TYPE_QUERY_LABELS[state.record_type])
+    if inherit_record_scope:
+        values.extend(
+            _STATUS_QUERY_LABELS[value]
+            for value in state.status_filter
+            if value in _STATUS_QUERY_LABELS
+        )
+        values.extend(
+            _COUNTRY_QUERY_LABELS[value]
+            for value in state.country_filter
+            if value in _COUNTRY_QUERY_LABELS
+        )
+        values.extend(_public_period_label(value) for value in state.time_window)
+    return tuple(dict.fromkeys(value for value in values if value))
+
+
+def _public_period_label(value: str) -> str:
+    recent = re.fullmatch(r"recent_(\d{1,2})y", value)
+    if recent:
+        return f"최근 {recent.group(1)}년"
+    if re.fullmatch(r"20\d{2}", value):
+        return f"{value}년"
+    return value
+
+
+def _append_missing_constraints(value: str, constraints: Sequence[str]) -> str:
+    text = " ".join(value.split())
+    normalized = text.casefold()
+    missing = [item for item in constraints if item.casefold() not in normalized]
+    return " ".join((text, *missing)) if missing else text
+
+
 def _preserve_period_in_answer_queries(plan: Any) -> Any:
     match = re.search(r"최근\s*\d+\s*년", plan.resolved_question)
     if match is None:
@@ -1104,9 +1315,11 @@ def _absence_context_request(
             and lookup.get("document") == requested[1]
         ):
             document_lookups.append(lookup)
-    if not document_lookups or any(
-        lookup.get("outcome") != "confirmed_absent"
-        for lookup in document_lookups
+    absence_statuses = {
+        str(lookup.get("outcome") or "") for lookup in document_lookups
+    }
+    if not document_lookups or not absence_statuses.issubset(
+        {"doc_not_found", "confirmed_non_reimbursed"}
     ):
         return None
     if _has_official_document_reference(results, requested[0]):
@@ -1118,6 +1331,7 @@ def _absence_context_request(
         "source": requested[0],
         "document": requested[1],
         "subject": subject,
+        "absence_status": str(document_lookups[0].get("outcome") or ""),
         "query": plan.resolved_question,
     }
 
@@ -1158,20 +1372,26 @@ def _tag_absence_confirmation(
     if not (
         isinstance(lookup, Mapping)
         and lookup.get("document") == request.get("document")
-        and lookup.get("outcome") == "confirmed_absent"
+        and lookup.get("outcome")
+        in {"doc_not_found", "coverage_unknown", "confirmed_non_reimbursed"}
         and lookup.get("subject") == request.get("subject")
     ):
         return result
 
     document = str(request["document"])
     subject = str(request["subject"])
+    status = str(lookup["outcome"])
+    absence_claims = (
+        ("absence_confirmation", f"absence_confirmation:{document}")
+        if status == "confirmed_non_reimbursed"
+        else ()
+    )
     claims = tuple(
         dict.fromkeys(
             (
                 *(result.evidence.eligible_claims if result.evidence else ()),
                 document,
-                "absence_confirmation",
-                f"absence_confirmation:{document}",
+                *absence_claims,
             )
         )
     )
@@ -1197,7 +1417,7 @@ def _tag_absence_confirmation(
                 "absence_confirmation": {
                     "source": result.source,
                     "doc_type": document,
-                    "status": "confirmed_absent",
+                    "status": status,
                     "subject": subject,
                 },
             },
@@ -1221,7 +1441,10 @@ def _tag_absence_context(
                     "source": request["source"],
                     "document": request["document"],
                     "subject": request["subject"],
-                    "official_absence": True,
+                    "official_document_not_found": True,
+                    "absence_status": str(
+                        request.get("absence_status") or "doc_not_found"
+                    ),
                     "reported_context_only": True,
                     "separate_from_official_fact": True,
                 },

@@ -41,7 +41,7 @@ def _confirmed_absence() -> SourceResult:
             "calls": [],
             "document_lookup": {
                 "document": "reimbursement",
-                "outcome": "confirmed_absent",
+                "outcome": "doc_not_found",
                 "subject": "마운자로",
                 "error_code": "REALTIME_NO_EVIDENCE",
             },
@@ -130,10 +130,11 @@ def test_r10c_typed_absence_claim_survives_final_claim_gate() -> None:
     assert hira["payload"]["absence_confirmation"] == {
         "source": "hira",
         "doc_type": "reimbursement",
-        "status": "confirmed_absent",
+        "status": "doc_not_found",
         "subject": "마운자로",
     }
-    assert "현재 급여기준이 없습니다(비급여)" in answer.text
+    assert "현재 조회한 HIRA 세부 급여기준에서는 별도 기준을 찾지 못했습니다" in answer.text
+    assert "비급여 여부를 확정할 수는 없습니다" in answer.text
     assert "사용 가능한 출처를 확보하지 못했습니다" not in answer.text
     assert "고시 무결과 확인" in answer.text
     assert answer.sources == ("hira",)
@@ -164,7 +165,7 @@ def test_r10c_first_wave_web_context_skips_supplemental_call() -> None:
 
     web = next(result for result in answer.trace["tool_results"] if result["source"] == "web")
     assert executor.filters == [None]
-    assert web["payload"]["absence_context"]["official_absence"] is True
+    assert web["payload"]["absence_context"]["official_document_not_found"] is True
 
 
 def test_r10c_generic_first_wave_web_triggers_targeted_supplemental_call() -> None:
@@ -272,7 +273,8 @@ def test_r10c_empty_first_wave_context_does_not_mask_supplemental_context() -> N
                 **_generic_trusted_web().payload,
                 "absence_context": {
                     **request,
-                    "official_absence": True,
+                        "official_document_not_found": True,
+                        "absence_status": "doc_not_found",
                     "reported_context_only": True,
                 },
             },
@@ -307,7 +309,8 @@ def test_r10c_confirmed_absence_surfaces_without_web_context() -> None:
     answer = V4Synthesizer(object()).synthesize(_plan("마운자로 급여기준"), (confirmed,), ())
 
     assert answer.startswith(
-        "## 핵심 답\n마운자로는 현재 급여기준이 없습니다(비급여). [출처: HIRA]"
+        "## 핵심 답\n현재 조회한 HIRA 세부 급여기준에서는 별도 기준을 찾지 못했습니다. "
+        "이 결과만으로 비급여 여부를 확정할 수는 없습니다. [출처: HIRA]"
     )
     assert "확인된 근거가 없어" not in answer
 
