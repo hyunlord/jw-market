@@ -94,6 +94,17 @@ def test_publish_failure_recovers_candidate_with_build_run_identity(
             "baseline_live_snapshot": [],
             "row_counts": {},
             "periods": ["2026-07"],
+            "automatic_publish": {
+                "source_sets": {
+                    "load": {
+                        "sha256": "e" * 64,
+                        "relative_paths": ["source.xlsx"],
+                        "rows": 10,
+                        "periods": ["2026-07"],
+                    },
+                    "publish": None,
+                }
+            },
         },
         prepared_at="2026-08-04T00:00:00+00:00",
         expires_at="2026-08-05T00:00:00+00:00",
@@ -129,6 +140,11 @@ def test_publish_failure_recovers_candidate_with_build_run_identity(
     )
     monkeypatch.setattr(publish_runner, "promote_candidate_corpus", lambda *_args: calls.append("corpus"))
     monkeypatch.setattr(publish_runner, "update_activation_journal", lambda *_args: None)
+    monkeypatch.setattr(
+        publish_runner,
+        "_measure_publish_source_set",
+        lambda _category, evidence: evidence,
+    )
 
     def fail_publish(*_args, **kwargs):
         calls.append(("publish_run_id", kwargs["run_id"]))
@@ -318,6 +334,26 @@ def test_production_publish_binds_dashboard_to_real_refresh(
         lambda _label, argv, **_kwargs: refresh_calls.append(argv),
     )
     monkeypatch.setattr(publish_runner, "_emit_completion_signal", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        publish_runner,
+        "_measure_publish_source_set",
+        lambda _category, evidence: evidence,
+    )
+    monkeypatch.setattr(
+        publish_runner,
+        "_source_set_from_contract",
+        lambda _payload: SimpleNamespace(
+            sha256="e" * 64,
+            relative_paths=("source.xlsx",),
+        ),
+    )
+    monkeypatch.setattr(
+        publish_runner,
+        "_mark_complete_after_required_stages",
+        lambda **kwargs: kwargs["ledger"].mark_complete(
+            *kwargs["identity"], row_counts=kwargs["row_counts"]
+        ),
+    )
 
     assert publish_runner.run(
         ledger=sqlite_ledger,

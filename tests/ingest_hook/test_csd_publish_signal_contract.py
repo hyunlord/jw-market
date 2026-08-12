@@ -83,6 +83,23 @@ def test_channel_complete_signal_identifies_published_schema_and_time(monkeypatc
     monkeypatch.setattr(csd_channel_publish_runner.csd_channel_activation, "validate_candidate", lambda *_args: evidence)
     monkeypatch.setattr(csd_channel_publish_runner.csd_channel_activation, "publish_candidate", publish_candidate)
     monkeypatch.setattr(csd_channel_publish_runner, "_emit_completion_signal", lambda **kwargs: signal.update(kwargs))
+    monkeypatch.setattr(
+        csd_channel_publish_runner,
+        "_measure_publish_source_set",
+        lambda _category, _evidence: SimpleNamespace(
+            sha256="c" * 64, relative_paths=("source.xlsx",)
+        ),
+    )
+    monkeypatch.setattr(
+        csd_channel_publish_runner,
+        "_source_set_from_contract",
+        lambda _payload: object(),
+    )
+    monkeypatch.setattr(
+        csd_channel_publish_runner,
+        "_mark_complete_after_required_stages",
+        Mock(),
+    )
 
     assert csd_channel_publish_runner.run(
         ledger=ledger,
@@ -174,6 +191,23 @@ def test_keyword_complete_signal_identifies_published_schema_and_time(monkeypatc
         lambda *_args: {"dimension": "period_ym", "count": 2, "values": ["2025-07", "2025-10"]},
     )
     monkeypatch.setattr(csd_keyword_publish_runner, "_emit_completion_signal", lambda **kwargs: signal.update(kwargs))
+    monkeypatch.setattr(
+        csd_keyword_publish_runner,
+        "_measure_publish_source_set",
+        lambda _category, _evidence: SimpleNamespace(
+            sha256="d" * 64, relative_paths=("source.xlsx",)
+        ),
+    )
+    monkeypatch.setattr(
+        csd_keyword_publish_runner,
+        "_source_set_from_contract",
+        lambda _payload: object(),
+    )
+    monkeypatch.setattr(
+        csd_keyword_publish_runner,
+        "_mark_complete_after_required_stages",
+        Mock(),
+    )
 
     assert csd_keyword_publish_runner.run(
         ledger=ledger,

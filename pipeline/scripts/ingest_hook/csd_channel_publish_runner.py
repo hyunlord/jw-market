@@ -7,8 +7,13 @@ from pipeline.scripts.ingest_hook import config, csd_channel_activation
 from pipeline.scripts.ingest_hook.job_launcher import publish_job_name
 from pipeline.scripts.ingest_hook.job_runner import (
     _StageTracker,
+    _drain_completion_queue,
     _emit_completion_signal,
+    _mark_complete_after_required_stages,
+    _measure_publish_source_set,
+    _publish_source_set_reason,
     _release_writer_lock_preserving_primary,
+    _source_set_from_contract,
     _stamp,
 )
 from pipeline.scripts.ingest_hook.ledger import STATUS_PUBLISH_RUNNING, Ledger
@@ -107,11 +112,17 @@ def run(
             raise csd_channel_activation.CandidateValidationError(
                 "CSD candidate fingerprint changed after approval"
             )
+        publish_source_set = _measure_publish_source_set(
+            category,
+            _source_set_from_contract(payload),
+        )
         verdict = csd_channel_activation.publish_candidate(connection, plan, current)
         if verdict is not csd_channel_activation.SwapVerdict.APPLIED:
             raise RuntimeError(f"CSD publish was not applied: {verdict}")
         published_at = _stamp()
-        publish_execution = tracker.done()
+        publish_execution = tracker.done(
+            reason=_publish_source_set_reason(publish_source_set)
+        )
         tracker.skip("refresh", "CSD channel API reads the activated stage table directly")
         _record_context_bridge(ledger, identity, publish_run_id)
         tracker.complete_from(
@@ -127,8 +138,7 @@ def run(
             plan.raw.live.table: current.raw.row_count,
             plan.stage.live.table: current.stage.row_count,
         }
-        ledger.mark_complete(*identity, row_counts=row_counts)
-        _emit_completion_signal(
+        completion_signal = _emit_completion_signal(
             ledger=ledger,
             tracker=tracker,
             identity=identity,
@@ -144,7 +154,16 @@ def run(
             target_schema=stage_schema,
             published_at=published_at,
             affected_scope={"dimension": "atc4", "count": 0, "values": []},
+            drain_queue=False,
         )
+        _mark_complete_after_required_stages(
+            ledger=ledger,
+            identity=identity,
+            run_ids=(build_run_id, publish_run_id),
+            row_counts=row_counts,
+        )
+        if completion_signal is not None:
+            _drain_completion_queue(completion_signal)
         return 0
     except Exception as exc:
         failure_reason = f"{type(exc).__name__}: {exc}"

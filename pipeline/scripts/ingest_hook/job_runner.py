@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import os
 import sqlite3
 import subprocess
@@ -199,9 +200,12 @@ from pipeline.scripts.ingest_hook.post_gate import (
 from pipeline.scripts.ingest_hook.sigma_gate import SigmaGateError, check_staging
 from pipeline.scripts.ingest_hook.source_inventory import (
     DEFAULT_INVENTORY_ROOT,
+    FileObservation,
     ScanOutcome,
     SourceScanPolicy,
+    SourceSetEvidence,
     run_full_scan,
+    source_set_evidence,
 )
 from pipeline.scripts.ingest_hook.source_inventory_runtime import (
     latest_successful_snapshot,
@@ -402,6 +406,116 @@ _SOURCE_STAGE_CONTRACTS: dict[str, tuple[str, ...]] = {
         "signal",
     ),
 }
+
+
+class RequiredStageContractError(RuntimeError):
+    """A terminal ledger transition was attempted without complete stage evidence."""
+
+
+def _required_stage_failures(
+    ledger: Ledger,
+    identity: tuple[str, str, str],
+    run_ids: tuple[str, ...],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    required = _SOURCE_STAGE_CONTRACTS[identity[1]]
+    allowed_runs = frozenset(run_ids)
+    status_by_run_stage: dict[tuple[str, str], str] = {}
+    for event in ledger.stage_events(*identity):
+        if event.run_id in allowed_runs and event.stage in required:
+            status_by_run_stage[(event.run_id, event.stage)] = event.status
+    latest: dict[str, str] = {}
+    for stage in required:
+        for run_id in reversed(run_ids):
+            status = status_by_run_stage.get((run_id, stage))
+            if status is not None:
+                latest[stage] = status
+                break
+    missing = tuple(stage for stage in required if stage not in latest)
+    incomplete = tuple(
+        f"{stage}:{latest[stage]}"
+        for stage in required
+        if stage in latest and latest[stage] != "complete"
+    )
+    return missing, incomplete
+
+
+def _mark_complete_after_required_stages(
+    *,
+    ledger: Ledger,
+    identity: tuple[str, str, str],
+    run_ids: tuple[str, ...],
+    row_counts: dict[str, int],
+) -> None:
+    missing, incomplete = _required_stage_failures(ledger, identity, run_ids)
+    if missing or incomplete:
+        details = []
+        if missing:
+            details.append(f"missing_required_stages={','.join(missing)}")
+        if incomplete:
+            details.append(f"incomplete_required_stages={','.join(incomplete)}")
+        raise RequiredStageContractError("; ".join(details))
+    ledger.mark_complete(*identity, row_counts=row_counts)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _measure_publish_source_set(
+    category: str,
+    load_evidence: SourceSetEvidence,
+) -> SourceSetEvidence:
+    """Re-read the exact approved files at the publish boundary."""
+    policy = load_scan_policy(category, required=True)
+    observations = []
+    for relative_path in load_evidence.relative_paths:
+        path = policy.root / relative_path
+        observations.append(
+            FileObservation(
+                relative_path=relative_path,
+                sha256=_sha256_file(path),
+                size=path.stat().st_size,
+                state="classified",
+                category=category,
+                rows=0,
+                periods=(),
+            )
+        )
+    measured = source_set_evidence(observations)
+    return SourceSetEvidence(
+        measured.sha256,
+        measured.relative_paths,
+        load_evidence.rows,
+        load_evidence.periods,
+    )
+
+
+def _source_set_from_contract(payload: dict[str, object]) -> SourceSetEvidence:
+    automatic = payload.get("automatic_publish")
+    if isinstance(automatic, dict):
+        payload = automatic
+    source_sets = payload.get("source_sets")
+    if not isinstance(source_sets, dict) or not isinstance(source_sets.get("load"), dict):
+        raise RuntimeError("publish candidate has no load source-set evidence")
+    load = source_sets["load"]
+    return SourceSetEvidence(
+        sha256=str(load["sha256"]),
+        relative_paths=tuple(str(item) for item in load["relative_paths"]),
+        rows=int(load["rows"]),
+        periods=tuple(str(item) for item in load["periods"]),
+    )
+
+
+def _publish_source_set_reason(evidence: SourceSetEvidence) -> str:
+    return (
+        "source_set_boundary=publish; "
+        f"source_set_sha256={evidence.sha256}; "
+        f"files={len(evidence.relative_paths)}"
+    )
 
 
 def expected_stages(spec: CategorySpec) -> list[dict[str, str | int | bool]]:
@@ -879,7 +993,7 @@ def _automatic_publish_contract(outcome: ScanOutcome) -> dict[str, object]:
             "PG-5": gates.pg5.status,
         },
         "commissioning_warnings": list(outcome.commissioning_warnings),
-        "source_sets": {"load": source_set, "publish": source_set},
+        "source_sets": {"load": source_set, "publish": None},
         "window_excluded": [
             {
                 "relative_path": item.relative_path,
@@ -939,8 +1053,9 @@ def _emit_completion_signal(
     target_schema: str | None = None,
     published_at: str | None = None,
     affected_scope: dict[str, object] | None = None,
-) -> None:
-    """Best-effort delivery and durable observation; never changes ingest result."""
+    drain_queue: bool = True,
+):
+    """Deliver and durably record a stage result for the completion contract."""
     from urllib.parse import urlencode
 
     from pipeline.scripts.ingest_hook.completion_signal import CompletionSignal, PublishResult, publish
@@ -998,7 +1113,7 @@ def _emit_completion_signal(
         )
         tracker.record_failure("signal", reason)
         print(f"[signal] {reason}; outbound delivery suppressed", file=sys.stderr)
-        return
+        return None
     payload = signal.as_dict()
     try:
         ledger.record_signal(
@@ -1010,7 +1125,7 @@ def _emit_completion_signal(
         reason = f"ledger pending record failed: {type(exc).__name__}: {exc}"
         tracker.record_failure("signal", reason)
         print(f"[signal] {reason}; outbound delivery suppressed", file=sys.stderr)
-        return
+        return None
     try:
         endpoint, attempts = config.completion_webhook()
         result = publish(signal, endpoint=endpoint, attempts=attempts)
@@ -1029,17 +1144,11 @@ def _emit_completion_signal(
             f"ledger terminal record failed: {type(exc).__name__}: {exc}",
         )
         print(f"[signal] {result.reason}", file=sys.stderr)
-    drain_result = PublishResult("disabled", 0, "queue drain endpoint is not configured")
-    try:
-        drain_endpoint, drain_attempts = config.queue_drain_webhook()
-        if drain_endpoint:
-            drain_result = publish(
-                signal,
-                endpoint=drain_endpoint,
-                attempts=drain_attempts,
-            )
-    except Exception as exc:  # queue drain callback is recoverable by reconciliation
-        drain_result = PublishResult("failed", 0, f"{type(exc).__name__}: {exc}")
+    drain_result = (
+        _drain_completion_queue(signal)
+        if drain_queue
+        else PublishResult("deferred", 0, "queue drain waits for ledger completion")
+    )
     stage_reason = (
         f"delivery={result.status}; attempts={result.attempts}; "
         f"queue_drain={drain_result.status}; "
@@ -1054,6 +1163,24 @@ def _emit_completion_signal(
         f"attempts={result.attempts} queue_drain={drain_result.status} "
         f"queue_drain_attempts={drain_result.attempts}"
     )
+    return signal
+
+
+def _drain_completion_queue(signal):
+    from pipeline.scripts.ingest_hook.completion_signal import PublishResult, publish
+
+    result = PublishResult("disabled", 0, "queue drain endpoint is not configured")
+    try:
+        endpoint, attempts = config.queue_drain_webhook()
+        if endpoint:
+            result = publish(signal, endpoint=endpoint, attempts=attempts)
+    except Exception as exc:
+        result = PublishResult("failed", 0, f"{type(exc).__name__}: {exc}")
+    print(
+        f"queue_drain event={signal.event} delivery={result.status} "
+        f"attempts={result.attempts}"
+    )
+    return result
 
 
 def _completion_affected_scope(category: str) -> dict[str, object] | None:
@@ -1140,6 +1267,8 @@ def run(
     retained_quarters: tuple[str, ...] = ()
     activation_journal = None
     primary_failure_reason = None
+    published_at = None
+    published_target_schema = None
     try:
         spec = resolve_category(manifest.category)
         previous_total = ledger.previous_complete_total(manifest.category, before_epoch=manifest.epoch)
@@ -1900,6 +2029,12 @@ def run(
                         raise RuntimeError(
                             "serving general mart changed while NSA candidate was built"
                         )
+                    if scan_outcome is None:
+                        raise RuntimeError("NSA publish has no source-set scan evidence")
+                    publish_source_set = _measure_publish_source_set(
+                        manifest.category,
+                        scan_outcome.source_set,
+                    )
                     publish_actions = iqvia_nsa_mart_activation.publish(
                         writer_conn,
                         nsa_activation,
@@ -1915,7 +2050,9 @@ def run(
                     print(
                         f"phase=mart_publish status=complete tables={len(publish_actions)}"
                     )
-                    tracker.done()
+                    published_at = _stamp()
+                    published_target_schema = nsa_activation.target_db
+                    tracker.done(reason=_publish_source_set_reason(publish_source_set))
                 else:
                     tracker.skip("mart_publish", "category has no mart activation")
                 tracker.enter("refresh")
@@ -1945,7 +2082,17 @@ def run(
                     ubist_mart_activation.update_activation_journal(
                         activation_journal, "refresh_succeeded"
                     )
-                tracker.done()
+                refresh_execution = tracker.done()
+                if nsa_activation is not None:
+                    tracker.complete_from(
+                        "dashboard",
+                        refresh_execution,
+                        reason=(
+                            "dashboard serving refresh completed; "
+                            f"target_schema={nsa_activation.target_db}; "
+                            f"refresh_argv={' '.join(spec.refresh_argv)}"
+                        ),
+                    )
                 if load_result["epoch_rows"] is not None:
                     report.file_rows[f"epoch:{manifest.epoch}"] = load_result["epoch_rows"]
                 if activation_journal is not None:
@@ -1975,17 +2122,32 @@ def run(
             ):
                 report.file_rows[f"epoch:{manifest.epoch}"] = load_result["epoch_rows"]
 
-        if not ledger_completed:
-            ledger.mark_complete(*identity, row_counts=report.file_rows)
-            ledger_completed = True
+        completion_signal = None
         if not completion_signal_emitted:
-            _emit_completion_signal(
+            completion_signal = _emit_completion_signal(
                 ledger=ledger, tracker=tracker, identity=identity, run_id=run_id,
                 event="complete", mode=mode, rows_before=rows_before, rows_after=rows_after,
                 rows_loaded=rows_loaded,
                 periods=periods, started_at=started_at, failure_reason=None,
+                target_schema=published_target_schema,
+                published_at=published_at,
                 affected_scope=_completion_affected_scope(manifest.category),
+                drain_queue=mode != "production",
             )
+            completion_signal_emitted = True
+        if not ledger_completed:
+            if mode == "production":
+                _mark_complete_after_required_stages(
+                    ledger=ledger,
+                    identity=identity,
+                    run_ids=(run_id,),
+                    row_counts=report.file_rows,
+                )
+            else:
+                ledger.mark_complete(*identity, row_counts=report.file_rows)
+            ledger_completed = True
+        if mode == "production" and completion_signal is not None:
+            _drain_completion_queue(completion_signal)
         print(f"result=complete epoch={manifest.epoch} category={manifest.category} run_id={run_id}")
         return 0
     except PostGateError as exc:
