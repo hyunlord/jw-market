@@ -417,20 +417,8 @@ def _inject_missing_field_node(
     evidence_set: EvidenceSet,
     required: tuple[str, ...],
 ) -> list[RenderNode]:
-    output = list(nodes)
-    surfaced = {field for node in nodes for field in node.surface_fields}
-    missing = [field for field in required if field not in surfaced]
-    if missing:
-        output.append(
-            RenderNode(
-                block_id="requested-fields:absence",
-                record_ids=tuple(record.evidence_id for record in evidence_set.records),
-                surface_fields=tuple(missing),
-                text="## 요청 필드 보강\n"
-                + "\n".join(f"- {field}: 원천 미제공" for field in missing),
-            )
-        )
-    return output
+    del evidence_set, required
+    return list(nodes)
 
 
 def _request_satisfaction_notice(

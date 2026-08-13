@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from datetime import date
+from types import SimpleNamespace
 
+import pytest
+
+from jw_chat_agent_poc.service.v4 import adapters as v4_adapters
 from jw_chat_agent_poc.service.v4.charts import build_grounded_charts
 from jw_chat_agent_poc.service.v4.clinical import normalize_clinical_study
 from jw_chat_agent_poc.service.v4.contracts import (
@@ -12,6 +16,7 @@ from jw_chat_agent_poc.service.v4.contracts import (
     ToolQueries,
 )
 from jw_chat_agent_poc.service.v4.gates import apply_v4_gates
+from jw_chat_agent_poc.service.v4.deterministic_render import render_deterministic_facts
 from jw_chat_agent_poc.service.v4.expansion import (
     build_second_hop_expansion,
     expand_parameter_axes,
@@ -26,8 +31,17 @@ from jw_chat_agent_poc.service.v4.lossless_contracts import (
 )
 from jw_chat_agent_poc.service.v4.render_clinical import render_clinical
 from jw_chat_agent_poc.service.v4.narrative_realization import build_narrative_realization
+from jw_chat_agent_poc.service.v4.retrieval_events import (
+    public_retrieval_notice,
+    retrieval_event_from_result,
+)
 from jw_chat_agent_poc.service.v4.source_tiers import source_tier
 from jw_chat_agent_poc.service.v4.synthesizer import _select_usable_results
+from jw_chat_agent_poc.tools.external.client import (
+    ExternalApiClient,
+    ExternalCall,
+    _mcp_tool_spec,
+)
 
 
 def _plan(question: str, *, answer_sources=("hira",)) -> PlannerOutput:
@@ -95,6 +109,224 @@ def test_a_second_hop_uses_observed_products_and_records_truncation() -> None:
     )
     assert expanded.trace["truncated_count"] == 1
     assert expanded.trace["source"] == "nedrug"
+
+
+def test_a_disease_patent_expansion_binds_deterministic_product_before_first_wave() -> None:
+    question = "혈우병 치료제 특허현황"
+    plan = _plan(question, answer_sources=("patent",))
+
+    first = expand_parameter_axes(plan, question, observed_on=date(2026, 8, 13))
+    second = expand_parameter_axes(plan, question, observed_on=date(2026, 8, 13))
+
+    assert first == second
+    assert first.plan.tool_queries.patent == ("헴리브라 특허현황",)
+    assert first.trace["entity_expansion"] == {
+        "status": "expanded",
+        "source": "hira_disease_anchor_brand",
+        "entities": ["헴리브라"],
+        "requests": {"patent": ["헴리브라 특허현황"]},
+    }
+
+
+def test_a_expanded_disease_product_reaches_mfds_as_product_and_ingredient(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jw_chat_agent_poc.agent_loop import factory
+    from jw_chat_agent_poc.service import general_view_routing
+    from jw_chat_agent_poc.tools.external.client import ExternalCall
+
+    question = "혈우병 치료제 특허현황"
+    expanded = expand_parameter_axes(
+        _plan(question, answer_sources=("patent",)),
+        question,
+        observed_on=date(2026, 8, 13),
+    )
+    mfds_requests: list[tuple[str, str | None]] = []
+
+    def external_call(tool: str, source: str) -> ExternalCall:
+        return ExternalCall(
+            tool=tool,
+            source=source,
+            status="no_data",
+            summary_text=f"{tool} no data",
+            render_data={"items": []},
+        )
+
+    class Resolver:
+        def resolve(self, query: str, *, allow_default: bool) -> SimpleNamespace:
+            assert allow_default is False
+            assert "헴리브라" in query
+            return SimpleNamespace(
+                canonical_brand="헴리브라",
+                molecule_en=("emicizumab",),
+            )
+
+    class External:
+        timeout_s = 12
+
+        def mfds_patent(
+            self,
+            ingredient: str,
+            *,
+            item_name: str | None = None,
+        ) -> ExternalCall:
+            mfds_requests.append((ingredient, item_name))
+            return external_call("mfds_patent", "식품의약품안전처")
+
+        def mfds_fda_orangebook(self, _ingredient: str) -> ExternalCall:
+            return external_call("mfds_fda_orangebook", "FDA Orange Book")
+
+        def web_search(self, _query: str, *, topic: str = "general") -> ExternalCall:
+            assert topic == "news"
+            return external_call("web_search", "Tavily")
+
+    monkeypatch.setattr(
+        factory,
+        "build_chat_agent_dependencies",
+        lambda **_kwargs: SimpleNamespace(
+            external=External(),
+            resolver=Resolver(),
+            query_layer=None,
+        ),
+    )
+    monkeypatch.setattr(
+        general_view_routing.GeneralViewService,
+        "from_env",
+        lambda _resolver: SimpleNamespace(),
+    )
+    monkeypatch.setenv("WEB_SEARCH_PROVIDER", "tavily")
+
+    v4_adapters.build_source_adapters()["patent"](
+        expanded.plan.tool_queries.patent[0]
+    )
+
+    assert mfds_requests == [("emicizumab", "헴리브라")]
+
+
+def test_a_mfds_serialization_keeps_expanded_product_and_ingredient(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = ExternalApiClient(mode="fixture")
+    captured: dict[str, str] = {}
+
+    def capture(
+        tool: str,
+        params: dict[str, str],
+        *,
+        xml: bool = False,
+    ) -> ExternalCall:
+        assert tool == "mfds_patent"
+        assert xml is True
+        captured.update(params)
+        return ExternalCall(
+            tool=tool,
+            source="식품의약품안전처",
+            status="ok",
+            summary_text="captured",
+            render_data={"request": params, "items": [{"patent_no": "10-1"}]},
+        )
+
+    monkeypatch.setattr(client, "_fixture_or_live", capture)
+
+    result = client.mfds_patent("emicizumab", item_name="헴리브라")
+    spec = _mcp_tool_spec("mfds_patent", captured)
+
+    assert result.status == "ok"
+    assert captured["item_name"] == "헴리브라"
+    assert captured["ingr_name"] == "emicizumab"
+    assert spec["arguments"]["item_name"] == "헴리브라"
+    assert spec["arguments"]["ingr_name"] == "emicizumab"
+
+
+def test_a_single_kcd_and_abbreviated_year_range_expand_without_substitution() -> None:
+    question = "21년부터 25년도 상병코드 D593의 입원 외래별 년도별 환자수를 비교해줘"
+
+    expanded = expand_parameter_axes(
+        _plan(question),
+        question,
+        observed_on=date(2026, 8, 13),
+    )
+
+    assert expanded.trace["axes"] == {
+        "kcd_codes": ["D593"],
+        "years": [2021, 2022, 2023, 2024, 2025],
+    }
+    assert len(expanded.plan.tool_queries.hira) == 5
+    assert all("D593" in query for query in expanded.plan.tool_queries.hira)
+    assert tuple(
+        year
+        for year in range(2021, 2026)
+        if any(f"{year}년" in query for query in expanded.plan.tool_queries.hira)
+    ) == tuple(range(2021, 2026))
+
+
+@pytest.mark.parametrize(
+    ("question", "tool", "notice_fragment"),
+    (
+        (
+            "2024년 D693 입원 외래별 환자수",
+            "hira_disease_hospitalization_outpatient_stats",
+            None,
+        ),
+        (
+            "2023년 D50 성별 연령10세구간별 환자수",
+            "hira_disease_gender_age_stats",
+            None,
+        ),
+        (
+            "2024년 D693 요양기관종별 환자수",
+            "hira_disease_institution_class_stats",
+            None,
+        ),
+        (
+            "2024년 D693 요양기관소재지별 환자수",
+            "hira_disease_area_stats",
+            None,
+        ),
+        (
+            "2024년 D693 성별 연령5세구간별 내원일수",
+            None,
+            "성별·연령5세구간별",
+        ),
+        (
+            "2024년 D693 진료년월 기준 월별 환자수 추이",
+            None,
+            "진료년월별",
+        ),
+    ),
+)
+def test_b_hira_axis_route_never_substitutes_an_unrequested_aggregation(
+    question: str,
+    tool: str | None,
+    notice_fragment: str | None,
+) -> None:
+    route_factory = getattr(v4_adapters, "_hira_stat_route", None)
+
+    assert callable(route_factory)
+    route = route_factory(question)
+    assert route.tool == tool
+    if notice_fragment is None:
+        assert route.scope_notice is None
+    else:
+        assert notice_fragment in route.scope_notice
+
+
+def test_b_hira_scope_limit_preserves_its_exact_public_reason() -> None:
+    reason = (
+        "요청하신 성별·연령5세구간별 집계는 현재 연결된 HIRA 조회에서 "
+        "지원되지 않아 다른 집계축으로 대체하지 않았습니다."
+    )
+    result = SourceResult(
+        source="hira",
+        query="2024년 D693 성별 연령5세구간별 내원일수",
+        status="scope_limit",
+        notice=reason,
+    )
+
+    event = retrieval_event_from_result(result)
+
+    assert public_retrieval_notice(event) == reason
+    assert "성분명" not in public_retrieval_notice(event)
 
 
 def test_b_synthesizer_keeps_every_expanded_hira_axis() -> None:
@@ -434,3 +666,104 @@ def test_d_derived_metrics_are_recomputed_from_bound_records() -> None:
     assert proofs["GROWTH_DECOMP"].expected["recomputed_growth"] == 12.0
     assert proofs["CONCENTRATION_CR5"].expected == 30.0
     assert set(proofs["PEER_ZSCORE"].expected) == {"mart:a", "mart:b"}
+
+
+def test_d_direct_confirmation_is_inline_and_keeps_source_scoped_relations() -> None:
+    records = tuple(
+        EvidenceRecord(
+            evidence_id=f"patent:{index}",
+            source="patent",
+            result_kind="patent",
+            payload={
+                "patent_number": f"10-{index}",
+                "status": "소멸" if index == 1 else "존속",
+            },
+        )
+        for index in (1, 2)
+    )
+    evidence = EvidenceSet(
+        source="patent",
+        retrieved_at="2026-08-13T00:00:00Z",
+        coverage=CoverageLedger(records_received=2, records_unique=2),
+        records=records,
+    )
+
+    realization = build_narrative_realization(
+        (evidence,),
+        tuple(record.evidence_id for record in records),
+    )
+    surface = "\n".join(node.text for node in realization.nodes)
+
+    assert "## [직접 확인]" not in surface
+    assert "- [직접 확인]" in surface
+    assert "식품의약품안전처 의약품 특허목록" in surface
+
+
+def test_d_missing_source_fields_are_not_rendered_as_internal_raw_field_names() -> None:
+    record = EvidenceRecord(
+        evidence_id="clinicaltrials:NCT05151731",
+        source="clinicaltrials",
+        result_kind="clinical",
+        payload={
+            "nct_id": "NCT05151731",
+            "brief_title": "시험 디자인",
+            "overall_status": "COMPLETED",
+        },
+    )
+    evidence = EvidenceSet(
+        source="clinicaltrials",
+        retrieved_at="2026-08-13T00:00:00Z",
+        coverage=CoverageLedger(records_received=1, records_unique=1),
+        records=(record,),
+    )
+    plan = _plan("NCT05151731 시험 디자인", answer_sources=("clinicaltrials",))
+
+    rendered = render_deterministic_facts(
+        plan,
+        (evidence,),
+        observed_on=date(2026, 8, 13),
+    )
+    surface = "\n".join(node.text for node in rendered.nodes)
+
+    assert "요청 필드 보강" not in surface
+    assert "patent_no" not in surface
+    assert "invention_title" not in surface
+
+
+def test_d_patent_coverage_heading_is_user_facing() -> None:
+    record = EvidenceRecord(
+        evidence_id="patent:10-1",
+        source="patent",
+        result_kind="patent",
+        payload={
+            "lane": "kr_primary",
+            "product": "헴리브라",
+            "ingredient": "emicizumab",
+            "patent_no": "10-1",
+            "status": "등록",
+        },
+    )
+    evidence = EvidenceSet(
+        source="patent",
+        retrieved_at="2026-08-13T00:00:00Z",
+        coverage=CoverageLedger(records_received=1, records_unique=1),
+        records=(record,),
+        query_manifest=(
+            {
+                "lane": "kr_primary",
+                "records_received": 1,
+                "records_unique": 1,
+                "product_patent_rows": 1,
+            },
+        ),
+    )
+
+    rendered = render_deterministic_facts(
+        _plan("혈우병 치료제 특허현황", answer_sources=("patent",)),
+        (evidence,),
+        observed_on=date(2026, 8, 13),
+    )
+    surface = "\n".join(node.text for node in rendered.nodes)
+
+    assert "## 조사 범위와 완전성" not in surface
+    assert "## 국내 특허 조회 범위" in surface

@@ -223,11 +223,9 @@ class ExternalApiClient:
         item_name: str | None = None,
     ) -> ExternalCall:
         resolved_item_name = item_name or MFDS_PATENT_QUERY_ALIASES.get(ingredient_en.lower())
-        params = (
-            {"item_name": resolved_item_name}
-            if resolved_item_name
-            else {"ingr_name": ingredient_en}
-        )
+        params = {"ingr_name": ingredient_en}
+        if resolved_item_name:
+            params["item_name"] = resolved_item_name
         params["limit"] = str(_mfds_patent_result_limit())
         return self._fixture_or_live("mfds_patent", params, xml=True)
 

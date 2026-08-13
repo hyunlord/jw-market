@@ -47,6 +47,7 @@ class RetrievalEvent(BaseModel):
     received_count: int = 0
     reason_code: str
     exposure_layer: FailureExposure
+    public_notice: str | None = None
 
 
 def classify_retrieval_status(result: SourceResult) -> RetrievalStatus:
@@ -162,6 +163,11 @@ def retrieval_event_from_result(
         received_count=_received_count(result.payload) if status == "ok" else 0,
         reason_code=status,
         exposure_layer=_exposure_layer(status),
+        public_notice=(
+            str(result.notice).strip()
+            if status == "scope_limit" and str(result.notice or "").strip()
+            else None
+        ),
     )
 
 
@@ -188,6 +194,11 @@ def public_retrieval_notice(
     if event.status == "parse_error":
         return f"{prefix}응답은 받았으나 검증 가능한 레코드로 변환하지 못했습니다."
     if event.status == "scope_limit":
+        if event.public_notice:
+            notice = event.public_notice.strip()
+            if notice and notice[-1] not in ".?!。？！":
+                notice = f"{notice}."
+            return f"{prefix}{notice}"
         return (
             f"{prefix}성분명으로는 품목 검색이 지원되지 않아 "
             "이 항목은 확인하지 못했습니다."

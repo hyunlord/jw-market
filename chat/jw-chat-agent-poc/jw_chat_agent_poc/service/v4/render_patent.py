@@ -17,6 +17,9 @@ PATENT_REQUIRED_FIELDS = (
     "jurisdiction",
     "as_of_date",
 )
+US_PATENT_REQUIRED_FIELDS = tuple(
+    field for field in PATENT_REQUIRED_FIELDS if field != "patent_type"
+)
 MAX_DOMESTIC_PATENT_ROWS = 2_147_483_647  # Compatibility export; rendering is uncapped.
 
 
@@ -183,7 +186,15 @@ def render_patent(
             ),
         )
     )
-    return nodes, PATENT_REQUIRED_FIELDS
+    required = tuple(
+        dict.fromkeys(
+            (
+                *(PATENT_REQUIRED_FIELDS if kr_records else ()),
+                *(US_PATENT_REQUIRED_FIELDS if by_lane["us_secondary"] else ()),
+            )
+        )
+    )
+    return nodes, required
 
 
 def _coverage_surface(evidence_set: EvidenceSet, *, rendered: int) -> str:
@@ -199,7 +210,7 @@ def _coverage_surface(evidence_set: EvidenceSet, *, rendered: int) -> str:
     unique = manifest.get("records_unique", evidence_set.coverage.records_unique)
     product_patent_rows = manifest.get("product_patent_rows", unique)
     lines = [
-        "## 조사 범위와 완전성",
+        "## 국내 특허 조회 범위",
         f"국내 정본: 원천 수신 {received}건 → 제품특허 {product_patent_rows}건 → "
         f"고유 특허번호 {unique}건 → 상세 표시 {rendered}건",
     ]

@@ -138,7 +138,7 @@ def _micro_narratives(
             f"{public_source_label(record.source)}의 {record_identity(record, index)}은(는) "
             f"{details}로 확인됩니다."
         )
-        lines.append(f"- {sentence}")
+        lines.append(f"- [직접 확인] {sentence}")
         surface_fields.extend(fields)
         claims.append(_field_claim(record, fields, values, sentence))
     if not lines:
@@ -162,7 +162,7 @@ def _micro_narratives(
             block_id="narrative:field-restatement",
             record_ids=tuple(record.evidence_id for record in records),
             surface_fields=tuple(dict.fromkeys(surface_fields)),
-            text="## [직접 확인] 레코드 설명\n" + "\n".join(lines),
+            text="\n".join(lines),
         ),
         tuple(claims),
         tuple(table_references),
@@ -222,8 +222,7 @@ def _relation_node(claims: Sequence[RealizedClaim]) -> RenderNode | None:
     return RenderNode(
         block_id="narrative:cross-record-relations",
         record_ids=record_ids,
-        text="## [직접 확인] 레코드 관계\n"
-        + "\n".join(f"- {item.text}" for item in claims),
+        text="\n".join(f"- [직접 확인] {item.text}" for item in claims),
     )
 
 

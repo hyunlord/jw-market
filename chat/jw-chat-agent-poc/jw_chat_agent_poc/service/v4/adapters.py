@@ -147,6 +147,13 @@ class _FailedHiraYearCall:
     elapsed_ms: float | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _HiraStatRoute:
+    tool: str | None
+    label: str
+    scope_notice: str | None = None
+
+
 def _decimal_value(value: Any) -> Decimal | None:
     if value in (None, ""):
         return None
@@ -538,6 +545,52 @@ def _hira_query_kind(query: str) -> str:
     if "급여" in query:
         return "reimbursement"
     return "patient" if code else "lookup"
+
+
+def _hira_stat_route(query: str) -> _HiraStatRoute:
+    normalized = re.sub(r"\s+", "", query)
+    if "5세구간" in normalized:
+        return _HiraStatRoute(
+            tool=None,
+            label="성별·연령5세구간별",
+            scope_notice=(
+                "요청하신 성별·연령5세구간별 집계는 현재 연결된 HIRA 조회에서 "
+                "지원되지 않아 다른 집계축으로 대체하지 않았습니다."
+            ),
+        )
+    if "진료년월" in normalized or "월별" in normalized:
+        return _HiraStatRoute(
+            tool=None,
+            label="진료년월별",
+            scope_notice=(
+                "요청하신 진료년월별 집계는 현재 연결된 HIRA 조회에서 "
+                "지원되지 않아 다른 집계축으로 대체하지 않았습니다."
+            ),
+        )
+    if "입원" in normalized or "외래" in normalized:
+        return _HiraStatRoute(
+            tool="hira_disease_hospitalization_outpatient_stats",
+            label="입원/외래",
+        )
+    if "요양기관소재지" in normalized or "소재지별" in normalized:
+        return _HiraStatRoute(
+            tool="hira_disease_area_stats",
+            label="요양기관소재지별",
+        )
+    if "요양기관종별" in normalized or "기관종별" in normalized:
+        return _HiraStatRoute(
+            tool="hira_disease_institution_class_stats",
+            label="요양기관종별",
+        )
+    if "10세구간" in normalized or "성별" in normalized or "연령" in normalized:
+        return _HiraStatRoute(
+            tool="hira_disease_gender_age_stats",
+            label="성별·연령10세구간별",
+        )
+    return _HiraStatRoute(
+        tool="hira_disease_hospitalization_outpatient_stats",
+        label="입원/외래",
+    )
 
 
 def _requested_hira_years(
@@ -1188,17 +1241,41 @@ def build_source_adapters() -> dict[SourceName, Any]:
         query_kind = _hira_query_kind(base)
         code = _hira_code(base)
         if query_kind == "patient" and code:
+            route = _hira_stat_route(base)
+            if route.tool is None:
+                return SourceResult(
+                    source="hira",
+                    query=query,
+                    status="scope_limit",
+                    payload={
+                        "calls": [],
+                        "requested_axis": route.label,
+                    },
+                    evidence=_evidence_envelope(
+                        "hira",
+                        query,
+                        {"calls": [], "requested_axis": route.label},
+                    ),
+                    notice=route.scope_notice,
+                )
             calls = [external.hira_disease_name_code(code)]
             years = _requested_hira_years(base) or ("2024",)
 
             def fetch_hira_year(disease_code: str, year: str) -> ExternalCall:
-                call = external.hira_disease_hospitalization_outpatient_stats(
-                    disease_code,
-                    year,
+                fetch = getattr(external, route.tool)
+                call = fetch(disease_code, year)
+                render_data = (
+                    _normalize_hira_render_data(call.render_data)
+                    if route.tool == "hira_disease_hospitalization_outpatient_stats"
+                    else call.render_data
                 )
                 return replace(
                     call,
-                    render_data=_normalize_hira_render_data(call.render_data),
+                    render_data={
+                        **render_data,
+                        "requested_axis": route.label,
+                        "requested_year": year,
+                    },
                 )
 
             calls.extend(
@@ -1211,6 +1288,8 @@ def build_source_adapters() -> dict[SourceName, Any]:
             result = external_calls("hira", query, calls)
             coverage = {
                 "requested_periods": list(years),
+                "requested_axis": route.label,
+                "tool": route.tool,
                 "periods": [
                     {"period": year, "status": _hira_period_status(call)}
                     for year, call in zip(years, calls[1:], strict=True)
