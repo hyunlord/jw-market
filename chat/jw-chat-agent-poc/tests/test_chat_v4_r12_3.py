@@ -184,6 +184,9 @@ def test_a_t2_enumerates_every_supported_field_before_applying_cap() -> None:
         "SIMULTANEITY",
         "COMPARE_NUMERIC",
         "RANGE",
+        "MEAN_NUMERIC",
+        "RECENT_SHARE",
+        "SPONSOR_TYPE_SHARE",
     }
     assert {item.claim.operator_id for item in t2_claims} <= ALLOWED_T2_OPERATORS
     assert {

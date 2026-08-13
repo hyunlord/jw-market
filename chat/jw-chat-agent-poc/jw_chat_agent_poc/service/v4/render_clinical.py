@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import date
 
 from jw_chat_agent_poc.service.v4.lossless_contracts import EvidenceRecord, EvidenceSet, RenderNode
@@ -59,7 +59,7 @@ def render_clinical(
         ("nct_id", "NCT ID", _nct_link),
         (
             "brief_title",
-            "간략 시험명",
+            "시험명",
             lambda payload: public_enum_value(display(payload.get("brief_title"))),
         ),
         (
@@ -73,45 +73,140 @@ def render_clinical(
             lambda payload: _public_list(payload.get("phases")),
         ),
         ("sponsor", "스폰서", lambda payload: display(payload.get("sponsor"))),
+        ("enrollment", "대상자수", lambda payload: _enrollment(payload.get("enrollment"))),
+        ("start_date", "시작일", lambda payload: display(payload.get("start_date"))),
+        ("completion_date", "완료예정일", lambda payload: display(payload.get("completion_date"))),
+        ("countries", "국가", lambda payload: list_display(payload.get("countries"), na="")),
+        ("primary_outcomes", "1차 평가변수", lambda payload: _outcome_text(payload.get("primary_outcomes"))),
         (
             "last_update_date",
             "최종 갱신일",
             lambda payload: display(payload.get("last_update_date")),
         ),
     )
-    included = tuple(
-        spec
-        for spec in column_specs
-        if spec[0] == "nct_id"
-        or any(_has_value(record.payload.get(spec[0])) for record in selected)
-    )
-    rows = tuple(
-        tuple(render(record.payload) for _field, _header, render in included)
-        for record in selected
-    )
-    table_title = "## 단일 임상시험 상세" if single else "## 임상시험 상세"
-    notes = _selection_notes(
+    record_tables = _record_tables(
+        selected,
+        column_specs,
         evidence_set.query_spec,
         total=len(records),
-        rendered=len(selected),
         single=single,
     )
-    record_table = RenderNode(
-        block_id="clinical:records",
-        record_ids=tuple(record.evidence_id for record in selected),
-        surface_fields=tuple(field for field, _header, _render in included),
-        text="\n".join(
-            part
-            for part in (
-                table_title,
-                notes,
-                table(tuple(header for _field, header, _render in included), rows),
-            )
-            if part
-        ),
-    )
     detail_node = _record_detail_node(selected)
-    return [scope, record_table, *([detail_node] if detail_node else [])], CLINICAL_REQUIRED_FIELDS
+    return [scope, *record_tables, *([detail_node] if detail_node else [])], CLINICAL_REQUIRED_FIELDS
+
+
+def _record_tables(
+    records: Sequence[EvidenceRecord],
+    column_specs: Sequence[tuple[str, str, Callable[[Mapping[str, object]], str]]],
+    query_spec: Sequence[str],
+    *,
+    total: int,
+    single: bool,
+) -> list[RenderNode]:
+    if single:
+        groups = (("single", tuple(records)),)
+    else:
+        grouped: dict[str, list[EvidenceRecord]] = {}
+        for record in records:
+            grouped.setdefault(_phase_bucket(record.payload), []).append(record)
+        order = ("PHASE1", "PHASE2", "PHASE3", "PHASE4", "PHASE_NA")
+        groups = tuple(
+            (phase, tuple(grouped[phase])) for phase in order if grouped.get(phase)
+        )
+    nodes: list[RenderNode] = []
+    for index, (phase, group) in enumerate(groups):
+        included = tuple(
+            spec
+            for spec in column_specs
+            if (spec[0] == "nct_id"
+            or any(_has_value(record.payload.get(spec[0])) for record in group)
+            )
+        )
+        rows = tuple(
+            tuple(render(record.payload) for _field, _header, render in included)
+            for record in group
+        )
+        if single:
+            heading = "## 단일 임상시험 상세"
+            interpretation = ""
+        else:
+            heading = (
+                "## 임상시험 상세\n" if index == 0 else ""
+            ) + f"### {_phase_label(phase)} 임상시험"
+            interpretation = _phase_interpretation(phase, group)
+        notes = _selection_notes(
+            query_spec,
+            total=total,
+            rendered=len(records),
+            single=single,
+        )
+        nodes.append(
+            RenderNode(
+                block_id=(
+                    "clinical:records"
+                    if single or index == 0
+                    else f"clinical:records:{phase.casefold()}"
+                ),
+                record_ids=tuple(record.evidence_id for record in group),
+                surface_fields=tuple(field for field, _header, _render in included),
+                text="\n".join(
+                    part
+                    for part in (
+                        heading,
+                        interpretation,
+                        notes,
+                        table(tuple(header for _field, header, _render in included), rows),
+                    )
+                    if part
+                ),
+            )
+        )
+    return nodes
+
+
+def _phase_bucket(payload: Mapping[str, object]) -> str:
+    values = payload.get("phases") or payload.get("phase")
+    items = values if isinstance(values, (list, tuple, set)) else (values,)
+    normalized = {text(item).upper().replace(" ", "") for item in items if text(item)}
+    for phase in ("PHASE4", "PHASE3", "PHASE2", "PHASE1"):
+        if phase in normalized:
+            return phase
+    return "PHASE_NA"
+
+
+def _phase_label(phase: str) -> str:
+    return {
+        "PHASE1": "1상",
+        "PHASE2": "2상",
+        "PHASE3": "3상",
+        "PHASE4": "4상",
+        "PHASE_NA": "단계 해당 없음",
+    }[phase]
+
+
+def _phase_interpretation(
+    phase: str,
+    records: Sequence[EvidenceRecord],
+) -> str:
+    nct_ids = " · ".join(display(record.payload.get("nct_id")) for record in records)
+    sponsors = " · ".join(
+        dict.fromkeys(
+            text(record.payload.get("sponsor"))
+            for record in records
+            if text(record.payload.get("sponsor"))
+        )
+    )
+    prefix = f"{_phase_label(phase)}는 {len(records)}건({nct_ids})입니다. "
+    if sponsors:
+        prefix += f"스폰서는 {sponsors}입니다. "
+    meaning = {
+        "PHASE1": "단계상 초기 개발 신호이며 시장 진입 시점은 정본으로 확인되지 않습니다.",
+        "PHASE2": "단계상 중기 개발 신호이며 시장 진입 시점은 정본으로 확인되지 않습니다.",
+        "PHASE3": "단계상 후기 개발 신호이지만 시장 진입 시점은 정본으로 확인되지 않습니다.",
+        "PHASE4": "허가 후 시판 후 연구 성격이며 제네릭 개발과 성격이 다릅니다.",
+        "PHASE_NA": "단계 정보가 제공되지 않아 개발 단계를 해석하지 않습니다.",
+    }[phase]
+    return prefix + meaning
 
 
 def _coverage_surface(

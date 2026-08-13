@@ -24,6 +24,9 @@ from jw_chat_agent_poc.service.v4.source_labels import (
     public_source_aliases,
     public_source_label,
 )
+from jw_chat_agent_poc.service.v4.source_derived_metrics import (
+    build_hira_derived_outcome,
+)
 
 
 _NUMBER_RE = re.compile(r"(?<![\w.])-?\d[\d,]*(?:\.\d+)?")
@@ -383,6 +386,14 @@ def apply_v4_gates(
         ],
         "misbound_patient_values": sorted(invalid_patient_values),
     }
+    hira_derived = build_hira_derived_outcome(results)
+    trace["hira_derived_metrics"] = [
+        proof.model_dump(mode="json") for proof in hira_derived.proofs
+    ]
+    if hira_derived.text and all(proof.matched for proof in hira_derived.proofs):
+        text = _replace_markdown_section(text, "종합 인사이트", hira_derived.text)
+    if hira_derived.scope_notice:
+        text = _replace_hira_scope_notice(text, hira_derived.scope_notice)
 
     requested_dimensions = _requested_dimension_levels(question)
     missing_dimension_blocks: list[str] = []
@@ -1667,6 +1678,28 @@ def _merge_unique_blocks(*texts: str) -> str:
             seen.add(key)
             blocks.append(cleaned)
     return "\n\n".join(blocks)
+
+
+def _replace_markdown_section(text: str, heading: str, body: str) -> str:
+    pattern = re.compile(
+        rf"(?ms)^##\s+{re.escape(heading)}\s*$.*?(?=^##\s+|\Z)"
+    )
+    replacement = f"## {heading}\n{body.strip()}\n\n"
+    if pattern.search(text):
+        return pattern.sub(replacement, text, count=1).strip()
+    return _merge_unique_blocks(text, replacement.strip())
+
+
+def _replace_hira_scope_notice(text: str, notice: str) -> str:
+    lines = tuple(
+        line
+        for line in text.splitlines()
+        if not (
+            ("5세" in line or "연령 5세" in line)
+            and any(token in line for token in ("확인되지", "제공되지", "지원되지"))
+        )
+    )
+    return _merge_unique_blocks("\n".join(lines).strip(), f"## 미확인 요소\n{notice}")
 
 
 def _display_history_period(period: str) -> str:

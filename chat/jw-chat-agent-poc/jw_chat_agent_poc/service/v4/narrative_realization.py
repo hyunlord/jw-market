@@ -55,6 +55,13 @@ _T2_OPERATOR_PRIORITY: Final = {
             "PRICE_MIX_INDEX",
             "PEER_ZSCORE",
             "CONCENTRATION_CR5",
+            "GROUP_SHARE",
+            "COUNTRY_SHARE",
+            "MEAN_NUMERIC",
+            "RECENT_SHARE",
+            "SPONSOR_TYPE_SHARE",
+            "PHASE3_SHARE",
+            "PMS_RESIDUAL_DAYS",
         )
     )
 }
@@ -408,7 +415,19 @@ def _cross_source_fusion_node(
     anchor_record, anchor_text = anchor_fact
     lines: list[str] = []
     bound_ids: list[str] = []
-    for other_set, other_records in available[1:4]:
+    secondary = list(available[1:])
+    if anchor_set.source in {"clinicaltrials", "patent"}:
+        secondary.sort(key=lambda item: (item[0].source != "web", item[0].source))
+    for other_set, other_records in secondary[:3]:
+        web_fragment = _web_attributed_fragment(other_records) if other_set.source == "web" else None
+        if web_fragment is not None:
+            other_record, other_text = web_fragment
+            lines.append(
+                f"{anchor_text} {other_text} 두 자료는 함께 확인되지만 "
+                "인과관계나 시장 진입 시점은 정본으로 확정되지 않습니다."
+            )
+            bound_ids.extend((anchor_record.evidence_id, other_record.evidence_id))
+            continue
         other_fact = _source_fact_fragment(other_set, other_records)
         if other_fact is None:
             continue
@@ -431,6 +450,22 @@ def _cross_source_fusion_node(
         record_ids=tuple(dict.fromkeys(bound_ids)),
         text="\n".join(lines),
     )
+
+
+def _web_attributed_fragment(
+    records: Sequence[EvidenceRecord],
+) -> tuple[EvidenceRecord, str] | None:
+    for record in records:
+        publisher = field_value(record, "publisher")
+        published_at = field_value(record, "published_at")
+        title = field_value(record, "title")
+        summary = field_value(record, "summary")
+        if publisher and published_at and title and summary:
+            return (
+                record,
+                f"{publisher} {published_at} 「{title}」 보도는 {summary}라고 전합니다.",
+            )
+    return None
 
 
 def _source_fact_fragment(

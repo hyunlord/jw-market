@@ -16,6 +16,18 @@ _SUMMARY_FIELDS: Final = {
     "countries": 3,
 }
 _SUMMARY_OPERATORS: Final = frozenset({"COUNT", "GROUP_COUNT", "COMMON_VALUE"})
+_INSIGHT_OPERATORS: Final = frozenset(
+    {
+        "RANGE",
+        "GROUP_SHARE",
+        "COUNTRY_SHARE",
+        "MEAN_NUMERIC",
+        "RECENT_SHARE",
+        "SPONSOR_TYPE_SHARE",
+        "PHASE3_SHARE",
+        "PMS_RESIDUAL_DAYS",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,15 +78,22 @@ def relation_node(
         source = records_by_id[item.recomputation.record_ids[0]].source
         by_source.setdefault(source, []).append(item)
     candidates = {
-        source: tuple(
-            sorted(
-                (
-                    item
-                    for item in items
-                    if item.claim.operator_id in _SUMMARY_OPERATORS
-                ),
-                key=_summary_priority,
-            )[:3]
+        source: (
+            tuple(
+                sorted(
+                    (
+                        item
+                        for item in items
+                        if item.claim.operator_id in _SUMMARY_OPERATORS
+                    ),
+                    key=_summary_priority,
+                )[:3]
+            )
+            + tuple(
+                item
+                for item in items
+                if item.claim.operator_id in _INSIGHT_OPERATORS
+            )
         )
         if source in plan.sources
         else tuple(items)

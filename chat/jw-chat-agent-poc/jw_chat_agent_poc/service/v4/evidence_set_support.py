@@ -75,6 +75,10 @@ def _call_failure_status(call: Mapping[str, Any]) -> str | None:
 
 def generic_call_records(source: str, call: Mapping[str, Any]) -> list[dict[str, Any]]:
     render_data = mapping(call.get("render_data"))
+    if source == "mart":
+        market_records = _mart_call_records(call, render_data)
+        if market_records:
+            return market_records
     payload = mapping(render_data.get("payload"))
     candidates = (
         render_data.get("items"),
@@ -92,6 +96,112 @@ def generic_call_records(source: str, call: Mapping[str, Any]) -> list[dict[str,
     if source == "mart" and render_data:
         return [dict(render_data)]
     return [dict(call)]
+
+
+def _mart_call_records(
+    call: Mapping[str, Any],
+    render_data: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    bundle = mapping(call.get("entity_bundle"))
+    records: list[dict[str, Any]] = []
+    for member in mapping_list(bundle.get("members")):
+        records.extend(
+            _mart_series_records(
+                mapping(member.get("render_data")),
+                brand=text(member.get("brand")),
+            )
+        )
+    if records:
+        return records
+
+    brand = text(render_data.get("anchor_brand") or render_data.get("brand"))
+    records.extend(_mart_series_records(render_data, brand=brand))
+    if records:
+        return records
+
+    period = text(render_data.get("period"))
+    segments = mapping_list(render_data.get("level_segments"))
+    if not segments:
+        return []
+    return [
+        {
+            **dict(segment),
+            "brand": text(segment.get("brand")) or brand or None,
+            "period": period or None,
+            "sales_krw": (
+                _segment_sales(segment)
+                if text(segment.get("brand")) != brand
+                else _coalesce(
+                    _first_present(render_data, "sales_krw", "brand_sales_krw", "value"),
+                    _segment_sales(segment),
+                )
+            ),
+            "market_share": _first_present(segment, "ms_recent_pct", "market_share"),
+            "unit": "원",
+        }
+        for segment in segments
+        if text(segment.get("brand"))
+    ]
+
+
+def _mart_series_records(
+    render_data: Mapping[str, Any],
+    *,
+    brand: str,
+) -> list[dict[str, Any]]:
+    series = mapping_list(
+        render_data.get("brand_value_series_10pt") or render_data.get("series")
+    )
+    if not series or not brand:
+        return []
+    records: list[dict[str, Any]] = []
+    previous_sales: float | int | None = None
+    previous_share: float | int | None = None
+    for point in series:
+        sales = _series_sales(point)
+        share = _first_present(point, "ms_recent_pct", "market_share")
+        record: dict[str, Any] = {
+            **dict(point),
+            "brand": brand,
+            "period": text(point.get("period")) or None,
+            "sales_krw": sales,
+            "market_share": share,
+            "unit": "원",
+        }
+        if isinstance(sales, int | float) and isinstance(previous_sales, int | float):
+            record["sales_delta_krw"] = sales - previous_sales
+            if previous_sales:
+                record["growth_pct"] = (sales - previous_sales) / previous_sales * 100
+        if isinstance(share, int | float) and isinstance(previous_share, int | float):
+            record["market_share_delta_pp"] = share - previous_share
+        records.append(record)
+        previous_sales = sales if isinstance(sales, int | float) else None
+        previous_share = share if isinstance(share, int | float) else None
+    return records
+
+
+def _series_sales(point: Mapping[str, Any]) -> float | int | None:
+    direct = _first_present(point, "sales_krw", "value")
+    if isinstance(direct, int | float) and not isinstance(direct, bool):
+        return direct
+    eok = _first_present(point, "value_억원", "sales_억원")
+    if isinstance(eok, int | float) and not isinstance(eok, bool):
+        return eok * 100_000_000
+    return None
+
+
+def _segment_sales(segment: Mapping[str, Any]) -> float | int | None:
+    direct = _first_present(segment, "sales_krw", "value")
+    if isinstance(direct, int | float) and not isinstance(direct, bool):
+        return direct
+    eok = _first_present(segment, "value_억원", "sales_억원")
+    if isinstance(eok, int | float) and not isinstance(eok, bool):
+        return eok * 100_000_000
+    return None
+
+
+def _coalesce(*values: Any) -> Any:
+    return next((value for value in values if value is not None), None)
 
 
 def normalize_generic_record(source: str, raw_record: Mapping[str, Any]) -> dict[str, Any]:

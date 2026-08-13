@@ -97,6 +97,7 @@ DATE_FIELDS: Final = (
     "filing_date",
     "publication_date",
     "pms_end_date",
+    "extinction_date",
 )
 NUMERIC_FIELDS: Final = (
     "enrollment",

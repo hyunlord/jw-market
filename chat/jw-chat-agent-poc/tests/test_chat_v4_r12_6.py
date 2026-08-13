@@ -16,8 +16,12 @@ from jw_chat_agent_poc.service.v4.lossless_contracts import (
 from jw_chat_agent_poc.service.v4.lossless_spine import compose_lossless_answer
 from jw_chat_agent_poc.service.v4.contracts import PlannerOutput, SourceResult, ToolQueries
 from jw_chat_agent_poc.service.v4.evidence_sets import build_evidence_sets
+from jw_chat_agent_poc.service.v4.gates import apply_v4_gates
 from jw_chat_agent_poc.service.v4.inspection import build_inspection_detail
-from jw_chat_agent_poc.service.v4.deterministic_render import _auxiliary_node
+from jw_chat_agent_poc.service.v4.deterministic_render import (
+    _auxiliary_node,
+    render_deterministic_facts,
+)
 from jw_chat_agent_poc.service.v4.narrative_realization import (
     build_narrative_realization,
     measure_final_narrative_surface,
@@ -26,6 +30,7 @@ from jw_chat_agent_poc.service.v4.render_clinical import render_clinical
 from jw_chat_agent_poc.service.v4.runtime import _bind_session_state_contract
 from jw_chat_agent_poc.service.v4.session_state import SessionState
 from jw_chat_agent_poc.service.v4.tables import build_grounded_tables, filter_charts_bound_to_tables
+from jw_chat_agent_poc.service.v4.charts import build_grounded_charts
 from jw_chat_agent_poc.service.v4.synthesizer import (
     _SYNTHESIS_SYSTEM_PROMPT,
     _synthesis_messages,
@@ -351,7 +356,7 @@ def test_a_cross_source_fusion_binds_three_sentences_to_source_records() -> None
 
     assert len(fusion.text.splitlines()) == 3
     assert set(fusion.record_ids) == set(record_ids)
-    assert "데일리팜 · 2026-08-13 · 「web 자료」" in fusion.text
+    assert "데일리팜 2026-08-13 「web 자료」 보도는 관련 보도라고 전합니다" in fusion.text
     assert "같은 질문 범위에서 함께 확인됐습니다" not in fusion.text
     assert "patent 자료" in fusion.text
     assert "clinicaltrials 자료" in fusion.text
@@ -785,6 +790,398 @@ def test_c_hira_fallback_notice_uses_requested_year(
     )
     assert result.payload["period_coverage"]["requested_axis"] == "진료년월별"
     assert result.payload["period_coverage"]["actual_axis"] == "입원/외래"
+
+
+def test_d_hira_insight_uses_recomputed_ratios_and_supported_axis_wording() -> None:
+    result = SourceResult(
+        source="hira",
+        query="D693 성별/연령5세구간별 내원일수 2024년",
+        status="ok",
+        payload={
+            "calls": [
+                {
+                    "tool": "hira_disease_hospitalization_outpatient_stats",
+                    "status": "live",
+                    "render_data": {
+                        "request": {"sickCd": "D693", "year": "2024"},
+                        "items": [
+                            {
+                                "inpatOpat": "외래",
+                                "ptntCnt": 9231,
+                                "rvdInsupBrdnAmt": 3_224_579_000,
+                                "rvdRpeTamtAmt": 6_475_810_000,
+                                "specCnt": 44_193,
+                                "vstDdcnt": 43_938,
+                                "sexRows": [
+                                    {"sex": "남성", "ptntCnt": 3620, "vstDdcnt": 16_003},
+                                    {"sex": "여성", "ptntCnt": 5611, "vstDdcnt": 27_935},
+                                ],
+                            },
+                            {
+                                "inpatOpat": "입원",
+                                "ptntCnt": 1606,
+                                "rvdInsupBrdnAmt": 8_320_760_000,
+                                "rvdRpeTamtAmt": 9_986_518_000,
+                                "specCnt": 3301,
+                                "vstDdcnt": 12_152,
+                                "sexRows": [
+                                    {"sex": "남성", "ptntCnt": 677, "vstDdcnt": 4949},
+                                    {"sex": "여성", "ptntCnt": 929, "vstDdcnt": 7203},
+                                ],
+                            },
+                        ],
+                    },
+                }
+            ],
+            "period_coverage": {
+                "requested_axis": "성별·연령5세구간별",
+                "actual_axis": "입원/외래",
+            },
+        },
+    )
+    answer = (
+        "2024년 D693 외래 방문일수 43,938일, 입원 방문일수 12,152일입니다.\n\n"
+        "## 종합 인사이트\n입원 부담이 상대적으로 큽니다.\n\n"
+        "## 미확인 요소\n요청하신 연령 5세 구간별 통계는 확인되지 않았습니다."
+    )
+
+    gated = apply_v4_gates(
+        "24년 D693 성별/연령5세구간별 내원일수",
+        answer,
+        (result,),
+    )
+
+    assert "1인당 방문일수" in gated.text
+    assert "8.86배" in gated.text
+    assert "33.53%p" in gated.text
+    assert "상대적으로" not in gated.text
+    assert (
+        "요청하신 성별·연령 5세 구간 조회는 현재 지원되지 않아, "
+        "입원/외래 기준으로 답변합니다"
+    ) in gated.text
+    metrics = gated.trace["hira_derived_metrics"]
+    assert len(metrics) >= 3
+    assert all(metric["matched"] for metric in metrics)
+
+
+def test_d_hira_derived_metrics_skip_zero_denominators() -> None:
+    result = SourceResult(
+        source="hira",
+        query="D693 환자수",
+        status="ok",
+        payload={
+            "calls": [
+                {
+                    "render_data": {
+                        "request": {"sickCd": "D693", "year": "2024"},
+                        "items": [
+                            {
+                                "inpatOpat": care_type,
+                                "ptntCnt": 0,
+                                "rvdInsupBrdnAmt": 0,
+                                "rvdRpeTamtAmt": 0,
+                                "specCnt": 0,
+                                "vstDdcnt": 0,
+                            }
+                            for care_type in ("외래", "입원")
+                        ],
+                    }
+                }
+            ]
+        },
+    )
+
+    gated = apply_v4_gates("D693 환자수", "원문 응답", (result,))
+
+    assert "원문 응답" in gated.text
+    assert "1인당" not in gated.text
+    assert gated.trace["hira_derived_metrics"] == []
+
+
+def test_d_clinical_and_patent_relations_include_verified_source_metrics() -> None:
+    clinical = tuple(
+        EvidenceRecord(
+            evidence_id=f"ct:{index}",
+            source="clinicaltrials",
+            result_kind="structured_clinical_record",
+            payload={
+                "nct_id": f"NCT0000000{index}",
+                "phase": phase,
+                "countries": (country,),
+                "sponsor": sponsor,
+                "start_date": started,
+                "enrollment": enrollment,
+            },
+        )
+        for index, phase, country, sponsor, started, enrollment in (
+            (1, "PHASE3", "Korea", "JW Pharmaceutical", "2025-01-01", 100),
+            (2, "PHASE3", "Korea", "Seoul National University Hospital", "2024-01-01", 200),
+            (3, "PHASE2", "United States", "Pfizer", "2020-01-01", 300),
+        )
+    )
+    patents = (
+        EvidenceRecord(
+            evidence_id="patent:1",
+            source="patent",
+            result_kind="structured_patent_record",
+            payload={
+                "patent_number": "10-1",
+                "patent_type": "물질",
+                "extinction_reason": "존속기간만료",
+                "extinction_date": "2025-01-01",
+                "pms_end_date": "2024-01-01",
+            },
+        ),
+        EvidenceRecord(
+            evidence_id="patent:2",
+            source="patent",
+            result_kind="structured_patent_record",
+            payload={
+                "patent_number": "10-2",
+                "patent_type": "용도",
+                "extinction_reason": "무효",
+                "extinction_date": "2026-01-01",
+                "pms_end_date": "2025-07-01",
+            },
+        ),
+    )
+
+    realized = build_narrative_realization(
+        (_evidence("clinicaltrials", *clinical), _evidence("patent", *patents)),
+        tuple(record.evidence_id for record in (*clinical, *patents)),
+    )
+    text = "\n".join(node.text for node in realized.nodes)
+
+    assert "국가별 비중" in text
+    assert "스폰서 유형" in text
+    assert "최근 3년 신규 등록 비중" in text
+    assert "평균 대상자수" in text
+    assert "특허구분별 비중" in text
+    assert "소멸 사유별 비중" in text
+    assert "PMS 종료 후 소멸일까지" in text
+    assert all(proof.matched for proof in realized.recomputations)
+
+
+def test_d_clinical_portfolio_renders_one_grounded_table_and_interpretation_per_phase() -> None:
+    records = tuple(
+        EvidenceRecord(
+            evidence_id=f"ct:{nct}",
+            source="clinicaltrials",
+            result_kind="structured_clinical_record",
+            payload={
+                "nct_id": nct,
+                "brief_title": title,
+                "phases": [phase],
+                "sponsor": sponsor,
+                "overall_status": "RECRUITING",
+                "enrollment": enrollment,
+                "start_date": started,
+                "completion_date": completed,
+                "countries": [country],
+                "primary_outcomes": [{"measure": f"평가변수 {nct}"}],
+            },
+        )
+        for nct, title, phase, sponsor, enrollment, started, completed, country in (
+            ("NCT00000011", "3상 시험", "PHASE3", "Alpha Pharma", 120, "2025-01-01", "2026-01-01", "Korea"),
+            ("NCT00000012", "4상 시험", "PHASE4", "Beta Pharma", 80, "2024-01-01", "2025-01-01", "United States"),
+            ("NCT00000013", "단계 미상 시험", "PHASE_NA", "Seoul Hospital", 60, "2026-01-01", "2027-01-01", "Korea"),
+        )
+    )
+    evidence = _evidence("clinicaltrials", *records)
+
+    rendered = render_deterministic_facts(
+        _plan("제네릭 임상현황"),
+        (evidence,),
+        observed_on=date(2026, 8, 14),
+    )
+    surface = "\n".join(node.text for node in rendered.nodes)
+
+    assert surface.count("### 3상 임상시험") == 1
+    assert surface.count("### 4상 임상시험") == 1
+    assert surface.count("### 단계 해당 없음 임상시험") == 1
+    assert all(nct in surface for nct in ("NCT00000011", "NCT00000012", "NCT00000013"))
+    assert "단계상 후기 개발 신호이지만 시장 진입 시점은 정본으로 확인되지 않습니다" in surface
+    assert "허가 후 시판 후 연구 성격" in surface
+    assert "단계 정보가 제공되지 않아 개발 단계를 해석하지 않습니다" in surface
+    assert "| NCT ID | 시험명 | 상태 | 스폰서 | 대상자수 | 시작일 | 완료예정일 | 국가 | 1차 평가변수 |" in surface
+    assert all(item["matched"] for item in rendered.structured_recomputations)
+
+
+def test_d_clinical_fusion_prefers_dated_web_record_with_public_attribution() -> None:
+    clinical = EvidenceRecord(
+        evidence_id="ct:NCT00000021",
+        source="clinicaltrials",
+        result_kind="structured_clinical_record",
+        payload={
+            "nct_id": "NCT00000021",
+            "brief_title": "제네릭 3상 시험",
+            "phases": ["PHASE3"],
+            "sponsor": "Alpha Pharma",
+            "start_date": "2025-06-25",
+        },
+    )
+    web = EvidenceRecord(
+        evidence_id="web:1",
+        source="web",
+        result_kind="web_document",
+        payload={
+            "title": "제네릭 조기 출시 경쟁",
+            "publisher": "데일리팜",
+            "published_at": "2026-08-12",
+            "summary": "제네릭 조기 출시 움직임을 보도했습니다",
+        },
+    )
+    unused_web = EvidenceRecord(
+        evidence_id="web:unused",
+        source="web",
+        result_kind="web_document",
+        payload={
+            "title": "사용하지 않은 기사",
+            "publisher": "다른 매체",
+            "published_at": "2026-08-11",
+            "summary": "다른 내용",
+        },
+    )
+    mart = EvidenceRecord(
+        evidence_id="mart:1",
+        source="mart",
+        result_kind="mart_record",
+        payload={"brand": "리바로젯", "period": "2026-06", "sales_krw": 10},
+    )
+
+    rendered = render_deterministic_facts(
+        _plan("리바로젯 제네릭 임상현황"),
+        (
+            _evidence("mart", mart),
+            _evidence("clinicaltrials", clinical),
+            _evidence("web", web, unused_web),
+        ),
+        observed_on=date(2026, 8, 14),
+    )
+    surface = "\n".join(node.text for node in rendered.nodes)
+
+    assert "데일리팜 2026-08-12 「제네릭 조기 출시 경쟁」" in surface
+    assert "제네릭 조기 출시 움직임을 보도했습니다" in surface
+    assert "인과관계나 시장 진입 시점은 정본으로 확정되지 않습니다" in surface
+    fusion = next(
+        node
+        for node in rendered.nodes
+        if "데일리팜 2026-08-12" in node.text
+    )
+    assert clinical.evidence_id in fusion.record_ids
+    assert web.evidence_id in fusion.record_ids
+    assert unused_web.evidence_id not in fusion.record_ids
+
+
+def test_i_market_rows_produce_bound_markdown_table_and_chart_specs() -> None:
+    records = tuple(
+        EvidenceRecord(
+            evidence_id=f"mart:{brand}:{period}",
+            source="mart",
+            result_kind="mart_record",
+            payload={
+                "brand": brand,
+                "period": period,
+                "sales_krw": sales,
+                "sales_delta_krw": delta,
+                "growth_pct": growth,
+                "market_share": share,
+                "market_share_delta_pp": share_delta,
+                "unit": "원",
+            },
+        )
+        for brand, period, sales, delta, growth, share, share_delta in (
+            ("리바로젯", "2026-05", 100, 10, 11.1, 5.0, 0.2),
+            ("리바로젯", "2026-06", 120, 20, 20.0, 5.4, 0.4),
+            ("리피토", "2026-05", 90, -5, -5.3, 4.8, -0.1),
+            ("리피토", "2026-06", 80, -10, -11.1, 4.3, -0.5),
+        )
+    )
+    evidence = _evidence("mart", *records)
+    plan = _plan("브랜드별 매출과 점유율 추이").model_copy(
+        update={"answer_sources": ("mart",)}
+    )
+
+    rendered = render_deterministic_facts(plan, (evidence,), observed_on=date(2026, 8, 14))
+    tables = build_grounded_tables((evidence,), rendered)
+    candidates = build_grounded_charts((evidence,), tuple(record.evidence_id for record in records))
+    charts = filter_charts_bound_to_tables(candidates, tables)
+
+    assert "| 브랜드 | 기간 | 값 | 증감 | 증감률 | 점유율 | 점유율 증감 |" in rendered.text
+    assert len(tables) == 1
+    assert tables[0]["row_count"] == 4
+    assert [row["record_id"] for row in tables[0]["rows"]] == [record.evidence_id for record in records]
+    assert charts
+    assert all(record_id.startswith("mart:") for chart in charts for series in chart["series"] for record_id in series["record_ids"])
+
+
+def test_i_mart_series_wrapper_projects_period_records_for_tables_and_charts() -> None:
+    plan = _plan("리바로젯 매출 추이").model_copy(update={"answer_sources": ("mart",)})
+    result = SourceResult(
+        source="mart",
+        query="리바로젯 매출 추이",
+        status="ok",
+        payload={
+            "calls": [
+                {
+                    "tool": "get_brand_metric",
+                    "render_data": {
+                        "brand": "리바로젯",
+                        "brand_value_series_10pt": [
+                            {"period": "2026-05", "value_억원": 100.0},
+                            {"period": "2026-06", "value_억원": 120.0},
+                        ],
+                    },
+                }
+            ]
+        },
+    )
+
+    (evidence,) = build_evidence_sets(plan, (result,), observed_on=date(2026, 8, 14))
+    rendered = render_deterministic_facts(plan, (evidence,), observed_on=date(2026, 8, 14))
+    tables = build_grounded_tables((evidence,), rendered)
+    charts = filter_charts_bound_to_tables(
+        build_grounded_charts(
+            (evidence,), tuple(record.evidence_id for record in evidence.records)
+        ),
+        tables,
+    )
+
+    assert len(evidence.records) == 2
+    assert evidence.records[1].payload["sales_delta_krw"] == 2_000_000_000
+    assert tables[0]["row_count"] == 2
+    assert len(charts) == 1
+    assert charts[0]["series"][0]["record_ids"] == [
+        evidence.records[0].evidence_id,
+        evidence.records[1].evidence_id,
+    ]
+
+
+def test_i_mart_series_does_not_bridge_delta_across_missing_period() -> None:
+    plan = _plan("리바로젯 매출 추이").model_copy(update={"answer_sources": ("mart",)})
+    result = SourceResult(
+        source="mart",
+        query="리바로젯 매출 추이",
+        status="ok",
+        payload={
+            "calls": [
+                {
+                    "render_data": {
+                        "brand": "리바로젯",
+                        "brand_value_series_10pt": [
+                            {"period": "2026-04", "value_억원": 100.0},
+                            {"period": "2026-05", "value_억원": None},
+                            {"period": "2026-06", "value_억원": 130.0},
+                        ],
+                    }
+                }
+            ]
+        },
+    )
+
+    (evidence,) = build_evidence_sets(plan, (result,), observed_on=date(2026, 8, 14))
+
+    assert "sales_delta_krw" not in evidence.records[2].payload
 
 
 def test_d_disease_code_web_result_requires_medical_domain_context() -> None:

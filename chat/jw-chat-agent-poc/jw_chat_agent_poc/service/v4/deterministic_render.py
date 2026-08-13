@@ -25,6 +25,7 @@ from jw_chat_agent_poc.service.v4.render_clinical import (
     ACTIVE_CLINICAL_STATUSES,
     render_clinical,
 )
+from jw_chat_agent_poc.service.v4.render_market import render_market
 from jw_chat_agent_poc.service.v4.render_common import table, text
 from jw_chat_agent_poc.service.v4.render_patent import render_patent
 from jw_chat_agent_poc.service.v4.render_policy import render_policy
@@ -56,24 +57,18 @@ def render_deterministic_facts(
         evidence_set.source: source_tier(plan, evidence_set.source)
         for evidence_set in evidence_sets
     }
-    if profile == "market_analysis":
+    selected = _selected_set(profile, evidence_sets)
+    if selected is None:
         return DeterministicRender(
-            profile=profile,
+            profile="market_analysis",
             request_notice=_request_satisfaction_notice(plan, evidence_sets),
             source_notices=source_notices,
             source_notice_bindings=source_notice_bindings,
             source_tiers=source_tiers,
         )
-
-    selected = _selected_set(profile, evidence_sets)
-    if selected is None:
-        return DeterministicRender(
-            profile="market_analysis",
-            source_notices=source_notices,
-            source_notice_bindings=source_notice_bindings,
-            source_tiers=source_tiers,
-        )
-    if profile in {"clinical_portfolio", "single_record_detail"}:
+    if profile == "market_analysis":
+        nodes, required = render_market(selected)
+    elif profile in {"clinical_portfolio", "single_record_detail"}:
         nodes, required = render_clinical(
             selected,
             single=profile == "single_record_detail",
@@ -541,6 +536,7 @@ def _selected_set(
         "single_record_detail": "clinicaltrials",
         "patent_portfolio": "patent",
         "policy_document": "hira",
+        "market_analysis": "mart",
     }.get(profile)
     return _set_for(source, evidence_sets) if source else None
 

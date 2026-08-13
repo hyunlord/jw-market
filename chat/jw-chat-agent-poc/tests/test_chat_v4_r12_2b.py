@@ -382,7 +382,8 @@ def test_c_all_missing_columns_are_omitted() -> None:
     nodes, _required = render_clinical(evidence, single=False)
     record_text = next(node.text for node in nodes if node.block_id == "clinical:records")
 
-    assert "단계" not in record_text
+    assert "| 단계 |" not in record_text
+    assert "단계 해당 없음 임상시험" in record_text
     assert "스폰서" not in record_text
 
 
