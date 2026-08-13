@@ -210,10 +210,10 @@ def test_a_expanded_disease_product_reaches_mfds_as_product_and_ingredient(
         expanded.plan.tool_queries.patent[0]
     )
 
-    assert mfds_requests == [("emicizumab", "헴리브라")]
+    assert mfds_requests == [("", "헴리브라")]
 
 
-def test_a_mfds_serialization_keeps_expanded_product_and_ingredient(
+def test_a_mfds_item_only_serialization_omits_conjunctive_ingredient(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = ExternalApiClient(mode="fixture")
@@ -238,14 +238,14 @@ def test_a_mfds_serialization_keeps_expanded_product_and_ingredient(
 
     monkeypatch.setattr(client, "_fixture_or_live", capture)
 
-    result = client.mfds_patent("emicizumab", item_name="헴리브라")
+    result = client.mfds_patent("", item_name="헴리브라")
     spec = _mcp_tool_spec("mfds_patent", captured)
 
     assert result.status == "ok"
     assert captured["item_name"] == "헴리브라"
-    assert captured["ingr_name"] == "에미시주맙"
+    assert "ingr_name" not in captured
     assert spec["arguments"]["item_name"] == "헴리브라"
-    assert spec["arguments"]["ingr_name"] == "에미시주맙"
+    assert spec["arguments"].get("ingr_name") is None
 
 
 def test_a_single_kcd_and_abbreviated_year_range_expand_without_substitution() -> None:

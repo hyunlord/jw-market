@@ -184,6 +184,7 @@ def test_e_patent_adapter_uses_one_exact_kr_brand_query_for_combo_product(
     from jw_chat_agent_poc.tools.external.client import ExternalCall
 
     kr_calls: list[tuple[str, str | None]] = []
+    us_calls: list[str] = []
 
     def call(tool: str, source: str) -> ExternalCall:
         return ExternalCall(
@@ -211,7 +212,8 @@ def test_e_patent_adapter_uses_one_exact_kr_brand_query_for_combo_product(
             kr_calls.append((ingredient, item_name))
             return call("mfds_patent", "식품의약품안전처")
 
-        def mfds_fda_orangebook(self, _ingredient: str) -> ExternalCall:
+        def mfds_fda_orangebook(self, ingredient: str) -> ExternalCall:
+            us_calls.append(ingredient)
             return call("mfds_fda_orangebook", "FDA Orange Book")
 
         def web_search(self, _query: str, *, topic: str = "general") -> ExternalCall:
@@ -236,7 +238,27 @@ def test_e_patent_adapter_uses_one_exact_kr_brand_query_for_combo_product(
 
     v4_adapters.build_source_adapters()["patent"]("리바로젯 특허현황")
 
-    assert kr_calls == [("ezetimibe", "리바로젯")]
+    assert kr_calls == [("", "리바로젯")]
+    assert us_calls == ["Ezetimibe AND Pitavastatin"]
+
+
+def test_e_orange_book_serialization_preserves_and_operator(monkeypatch) -> None:
+    from jw_chat_agent_poc.tools.external.client import ExternalApiClient, ExternalCall
+
+    client = ExternalApiClient(mode="fixture")
+    captured: dict[str, str] = {}
+
+    def capture(tool: str, params: dict[str, str], *, xml: bool = False) -> ExternalCall:
+        assert tool == "mfds_fda_orangebook"
+        assert xml is True
+        captured.update(params)
+        return ExternalCall(tool, "FDA Orange Book", "no_data", "", {"items": []})
+
+    monkeypatch.setattr(client, "_fixture_or_live", capture)
+
+    client.mfds_fda_orangebook("ezetimibe AND pitavastatin")
+
+    assert captured == {"ingr_name": "Ezetimibe AND Pitavastatin"}
 
 
 def _record(
@@ -396,6 +418,48 @@ def _patent_call(items: list[dict[str, Any]], *, limit: int = 500) -> dict[str, 
             "items": items,
         },
     }
+
+
+def _us_patent_item(product: str, ingredient: str, patent_no: str) -> dict[str, Any]:
+    return {
+        "PRT_NAME": product,
+        "INGR_NAME": ingredient,
+        "KOR_PAT_NO": patent_no,
+        "KOR_NAME_OF_INVENTION": f"US invention {patent_no}",
+        "KOR_STATUS": "등록",
+        "KOR_EXP_DATE": "2030-01-01",
+        "KOR_APPLICANT": "US applicant",
+    }
+
+
+def test_e_us_patent_lane_requires_every_combination_ingredient() -> None:
+    call = {
+        "source": "nedrug_mcp",
+        "tool": "mfds_fda_orangebook",
+        "render_data": {
+            "items": [
+                _us_patent_item("VYTORIN", "Ezetimibe,Simvastatin", "RE42461"),
+                _us_patent_item("LIVALO", "Pitavastatin Calcium", "8557993"),
+                _us_patent_item(
+                    "LIVALOZET",
+                    "Pitavastatin Calcium,Ezetimibe",
+                    "COMBO-1",
+                ),
+            ]
+        },
+    }
+
+    us = build_patent_lane_payload(
+        kr_calls=(),
+        us_calls=(call,),
+        news_calls=(),
+        required_ingredients=("Pitavastatin", "Ezetimibe"),
+    )["us_secondary"]
+
+    assert us["records_received"] == 3
+    assert us["records_unique"] == 1
+    assert [record["product"] for record in us["records"]] == ["LIVALOZET"]
+    assert us["relevance_exclusions"] == 2
 
 
 def test_e_patent_limit_is_env_driven_and_mcp_payload_is_not_resliced(

@@ -357,6 +357,36 @@ def test_a_cross_source_fusion_binds_three_sentences_to_source_records() -> None
     assert "각각 확인했습니다" in fusion.text
 
 
+def test_a_patent_narrative_precedes_auxiliary_mart_commentary() -> None:
+    rendered = DeterministicRender(
+        profile="patent_portfolio",
+        nodes=(
+            RenderNode(
+                block_id="narrative:field-restatement",
+                record_ids=("patent:10-0186853",),
+                text=(
+                    "10-0186853은 특허구분 물질·용도, "
+                    "소멸 사유 존속기간만료로 확인됩니다."
+                ),
+            ),
+            RenderNode(
+                block_id="patent:kr-primary",
+                record_ids=("patent:10-0186853",),
+                text="| 특허번호 |\n|---|\n| 10-0186853 |",
+            ),
+        ),
+    )
+
+    composed = compose_lossless_answer(
+        rendered,
+        "리바로젯 매출은 100억원입니다.",
+        synthesis_trace={},
+        mode="inject",
+    )
+
+    assert composed.text.index("10-0186853은") < composed.text.index("매출은 100억원")
+
+
 def test_a_embedded_raw_enum_in_record_title_is_localized() -> None:
     record = EvidenceRecord(
         evidence_id="ct:NCT00548145",

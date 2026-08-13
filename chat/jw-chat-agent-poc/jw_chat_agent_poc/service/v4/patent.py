@@ -37,6 +37,7 @@ def build_patent_lane_payload(
     us_calls: Sequence[Mapping[str, Any]],
     news_calls: Sequence[Mapping[str, Any]],
     entity_tokens: Sequence[str] = (),
+    required_ingredients: Sequence[str] = (),
 ) -> dict[str, dict[str, Any]]:
     (
         kr_records,
@@ -56,6 +57,15 @@ def build_patent_lane_payload(
         _,
         _,
     ) = _patent_records(us_calls, lane="us_secondary")
+    us_relevance_exclusions = sum(
+        not _contains_required_ingredients(record, required_ingredients)
+        for record in us_records
+    )
+    us_records = [
+        record
+        for record in us_records
+        if _contains_required_ingredients(record, required_ingredients)
+    ]
     relevance_tokens, company_tokens = _relevance_tokens(
         entity_tokens,
         (*kr_records, *us_records),
@@ -73,6 +83,17 @@ def build_patent_lane_payload(
         records_received=news_received,
     )
     news_lane["relevance_decisions"] = relevance_decisions
+    us_lane = _lane(
+        scope="US_REFERENCE_ONLY",
+        authority="FDA Orange Book",
+        role="미국 등재 특허의 보조 근거이며 국내 특허 상태와 혼합하지 않음",
+        records=us_records,
+        records_received=us_received,
+        source_limit=us_source_limit,
+        source_limit_reached=us_source_limit_reached,
+        identifier_exclusions=us_identifier_exclusions,
+    )
+    us_lane["relevance_exclusions"] = us_relevance_exclusions
     return {
         "kr_primary": _lane(
             scope="KR_PRIMARY",
@@ -86,18 +107,24 @@ def build_patent_lane_payload(
             product_patent_rows=kr_product_patent_rows,
             non_product_exclusions=kr_non_product_exclusions,
         ),
-        "us_secondary": _lane(
-            scope="US_REFERENCE_ONLY",
-            authority="FDA Orange Book",
-            role="미국 등재 특허의 보조 근거이며 국내 특허 상태와 혼합하지 않음",
-            records=us_records,
-            records_received=us_received,
-            source_limit=us_source_limit,
-            source_limit_reached=us_source_limit_reached,
-            identifier_exclusions=us_identifier_exclusions,
-        ),
+        "us_secondary": us_lane,
         "news": news_lane,
     }
+
+
+def _contains_required_ingredients(
+    record: Mapping[str, Any],
+    required_ingredients: Sequence[str],
+) -> bool:
+    required = tuple(
+        value.casefold()
+        for value in (_text(ingredient) for ingredient in required_ingredients)
+        if value
+    )
+    if len(required) < 2:
+        return True
+    ingredient = _text(record.get("ingredient")).casefold()
+    return all(value in ingredient for value in required)
 
 
 def _patent_records(

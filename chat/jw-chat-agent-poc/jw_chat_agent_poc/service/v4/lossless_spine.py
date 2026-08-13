@@ -272,10 +272,14 @@ def _assemble_injected_answer(
             )
         )
 
+    primary_narrative = (
+        [*fact_narratives, *commentary_blocks]
+        if rendered.profile == "patent_portfolio"
+        else [*commentary_blocks, *fact_narratives]
+    )
     blocks = [
-        *commentary_blocks,
+        *primary_narrative,
         *fact_coverage,
-        *fact_narratives,
         *fact_tables,
         *fact_limits,
         *(_render_sections(limits)),

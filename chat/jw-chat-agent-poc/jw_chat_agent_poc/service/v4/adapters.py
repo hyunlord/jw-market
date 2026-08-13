@@ -1500,11 +1500,12 @@ def build_source_adapters() -> dict[SourceName, Any]:
             else ""
         )
         kr_calls = (
-            [external.mfds_patent(molecules[0], item_name=canonical_brand)]
+            [external.mfds_patent("", item_name=canonical_brand)]
             if canonical_brand
             else [external.mfds_patent(molecule) for molecule in molecules]
         )
-        us_calls = [external.mfds_fda_orangebook(molecule) for molecule in molecules]
+        us_query = " AND ".join(molecule.title() for molecule in molecules)
+        us_calls = [external.mfds_fda_orangebook(us_query)] if us_query else []
         news_calls = [
             _v4_web_search(
                 external,
@@ -1523,6 +1524,7 @@ def build_source_adapters() -> dict[SourceName, Any]:
             kr_calls=tuple(asdict(call) for call in kr_calls),
             us_calls=tuple(asdict(call) for call in us_calls),
             news_calls=tuple(asdict(call) for call in news_calls),
+            required_ingredients=molecules,
             entity_tokens=tuple(
                 dict.fromkeys(
                     (
