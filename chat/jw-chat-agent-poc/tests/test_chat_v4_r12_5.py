@@ -128,6 +128,16 @@ def test_a_disease_patent_expansion_binds_deterministic_product_before_first_wav
     }
 
 
+def test_a_disease_patent_expansion_uses_patent_query_when_web_is_primary() -> None:
+    question = "혈우병 치료제 특허현황"
+    plan = _plan(question, answer_sources=("web",))
+
+    expanded = expand_parameter_axes(plan, question, observed_on=date(2026, 8, 13))
+
+    assert expanded.plan.tool_queries.patent == ("헴리브라 특허현황",)
+    assert expanded.trace["entity_expansion"]["entities"] == ["헴리브라"]
+
+
 def test_a_expanded_disease_product_reaches_mfds_as_product_and_ingredient(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -85,7 +85,7 @@ def expand_parameter_axes(
             )
     anchor_brand = (
         hira_disease_anchor_brand(question)
-        if "patent" in plan.answer_sources and "특허" in question
+        if plan.tool_queries.patent and "특허" in question
         else None
     )
     if anchor_brand:
