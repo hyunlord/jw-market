@@ -16,6 +16,10 @@ from jw_chat_agent_poc.service.v4.lossless_contracts import (
     RenderProfile,
     SourceReference,
 )
+from jw_chat_agent_poc.service.v4.narrative_realization import (
+    build_narrative_realization,
+    verify_recomputation,
+)
 from jw_chat_agent_poc.service.v4.render_clinical import (
     ACTIVE_CLINICAL_STATUSES,
     render_clinical,
@@ -44,7 +48,7 @@ def render_deterministic_facts(
     profile = select_render_profile(plan, evidence_sets)
     source_notices, source_notice_bindings = (
         _source_failure_notices(evidence_sets)
-        if _source_notices_enabled(plan, profile)
+        if _source_notices_enabled(plan, profile, evidence_sets)
         else ((), ())
     )
     source_tiers = {
@@ -85,10 +89,21 @@ def render_deterministic_facts(
         if evidence_set is not selected and evidence_set.records
     )
     nodes = _insert_auxiliary_nodes(plan, nodes, auxiliary_sets)
+    rendered_sets = (selected, *auxiliary_sets)
+    base_rendered_ids = tuple(
+        dict.fromkeys(record_id for node in nodes for record_id in node.record_ids)
+    )
+    realization = build_narrative_realization(rendered_sets, base_rendered_ids)
+    verified_recomputations = tuple(
+        verify_recomputation(proof, rendered_sets)
+        for proof in realization.recomputations
+    )
+    if any(not item.matched for item in verified_recomputations):
+        raise LosslessInvariantError("narrative relation recomputation mismatch")
+    nodes = _insert_narrative_nodes(nodes, realization.nodes)
     rendered_ids = tuple(
         dict.fromkeys(record_id for node in nodes for record_id in node.record_ids)
     )
-    rendered_sets = (selected, *auxiliary_sets)
     source_ids = {
         record.evidence_id
         for evidence_set in rendered_sets
@@ -141,7 +156,28 @@ def render_deterministic_facts(
         source_notices=source_notices,
         source_notice_bindings=source_notice_bindings,
         source_tiers=source_tiers,
+        structured_claims=tuple(
+            {
+                **item.claim.model_dump(mode="json"),
+                "surface_text": item.text,
+            }
+            for item in realization.claims
+        ),
+        structured_recomputations=tuple(
+            item.model_dump(mode="json") for item in verified_recomputations
+        ),
+        structured_claims_truncated=realization.truncated_t2_count,
+        unnarrated_record_count=realization.unnarrated_record_count,
     )
+
+
+def _insert_narrative_nodes(
+    nodes: Sequence[RenderNode],
+    narrative_nodes: Sequence[RenderNode],
+) -> list[RenderNode]:
+    coverage = [node for node in nodes if node.block_id.endswith(":coverage")]
+    remainder = [node for node in nodes if not node.block_id.endswith(":coverage")]
+    return [*coverage, *narrative_nodes, *remainder]
 
 
 def _insert_auxiliary_nodes(
@@ -292,6 +328,7 @@ def _source_failure_notices(
                     "record_id": event.record_id,
                     "notice": notice,
                     "reason_code": event.reason_code,
+                    "exposure_layer": event.exposure_layer,
                     "tool": event.tool,
                 }
             )
@@ -305,7 +342,17 @@ def _failure_source_status(failure: Mapping[str, Any]) -> str:
     )
 
 
-def _source_notices_enabled(plan: PlannerOutput, profile: RenderProfile) -> bool:
+def _source_notices_enabled(
+    plan: PlannerOutput,
+    profile: RenderProfile,
+    evidence_sets: Sequence[EvidenceSet],
+) -> bool:
+    if any(
+        str(failure.get("status") or "") == "scope_limit"
+        for evidence_set in evidence_sets
+        for failure in evidence_set.item_failures
+    ):
+        return True
     if profile != "market_analysis":
         return True
     normalized = plan.resolved_question.casefold()

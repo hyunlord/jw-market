@@ -161,6 +161,7 @@ class SourceResult(_StrictModel):
         "upstream",
         "parse_error",
         "deadline_exceeded",
+        "scope_limit",
     ]
     payload: Any = None
     citations: tuple[Citation, ...] = ()

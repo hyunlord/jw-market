@@ -160,7 +160,9 @@ def classify_answer_claims(
                     )
                 )
             ),
-            causal_level="CAUSAL" if _CAUSAL_RE.search(sentence) else "NONE",
+            # Free-form causal language is never promoted to a causal fact. A
+            # supported weaker predicate must be created by semantic realization.
+            causal_level="NONE",
             modality=modality,
         )
         claims.append(claim)

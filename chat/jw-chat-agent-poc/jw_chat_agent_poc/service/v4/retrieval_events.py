@@ -19,7 +19,9 @@ RetrievalStatus = Literal[
     "upstream",
     "parse_error",
     "deadline_exceeded",
+    "scope_limit",
 ]
+FailureExposure = Literal["F-actionable", "F-scope", "F-internal"]
 
 _TIMEOUT_RE = re.compile(r"(?:timed?\s*out|timeout|시간\s*초과|응답\s*지연)", re.IGNORECASE)
 _QUOTA_RE = re.compile(
@@ -44,6 +46,7 @@ class RetrievalEvent(BaseModel):
     completed_at: datetime | None = None
     received_count: int = 0
     reason_code: str
+    exposure_layer: FailureExposure
 
 
 def classify_retrieval_status(result: SourceResult) -> RetrievalStatus:
@@ -60,6 +63,7 @@ def classify_retrieval_status(result: SourceResult) -> RetrievalStatus:
         "upstream",
         "parse_error",
         "deadline_exceeded",
+        "scope_limit",
     }:
         return result.status
     if _QUOTA_RE.search(notice):
@@ -90,6 +94,8 @@ def classify_failure_signals(
         status in {"error", "missing_key"} for status in normalized
     ):
         return "upstream"
+    if "scope_limit" in normalized:
+        return "scope_limit"
     if normalized and all(status in {"no_data", "empty"} for status in normalized):
         return "empty"
     return "upstream"
@@ -117,6 +123,8 @@ def failure_status_from_value(value: Any) -> RetrievalStatus | None:
         return "upstream"
     if status in {"empty", "no_data"}:
         return "empty"
+    if status == "scope_limit":
+        return "scope_limit"
     return None
 
 
@@ -153,6 +161,7 @@ def retrieval_event_from_result(
         completed_at=completed,
         received_count=_received_count(result.payload) if status == "ok" else 0,
         reason_code=status,
+        exposure_layer=_exposure_layer(status),
     )
 
 
@@ -178,7 +187,20 @@ def public_retrieval_notice(
         return f"{prefix}외부 조회가 실패해 확인할 수 없습니다."
     if event.status == "parse_error":
         return f"{prefix}응답은 받았으나 검증 가능한 레코드로 변환하지 못했습니다."
+    if event.status == "scope_limit":
+        return (
+            f"{prefix}성분명으로는 품목 검색이 지원되지 않아 "
+            "이 항목은 확인하지 못했습니다."
+        )
     return f"{prefix}조회가 완료되었습니다."
+
+
+def _exposure_layer(status: RetrievalStatus) -> FailureExposure:
+    if status == "scope_limit":
+        return "F-scope"
+    if status in {"timeout", "quota", "upstream", "parse_error", "deadline_exceeded"}:
+        return "F-actionable"
+    return "F-internal"
 
 
 def utc_now() -> datetime:

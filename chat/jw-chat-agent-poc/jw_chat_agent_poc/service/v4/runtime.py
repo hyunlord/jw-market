@@ -50,6 +50,13 @@ from jw_chat_agent_poc.service.v4.retrieval_events import (
     retrieval_event_from_result,
     utc_now,
 )
+from jw_chat_agent_poc.service.v4.semantic_realization import (
+    SemanticEvidenceContext,
+    evidence_has_temporal_support,
+    evidence_support_text,
+    evidence_temporal_support_texts,
+    realize_semantic_surface,
+)
 from jw_chat_agent_poc.service.v4.session_state import SessionState, SessionStateStore
 from jw_chat_agent_poc.service.v4.synthesizer import SynthesisOutcome, V4Synthesizer
 from jw_chat_agent_poc.service.v4.shadow import (
@@ -537,6 +544,20 @@ class V4Runtime:
             evidence_sets,
             retrieval_events,
         )
+        completion_rows = tuple(entity_completion.rows)
+        semantic_surface = realize_semantic_surface(
+            final_text,
+            SemanticEvidenceContext(
+                has_temporal_support=evidence_has_temporal_support(evidence_sets),
+                supported_text=evidence_support_text(evidence_sets),
+                temporal_support_texts=evidence_temporal_support_texts(evidence_sets),
+                observed_count=sum(
+                    row.get("status") == "COMPLETE" for row in completion_rows
+                ),
+                requested_count=len(completion_rows),
+            ),
+        )
+        final_text = semantic_surface.text
         claim_ir_input_sha256 = sha256(final_text.encode("utf-8")).hexdigest()
         claim_ir_enabled = _claim_ir_shadow_enabled()
         if claim_ir_enabled:
@@ -710,6 +731,7 @@ class V4Runtime:
                 ],
             },
             "surface_binding": surface_binding_trace,
+            "semantic_realization": semantic_surface.model_dump(mode="json"),
             "retrieval_events": [
                 event.model_dump(mode="json") for event in retrieval_events
             ],
@@ -737,6 +759,19 @@ class V4Runtime:
                 ).hexdigest(),
             },
             "claim_ir_shadow": claim_ir_trace,
+            "claim_ir_realization": {
+                "claim_ir": list(deterministic_render.structured_claims),
+                "recomputation_evidence": list(
+                    deterministic_render.structured_recomputations
+                ),
+                "truncated_t2_count": (
+                    deterministic_render.structured_claims_truncated
+                ),
+                "unnarrated_record_count": (
+                    deterministic_render.unnarrated_record_count
+                ),
+                "answer_mutation": composition.answer_mutated,
+            },
             "typed_grounding_shadow": grounding_shadow,
         }
         source_names = [

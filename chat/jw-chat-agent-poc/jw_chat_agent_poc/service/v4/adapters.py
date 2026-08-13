@@ -66,6 +66,8 @@ _DISEASE_ALIASES = {
     "뇌경색": ("I63", "cerebral infarction"),
 }
 _INGREDIENT_ALIASES = {
+    "pitavastatin calcium": "Pitavastatin",
+    "pitavastatin": "Pitavastatin",
     "스타틴": "Pitavastatin",
     "피타바스타틴": "Pitavastatin",
     "리바로": "Pitavastatin",
@@ -554,6 +556,71 @@ def _ingredient_search_term(query: str) -> str | None:
         return None
     alias = max(aliases, key=len)
     return alias if alias == "피타바스타틴" else _INGREDIENT_ALIASES[alias]
+
+
+def _is_ingredient_only_nedrug_query(query: str) -> bool:
+    lowered = query.casefold()
+    explicit_terms = (
+        "pitavastatin calcium",
+        "pitavastatin",
+        "피타바스타틴",
+        "스타틴",
+    )
+    matched_terms = tuple(term for term in explicit_terms if term in lowered)
+    if not matched_terms:
+        return False
+    remainder = lowered
+    for term in sorted(matched_terms, key=len, reverse=True):
+        remainder = remainder.replace(term, " ")
+    generic_terms = {
+        "관련",
+        "계열",
+        "기반",
+        "목록",
+        "무엇",
+        "뭐야",
+        "보여줘",
+        "성분",
+        "성분명",
+        "안전성",
+        "알려줘",
+        "약품",
+        "어떤",
+        "용량",
+        "용법",
+        "의약품",
+        "이슈",
+        "정보",
+        "제품",
+        "제품명",
+        "제제",
+        "최근",
+        "품목",
+        "품목명",
+        "하기",
+        "함유",
+        "해줘",
+        "허가",
+        "허가사항",
+        "효과",
+        "효능",
+        "ingredient",
+        "information",
+        "item",
+        "items",
+        "product",
+        "products",
+        "search",
+    }
+    tokens = re.findall(r"[0-9A-Za-z가-힣]+", remainder)
+    return all(_strip_query_particle(token) in generic_terms for token in tokens)
+
+
+def _strip_query_particle(token: str) -> str:
+    for suffix in ("으로", "에서", "에게", "부터", "까지", "처럼", "보다", "은", "는", "이", "가", "을", "를", "의", "에", "로", "와", "과", "도", "만"):
+        if len(token) > len(suffix) + 1 and token.endswith(suffix):
+            return token[: -len(suffix)]
+    return token
 
 
 def _nedrug_product_brand_hints(product_name: str) -> tuple[str, ...]:
@@ -1060,6 +1127,18 @@ def build_source_adapters() -> dict[SourceName, Any]:
     def nedrug(query: str) -> SourceResult:
         base = _base_query(query)
         resolution = resolved(query)
+        if resolution is None and _is_ingredient_only_nedrug_query(base):
+            return SourceResult(
+                source="nedrug",
+                query=query,
+                status="scope_limit",
+                payload={"calls": []},
+                evidence=_evidence_envelope("nedrug", query, {"calls": []}),
+                notice=(
+                    "성분명으로는 품목 검색이 지원되지 않아 "
+                    "이 항목은 확인하지 못했습니다"
+                ),
+            )
         brand = resolution.canonical_brand if resolution is not None else base
         search = external.mfds_permission_search(brand)
         calls = [search]

@@ -237,6 +237,7 @@ def _assemble_injected_answer(
             core = [("핵심 답", commentary.strip())]
 
     fact_coverage: list[str] = []
+    fact_narratives: list[str] = []
     fact_tables: list[str] = []
     fact_limits: list[str] = []
     omitted_columns: list[str] = []
@@ -259,6 +260,8 @@ def _assemble_injected_answer(
             continue
         if node.block_id.endswith(":coverage"):
             fact_coverage.append(visible_text)
+        elif node.block_id.startswith("narrative:"):
+            fact_narratives.append(visible_text)
         elif node.block_id.endswith(":limits"):
             fact_limits.append(visible_text)
         else:
@@ -270,7 +273,9 @@ def _assemble_injected_answer(
         limits.append(
             (
                 "미확인 요소",
-                "\n".join(f"- {notice}" for notice in rendered.source_notices),
+                "\n".join(
+                    f"- [확인 한계] {notice}" for notice in rendered.source_notices
+                ),
             )
         )
     if omitted_columns:
@@ -285,6 +290,7 @@ def _assemble_injected_answer(
     blocks = [
         *(_render_sections(core)),
         *fact_coverage,
+        *fact_narratives,
         *fact_tables,
         *(_render_sections([*context, *other])),
         *(_render_sections(insights)),

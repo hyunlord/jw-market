@@ -546,4 +546,6 @@ def _result_exclusion_reason(result: SourceResult) -> str | None:
         return "empty_result"
     if result.status == "parse_error":
         return "parse_error"
+    if result.status == "scope_limit":
+        return "scope_limit"
     return "upstream_error"

@@ -80,6 +80,10 @@ class DeterministicRender(_StrictModel):
     source_notices: tuple[str, ...] = ()
     source_notice_bindings: tuple[dict[str, Any], ...] = ()
     source_tiers: dict[str, int] = Field(default_factory=dict)
+    structured_claims: tuple[dict[str, Any], ...] = ()
+    structured_recomputations: tuple[dict[str, Any], ...] = ()
+    structured_claims_truncated: int = 0
+    unnarrated_record_count: int = 0
 
 
 class CompositionResult(_StrictModel):
