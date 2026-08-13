@@ -298,12 +298,98 @@ def test_f_inspection_uses_backend_counts_and_sanitizes_internal_values() -> Non
     detail = build_inspection_detail(plan, (result,), (evidence,), rendered)
     call = detail["calls"][0]
 
-    assert call["counts"] == {"returned": 2, "parsed": 2, "rendered": 1, "narrated": 1}
+    assert call["counts"] == {
+        "returned": 2,
+        "parsed": 2,
+        "envelope": 2,
+        "rendered": 1,
+        "narrated": 1,
+    }
     assert call["unused_count"] == 1
     assert call["status"] == "완료"
     serialized = str(detail)
     assert "internal.svc" not in serialized
     assert "secret" not in serialized
+
+
+def test_f_inspection_binds_nested_hira_counts_to_each_call() -> None:
+    plan = _plan("E10 환자수", answer_sources=("hira",))
+    result = SourceResult(
+        source="hira",
+        query="E10 환자수",
+        status="ok",
+        payload={
+            "calls": [
+                {
+                    "tool": "hira_disease_name_code",
+                    "render_data": {
+                        "request": {"sickCd": "E10", "searchText": "E10"},
+                        "items": [{"sickCd": "E10", "sickNm": "1형 당뇨병"}],
+                    },
+                },
+                {
+                    "tool": "hira_disease_hospitalization_outpatient_stats",
+                    "render_data": {
+                        "request": {"sickCd": "E10", "year": "2024"},
+                        "items": [
+                            {"sickCd": "E10", "inpatOpat": "입원", "ptntCnt": "2989"},
+                            {"sickCd": "E10", "inpatOpat": "외래", "ptntCnt": "50895"},
+                        ],
+                    },
+                },
+            ]
+        },
+        elapsed_ms=1200,
+    )
+    evidence = EvidenceSet(
+        source="hira",
+        retrieved_at="2026-08-13T00:00:00Z",
+        coverage=CoverageLedger(records_received=2, records_unique=2),
+        records=(
+            EvidenceRecord(
+                evidence_id="hira:1:1",
+                source="hira",
+                result_kind="external_record",
+                payload={"request": {"sickCd": "E10"}},
+            ),
+            EvidenceRecord(
+                evidence_id="hira:1:2",
+                source="hira",
+                result_kind="external_record",
+                payload={"request": {"sickCd": "E10", "year": "2024"}},
+            ),
+        ),
+    )
+    rendered = DeterministicRender(profile="market_analysis")
+    answer = (
+        "1형 당뇨병(E10)의 2024년 입원 환자수는 2,989명, "
+        "외래 환자수는 50,895명입니다."
+    )
+
+    detail = build_inspection_detail(
+        plan,
+        (result,),
+        (evidence,),
+        rendered,
+        answer_text=answer,
+    )
+    call = detail["calls"][0]
+
+    assert call["counts"] == {
+        "returned": 3,
+        "parsed": 3,
+        "envelope": 3,
+        "rendered": 3,
+        "narrated": 3,
+    }
+    assert call["request_parameters"] == {
+        "query": "E10 환자수",
+        "calls": [
+            {"sickCd": "E10", "searchText": "E10"},
+            {"sickCd": "E10", "year": "2024"},
+        ],
+    }
+    assert call["unused_count"] == 0
 
 
 def test_d_derived_metrics_are_recomputed_from_bound_records() -> None:

@@ -23,6 +23,7 @@ def build_inspection_detail(
     rendered: DeterministicRender,
     *,
     expansion: Mapping[str, Any] | None = None,
+    answer_text: str = "",
 ) -> dict[str, Any]:
     rendered_ids = {
         record_id for node in rendered.nodes for record_id in node.record_ids
@@ -34,32 +35,57 @@ def build_inspection_detail(
         if isinstance(argument, Mapping) and argument.get("record_id")
     }
     sets_by_source = {item.source: item for item in evidence_sets}
+    source_result_counts: dict[str, int] = {}
+    for result in results:
+        source_result_counts[result.source] = (
+            source_result_counts.get(result.source, 0) + 1
+        )
+    source_result_indexes: dict[str, int] = {}
     calls = []
     for index, result in enumerate(results, start=1):
+        source_result_indexes[result.source] = source_result_indexes.get(result.source, 0) + 1
+        source_result_index = source_result_indexes[result.source]
         evidence = sets_by_source.get(result.source)
-        source_ids = {
-            record.evidence_id for record in evidence.records
-        } if evidence is not None else set()
-        returned = _returned_count(result.payload) if result.status == "ok" else 0
-        parsed = len(source_ids)
-        rendered_count = len(source_ids & rendered_ids)
-        narrated = len(source_ids & narrated_ids)
+        evidence_records = _result_evidence_records(
+            evidence,
+            result.source,
+            source_result_index,
+            source_result_counts[result.source],
+        )
+        source_ids = {record.evidence_id for record in evidence_records}
+        raw_records = _raw_records(result.payload) if result.status == "ok" else []
+        returned = len(raw_records) or (
+            _returned_count(result.payload) if result.status == "ok" else 0
+        )
+        parsed = len(raw_records) if raw_records else len(evidence_records)
+        envelope = parsed if evidence_records or result.evidence is not None else 0
+        surfaced = _surfaced_record_count(raw_records, answer_text)
+        rendered_count = max(len(source_ids & rendered_ids), surfaced)
+        narrated = max(len(source_ids & narrated_ids), surfaced)
         calls.append(
             {
                 "sequence": index,
                 "source_label": public_source_label(result.source),
                 "status": _public_status(result, returned),
                 "elapsed_seconds": round(max(result.elapsed_ms, 0.0) / 1000, 3),
-                "request_parameters": {"query": _sanitize(result.query)},
+                "request_parameters": _request_parameters(result),
                 "counts": {
                     "returned": returned,
                     "parsed": parsed,
+                    "envelope": envelope,
                     "rendered": rendered_count,
                     "narrated": narrated,
                 },
                 "unused_count": max(returned - narrated, 0),
                 "dropped_count": max(returned - parsed, 0),
-                "drop_reasons": _drop_reasons(result, returned, parsed, rendered_count, narrated),
+                "drop_reasons": _drop_reasons(
+                    result,
+                    returned,
+                    parsed,
+                    envelope,
+                    rendered_count,
+                    narrated,
+                ),
             }
         )
     return {
@@ -88,6 +114,126 @@ def _returned_count(payload: Any) -> int:
     return 0
 
 
+def _raw_records(payload: Any) -> list[Mapping[str, Any]]:
+    if isinstance(payload, Mapping):
+        for key in ("records", "rows", "items", "studies"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, Mapping)]
+        calls = payload.get("calls")
+        if isinstance(calls, list):
+            records: list[Mapping[str, Any]] = []
+            for call in calls:
+                if not isinstance(call, Mapping):
+                    continue
+                render_data = call.get("render_data")
+                nested = _raw_records(render_data)
+                if nested:
+                    records.extend(nested)
+                elif isinstance(render_data, Mapping) and render_data:
+                    records.append(render_data)
+            return records
+        for key in ("payload", "data", "detail", "render_data"):
+            nested = _raw_records(payload.get(key))
+            if nested:
+                return nested
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, Mapping)]
+    return []
+
+
+def _result_evidence_records(
+    evidence: EvidenceSet | None,
+    source: str,
+    source_result_index: int,
+    source_result_count: int,
+) -> tuple[Any, ...]:
+    if evidence is None:
+        return ()
+    prefix = f"{source}:{source_result_index}:"
+    matched = tuple(
+        record for record in evidence.records if record.evidence_id.startswith(prefix)
+    )
+    if matched:
+        return matched
+    return evidence.records if source_result_count == 1 else ()
+
+
+def _request_parameters(result: SourceResult) -> dict[str, Any]:
+    requests: list[Mapping[str, Any]] = []
+    if isinstance(result.payload, Mapping):
+        calls = result.payload.get("calls")
+        if isinstance(calls, list):
+            for call in calls:
+                if not isinstance(call, Mapping):
+                    continue
+                render_data = call.get("render_data")
+                if not isinstance(render_data, Mapping):
+                    continue
+                request = render_data.get("request")
+                if isinstance(request, Mapping) and request:
+                    requests.append(request)
+    output: dict[str, Any] = {"query": _sanitize(result.query)}
+    if requests:
+        output["calls"] = _sanitize_value(requests)
+    return output
+
+
+_PRIMARY_VALUE_KEYS = frozenset(
+    {
+        "ptntCnt",
+        "value",
+        "sales",
+        "sales_value",
+        "market_share",
+        "patient_count",
+        "enrollment",
+    }
+)
+_IDENTIFIER_KEYS = frozenset(
+    {
+        "sickCd",
+        "sickNm",
+        "nct_id",
+        "nctId",
+        "patent_no",
+        "patent_number",
+        "item_name",
+        "brand",
+        "title",
+        "brief_title",
+    }
+)
+
+
+def _surfaced_record_count(records: Sequence[Mapping[str, Any]], answer_text: str) -> int:
+    if not answer_text:
+        return 0
+    return sum(1 for record in records if _record_is_surfaced(record, answer_text))
+
+
+def _record_is_surfaced(record: Mapping[str, Any], answer_text: str) -> bool:
+    primary_values = [
+        record.get(key)
+        for key in _PRIMARY_VALUE_KEYS
+        if record.get(key) not in (None, "")
+    ]
+    if primary_values:
+        return any(_answer_contains_value(answer_text, value) for value in primary_values)
+    identifiers = [
+        record.get(key)
+        for key in _IDENTIFIER_KEYS
+        if record.get(key) not in (None, "")
+    ]
+    return any(_answer_contains_value(answer_text, value) for value in identifiers)
+
+
+def _answer_contains_value(answer_text: str, value: Any) -> bool:
+    needle = "".join(str(value).casefold().replace(",", "").split())
+    haystack = "".join(answer_text.casefold().replace(",", "").split())
+    return bool(needle) and needle in haystack
+
+
 def _public_status(result: SourceResult, returned: int) -> str:
     if result.status == "ok":
         return "완료" if returned else "성공+0건"
@@ -104,16 +250,43 @@ def _drop_reasons(
     result: SourceResult,
     returned: int,
     parsed: int,
+    envelope: int,
     rendered: int,
     narrated: int,
 ) -> list[dict[str, Any]]:
     reasons: list[dict[str, Any]] = []
     if returned > parsed:
-        reasons.append({"stage": "parsing", "count": returned - parsed, "reason": "검증 가능한 레코드로 변환되지 않음"})
-    if parsed > rendered:
-        reasons.append({"stage": "render", "count": parsed - rendered, "reason": "현재 답변 표면에 배치되지 않음"})
+        reasons.append(
+            {
+                "stage": "parsing",
+                "count": returned - parsed,
+                "reason": "검증 가능한 레코드로 변환되지 않음",
+            }
+        )
+    if parsed > envelope:
+        reasons.append(
+            {
+                "stage": "envelope",
+                "count": parsed - envelope,
+                "reason": "동일 호출 내 원시 레코드가 근거 묶음으로 결합됨",
+            }
+        )
+    if envelope > rendered:
+        reasons.append(
+            {
+                "stage": "render",
+                "count": envelope - rendered,
+                "reason": "현재 답변 표면에 배치되지 않음",
+            }
+        )
     if rendered > narrated:
-        reasons.append({"stage": "narrative", "count": rendered - narrated, "reason": "표에는 있으나 서술에 직접 등장하지 않음"})
+        reasons.append(
+            {
+                "stage": "narrative",
+                "count": rendered - narrated,
+                "reason": "표에는 있으나 서술에 직접 등장하지 않음",
+            }
+        )
     if result.status != "ok" and result.notice:
         reasons.append({"stage": "retrieval", "count": 0, "reason": _sanitize(result.notice)})
     return reasons

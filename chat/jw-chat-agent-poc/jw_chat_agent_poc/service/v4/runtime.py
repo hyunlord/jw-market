@@ -834,6 +834,7 @@ class V4Runtime:
             evidence_sets,
             deterministic_render,
             expansion=trace["expansion"],
+            answer_text=composition.text,
         )
         source_names = [
                 citation.source
