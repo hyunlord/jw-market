@@ -183,7 +183,7 @@ def _ledger_for_run(
             for item in attempts
             if (item.epoch, item.category, item.manifest_sha, item.run_id)
             == (*identity, run_id)
-            and item.status == STATUS_RUNNING
+            and item.status in {STATUS_QUEUED, STATUS_RUNNING}
         ),
         None,
     )

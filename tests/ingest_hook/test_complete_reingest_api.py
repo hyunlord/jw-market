@@ -138,6 +138,29 @@ def test_normal_runner_adapter_preserves_completed_parent(sqlite_ledger, fake_tr
     assert attempt.status == "complete"
 
 
+def test_normal_runner_adapter_recognizes_exact_queued_attempt(sqlite_ledger) -> None:
+    _complete_identity(sqlite_ledger)
+    run_id = "20260813174741616967"
+    affected_scope = {
+        "dimension": "source",
+        "count": 1,
+        "values": [IDENTITY[1]],
+    }
+    sqlite_ledger.record_complete_reingest_request(
+        *IDENTITY,
+        request_id=REQUEST_ID,
+        run_id=run_id,
+        mode="mart_from_existing_raw",
+        requested_by="operator@jw.example",
+        reason="run an exact queued attempt without waiting on unrelated work",
+        affected_scope=affected_scope,
+    )
+
+    attempt_ledger = job_runner._ledger_for_run(sqlite_ledger, IDENTITY, run_id)
+
+    assert attempt_ledger.status(*IDENTITY).status == "running"
+
+
 def test_reingest_publish_lifecycle_cas_uses_attempt_without_mutating_parent(
     sqlite_ledger,
     fake_transport,
