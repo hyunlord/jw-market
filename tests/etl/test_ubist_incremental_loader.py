@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import duckdb
@@ -11,13 +12,18 @@ import pyarrow.parquet as pq
 
 import pytest
 
+from pipeline.etl.io import ubist_loader
 from pipeline.etl.io.ubist_loader import (
     BUSINESS_GRAIN_COLUMNS,
     COLUMNS,
     SCHEMA,
+    DedupReport,
+    PartitionStats,
     build_generic_lookup,
     deduplicate_business_grain,
+    deduplicate_partition_isolated,
     deduplicate_partition_file,
+    deduplicate_written_partitions,
     iter_xlsx_rows,
     prune_ubist_partitions,
     run_incremental_ubist_load,
@@ -328,6 +334,93 @@ def test_partition_dedup_matches_in_memory_contract(tmp_path):
         expected_frame.reset_index(drop=True),
         check_dtype=False,
     )
+
+
+def test_isolated_partition_dedup_matches_in_memory_contract(tmp_path):
+    rows = [
+        _ubist_row(source_file="a.xlsx", ingested_at="2026-06-17T00:00:00"),
+        _ubist_row(source_file="b.xlsx", ingested_at="2026-06-18T00:00:00"),
+    ]
+    expected_frame, expected_report = deduplicate_business_grain(
+        pd.DataFrame(rows), "2026-02"
+    )
+    _write_partition(tmp_path, "2026-02", rows)
+    partition = tmp_path / "year=2026" / "month=02" / "data.parquet"
+
+    actual_report = deduplicate_partition_isolated(partition, "2026-02")
+    with duckdb.connect() as connection:
+        actual_frame = connection.execute(
+            f"SELECT {', '.join(f'\"{column}\"' for column in COLUMNS)} FROM read_parquet(?)",
+            [str(partition)],
+        ).df()
+
+    assert actual_report == expected_report
+    pd.testing.assert_frame_equal(
+        actual_frame.reset_index(drop=True),
+        expected_frame.reset_index(drop=True),
+        check_dtype=False,
+    )
+
+
+def test_written_partition_dedup_runs_in_short_lived_worker(tmp_path, monkeypatch):
+    _write_partition(tmp_path, "2026-02", [_ubist_row()])
+    calls: list[list[str]] = []
+
+    def fail_direct_call(*_args, **_kwargs):
+        raise AssertionError("the long-lived loader must not run DuckDB dedup directly")
+
+    def fake_run(command, *, check):
+        assert check is False
+        calls.append(command)
+        result_path = Path(command[command.index("--result") + 1])
+        result_path.write_text(
+            json.dumps(
+                {
+                    "period": "2026-02",
+                    "rows_before": 1,
+                    "rows_after": 1,
+                    "duplicate_groups": 0,
+                    "duplicate_rows_removed": 0,
+                    "conflict_groups": 0,
+                    "conflict_rows": 0,
+                    "conflicts": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(ubist_loader, "deduplicate_partition_file", fail_direct_call)
+    monkeypatch.setattr(ubist_loader.subprocess, "run", fake_run)
+
+    reports = deduplicate_written_partitions(
+        tmp_path,
+        {"2026-02": PartitionStats(row_count=1, source_files={"a.xlsx"})},
+    )
+
+    assert reports[0].period == "2026-02"
+    assert len(calls) == 1
+    assert calls[0][:3] == [
+        ubist_loader.sys.executable,
+        "-m",
+        "pipeline.etl.io.ubist_dedup_worker",
+    ]
+
+
+def test_written_partition_dedup_propagates_worker_failure(tmp_path, monkeypatch):
+    _write_partition(tmp_path, "2026-02", [_ubist_row()])
+
+    def fake_run(command, *, check):
+        assert check is False
+        return subprocess.CompletedProcess(command, 137)
+
+    monkeypatch.setattr(ubist_loader.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="period=2026-02.*exit_code=137"):
+        deduplicate_written_partitions(
+            tmp_path,
+            {"2026-02": PartitionStats(row_count=1, source_files={"a.xlsx"})},
+        )
 
 
 def test_row_merge_is_idempotent_for_same_file_reupload() -> None:

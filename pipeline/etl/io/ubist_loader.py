@@ -14,6 +14,7 @@ import json
 import math
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import unicodedata
@@ -786,6 +787,46 @@ def deduplicate_partition_file(
     return report
 
 
+def deduplicate_partition_isolated(
+    path: Path,
+    period: str,
+    *,
+    additional_paths: tuple[Path, ...] = (),
+) -> DedupReport:
+    with tempfile.NamedTemporaryFile(
+        prefix="ubist-dedup-result-", suffix=".json", delete=False
+    ) as handle:
+        result_path = Path(handle.name)
+    command = [
+        sys.executable,
+        "-m",
+        "pipeline.etl.io.ubist_dedup_worker",
+        "--path",
+        str(path),
+        "--period",
+        period,
+        "--result",
+        str(result_path),
+    ]
+    for additional_path in additional_paths:
+        command.extend(["--additional-path", str(additional_path)])
+    try:
+        completed = subprocess.run(command, check=False)
+        if completed.returncode != 0:
+            raise RuntimeError(
+                "UBIST partition dedup worker failed: "
+                f"period={period} exit_code={completed.returncode}"
+            )
+        report = DedupReport(**json.loads(result_path.read_text(encoding="utf-8")))
+        if report.period != period:
+            raise RuntimeError(
+                f"UBIST partition dedup worker returned an invalid report: period={period}"
+            )
+        return report
+    finally:
+        result_path.unlink(missing_ok=True)
+
+
 class PartitionWriter:
     def __init__(self, target_root: Path):
         self.target_root = target_root
@@ -860,7 +901,7 @@ def deduplicate_written_partitions(target: Path, stats: dict[str, PartitionStats
         incoming_path = path.with_name("data.incoming.parquet")
         additional_paths = (incoming_path,) if incoming_path.exists() else ()
         LOGGER.info("UBIST partition dedup start period=%s path=%s", period, path)
-        report = deduplicate_partition_file(path, period, additional_paths=additional_paths)
+        report = deduplicate_partition_isolated(path, period, additional_paths=additional_paths)
         for additional_path in additional_paths:
             additional_path.unlink(missing_ok=True)
         reports.append(report)
