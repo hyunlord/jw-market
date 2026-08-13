@@ -745,7 +745,7 @@ def test_d_repeated_clinical_predicates_keep_every_record_plus_relation_lines() 
     )
 
     assert surface.count("## 임상시험 상세") == 1
-    assert "| NCT ID | 시험명 | 상태 | 스폰서 |" in surface
+    assert "| NCT ID | 시험명 | 상태 | 단계 | 스폰서 |" in surface
     assert surface.count("은(는) 상태") == 4
     assert all(f"NCT0000000{index}" in surface for index in range(1, 5))
     assert "[직접 확인]" not in surface

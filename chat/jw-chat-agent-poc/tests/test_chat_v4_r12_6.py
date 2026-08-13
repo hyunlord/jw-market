@@ -1003,7 +1003,7 @@ def test_d_clinical_portfolio_renders_one_grounded_table_and_interpretation_per_
     assert "단계상 후기 개발 신호이지만 시장 진입 시점은 정본으로 확인되지 않습니다" in surface
     assert "허가 후 시판 후 연구 성격" in surface
     assert "단계 정보가 제공되지 않아 개발 단계를 해석하지 않습니다" in surface
-    assert "| NCT ID | 시험명 | 상태 | 스폰서 | 대상자수 | 시작일 | 완료예정일 | 국가 | 1차 평가변수 |" in surface
+    assert "| NCT ID | 시험명 | 상태 | 단계 | 스폰서 | 대상자수 | 시작일 | 완료예정일 | 국가 | 1차 평가변수 |" in surface
     assert all(item["matched"] for item in rendered.structured_recomputations)
 
 
