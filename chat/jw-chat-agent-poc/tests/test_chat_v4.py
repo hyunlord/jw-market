@@ -3620,20 +3620,68 @@ def test_v4_tavily_retries_transport_once_but_not_empty_or_parse_failure(
 ) -> None:
     monkeypatch.setenv("WEB_SEARCH_PROVIDER", "tavily_mcp")
     calls: list[str] = []
+    timeout = ExternalCall(
+        tool="web_search",
+        source="web",
+        status="error",
+        summary_text="timeout",
+        render_data={
+            "error": "Read timed out",
+            "error_type": "read_timeout",
+            "request_issued": True,
+            "response_received": False,
+        },
+    )
+
+    def request(_external, query, *, search_depth, topic):
+        calls.append(f"{query}:{search_depth}:{topic}")
+        return timeout
+
+    monkeypatch.setattr(v4_adapters, "_v4_tavily_mcp_request", request)
+    result = v4_adapters._v4_web_search(
+        SimpleNamespace(),
+        "리바로 최신 근거",
+        search_depth="advanced",
+    )
+
+    policy = result.render_data["v4_tavily_policy"]
+    assert result.status == "error"
+    assert len(calls) == 1
+    assert policy["attempts"] == 1
+    assert policy["requests_issued"] == 1
+    assert policy["responses_received"] == 0
+    assert policy["retry_count"] == 0
+    assert policy["read_timeout_retries"] == 0
+    assert policy["credit_at_risk_without_response"] == 1
+
+
+@pytest.mark.parametrize("error_type", ("connect_timeout", "http_5xx"))
+def test_v4_tavily_retries_connect_or_5xx_once(monkeypatch, error_type: str) -> None:
+    monkeypatch.setenv("WEB_SEARCH_PROVIDER", "tavily_mcp")
+    calls: list[str] = []
     responses = [
         ExternalCall(
             tool="web_search",
             source="web",
             status="error",
-            summary_text="timeout",
-            render_data={"error": "Read timed out"},
+            summary_text=error_type,
+            render_data={
+                "error": error_type,
+                "error_type": error_type,
+                "request_issued": True,
+                "response_received": error_type == "http_5xx",
+            },
         ),
         ExternalCall(
             tool="web_search",
             source="web",
             status="live",
             summary_text="ok",
-            render_data={"items": [{"url": "https://example.org"}]},
+            render_data={
+                "items": [{"url": "https://example.org"}],
+                "request_issued": True,
+                "response_received": True,
+            },
         ),
     ]
 
@@ -3648,9 +3696,17 @@ def test_v4_tavily_retries_transport_once_but_not_empty_or_parse_failure(
         search_depth="advanced",
     )
 
+    policy = result.render_data["v4_tavily_policy"]
     assert result.status == "live"
     assert len(calls) == 2
-    assert result.render_data["v4_tavily_policy"]["attempts"] == 2
+    assert policy["attempts"] == 2
+    assert policy["retry_count"] == 1
+    assert policy["read_timeout_retries"] == 0
+
+
+def test_v4_tavily_does_not_retry_empty_parse_or_quota(monkeypatch) -> None:
+    monkeypatch.setenv("WEB_SEARCH_PROVIDER", "tavily_mcp")
+    calls: list[str] = []
 
     for response in (
         ExternalCall(
@@ -3666,6 +3722,13 @@ def test_v4_tavily_retries_transport_once_but_not_empty_or_parse_failure(
             status="error",
             summary_text="parse",
             render_data={"error_type": "parse_failure"},
+        ),
+        ExternalCall(
+            tool="web_search",
+            source="web",
+            status="error",
+            summary_text="quota",
+            render_data={"error_type": "quota"},
         ),
         ExternalCall(
             tool="web_search",

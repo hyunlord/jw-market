@@ -114,3 +114,29 @@ def test_mcp_attempt_limit_disables_retry(monkeypatch: pytest.MonkeyPatch) -> No
         McpJsonClient("http://mcp.test/json")._post("tools/list", {})
 
     assert calls == 1
+
+
+def test_mcp_client_accepts_separate_connect_and_first_read_timeouts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_timeout: object = None
+    response = _response(
+        b'event: message\ndata: {"jsonrpc":"2.0","id":1,"result":{"tools":[]}}\n\n'
+    )
+
+    def post(*_args: Any, **kwargs: Any) -> requests.Response:
+        nonlocal seen_timeout
+        seen_timeout = kwargs["timeout"]
+        return response
+
+    monkeypatch.setattr("jw_chat_agent_poc.tools.external.mcp_client.requests.post", post)
+
+    result = McpJsonClient(
+        "http://mcp.test/json",
+        timeout_s=8.0,
+        connect_timeout_s=2.0,
+        first_attempt_timeout_s=8.0,
+    )._post("tools/list", {})
+
+    assert result == {"tools": []}
+    assert seen_timeout == (2.0, 8.0)
