@@ -590,6 +590,13 @@ class V4Runtime:
                     row.get("status") == "COMPLETE" for row in completion_rows
                 ),
                 requested_count=len(completion_rows),
+                protected_line_sha256=tuple(
+                    sha256(line.strip().encode("utf-8")).hexdigest()
+                    for node in deterministic_render.nodes
+                    if node.block_id == "narrative:field-restatement"
+                    for line in node.text.splitlines()
+                    if line.strip()
+                ),
             ),
         )
         final_text = semantic_surface.text

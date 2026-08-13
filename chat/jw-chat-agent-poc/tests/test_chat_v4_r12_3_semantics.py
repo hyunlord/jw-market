@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from hashlib import sha256
 
 from jw_chat_agent_poc.service.v4 import semantic_realization
 from jw_chat_agent_poc.service.v4.claim_ir import classify_answer_claims
@@ -152,6 +153,31 @@ def test_c_unbound_causal_terms_are_deleted_even_with_temporal_records() -> None
 
     assert realized.text == ""
     assert realized.downgrade_count == 0
+    assert realized.deletion_count == 1
+
+
+def test_c_grounded_field_restatement_is_not_deleted_for_causal_field_text() -> None:
+    grounded = (
+        "- ClinicalTrials.gov의 NCT06722521은(는) 2차 평가변수 all-cause "
+        "mortality로 확인됩니다. [출처: ClinicalTrials.gov]"
+    )
+    unsupported = "매출 증가가 처방 확대를 일으켰습니다."
+
+    realized = semantic_realization.realize_semantic_surface(
+        f"{grounded}\n{unsupported}",
+        SemanticEvidenceContext(
+            has_temporal_support=False,
+            supported_text=grounded,
+            observed_count=1,
+            requested_count=1,
+            protected_line_sha256=(
+                sha256(grounded.encode("utf-8")).hexdigest(),
+            ),
+        ),
+    )
+
+    assert grounded in realized.text
+    assert unsupported not in realized.text
     assert realized.deletion_count == 1
 
 
