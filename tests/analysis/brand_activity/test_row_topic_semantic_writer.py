@@ -543,6 +543,61 @@ def test_db_failure_preserves_the_classified_raw_response(monkeypatch: pytest.Mo
     assert preserved[0].error_code == "RuntimeError"
 
 
+def test_failed_response_write_failure_does_not_block_batch_failure_record(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batch = semantic_runner.build_semantic_batches(
+        (_occurrence(11),),
+        topic_set_version="topics-v1",
+        prompt_version="prompt-v1",
+        wave_no=1,
+        batch_size=150,
+    )[0]
+    events: list[str] = []
+
+    class ParseFailure(RuntimeError):
+        calls_used = 1
+        raw_responses = ('{"row_id":40351}',)
+
+    monkeypatch.setattr(
+        semantic_execute,
+        "start_semantic_batch",
+        lambda *_args, **_kwargs: events.append("start") or True,
+    )
+    monkeypatch.setattr(
+        semantic_execute,
+        "load_existing_semantic_results",
+        lambda *_args, **_kwargs: (),
+    )
+    monkeypatch.setattr(
+        semantic_execute,
+        "record_semantic_batch_failure",
+        lambda *_args, **_kwargs: events.append("failed"),
+    )
+
+    def fail_to_preserve(_record: semantic_execute.FailedResponseRecord) -> None:
+        events.append("preserve")
+        raise PermissionError("failed-response path is not writable")
+
+    with pytest.raises(ExceptionGroup) as caught:
+        semantic_execute.execute_semantic_batch(
+            object(),  # type: ignore[arg-type]
+            schema="jw_brand_activity_stage",
+            run_id="run-1",
+            batch=batch,
+            topic_set_version="topics-v1",
+            prompt_version="prompt-v1",
+            classified_at_utc_naive="2026-08-12 04:00:00.000000",
+            classify=lambda _batch: (_ for _ in ()).throw(ParseFailure("unexpected row_id: 40351")),
+            preserve_failed_response=fail_to_preserve,
+        )
+
+    assert events == ["start", "failed", "preserve"]
+    assert [type(error) for error in caught.value.exceptions] == [ParseFailure, PermissionError]
+    assert "unexpected row_id: 40351" in str(caught.value.exceptions[0])
+    assert "failed-response path is not writable" in str(caught.value.exceptions[1])
+
+
 def test_success_closes_started_batch(monkeypatch: pytest.MonkeyPatch) -> None:
     batch = semantic_runner.build_semantic_batches(
         (_occurrence(11),),

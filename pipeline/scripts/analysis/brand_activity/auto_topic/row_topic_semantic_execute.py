@@ -144,16 +144,6 @@ def execute_semantic_batch(
             isinstance(item, str) for item in exception_responses
         ):
             raw_responses = exception_responses
-        if preserve_failed_response is not None and raw_responses:
-            preserve_failed_response(
-                FailedResponseRecord(
-                    run_id=run_id,
-                    batch_id=batch.batch_id,
-                    error_code=error_code,
-                    responses=raw_responses,
-                    recorded_at_utc_naive=classified_at_utc_naive,
-                )
-            )
         record_semantic_batch_failure(
             connection,
             schema=schema,
@@ -164,6 +154,22 @@ def execute_semantic_batch(
             finished_at_utc_naive=classified_at_utc_naive,
             calls_used=failed_calls,
         )
+        if preserve_failed_response is not None and raw_responses:
+            try:
+                preserve_failed_response(
+                    FailedResponseRecord(
+                        run_id=run_id,
+                        batch_id=batch.batch_id,
+                        error_code=error_code,
+                        responses=raw_responses,
+                        recorded_at_utc_naive=classified_at_utc_naive,
+                    )
+                )
+            except OSError as evidence_error:
+                raise ExceptionGroup(
+                    "semantic batch failed and its response evidence could not be preserved",
+                    (exc, evidence_error),
+                ) from evidence_error
         raise
     return SemanticBatchOutcome(
         batch_id=batch.batch_id,
