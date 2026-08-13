@@ -235,3 +235,13 @@ def test_complete_reingest_failure_path_does_not_run_cleanup(
             )
         finally:
             assert calls == []
+
+
+def test_job_runner_cleanup_happens_before_completion_signal() -> None:
+    from pathlib import Path
+
+    source = Path("pipeline/scripts/ingest_hook/job_runner.py").read_text(encoding="utf-8")
+    cleanup_index = source.index('if mode == "production" and published_target_schema:')
+    signal_index = source.index("activation_signal = _emit_completion_signal(")
+
+    assert cleanup_index < signal_index

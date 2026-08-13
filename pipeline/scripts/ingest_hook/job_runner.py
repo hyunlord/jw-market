@@ -2133,6 +2133,12 @@ def run(
                     )
                 if load_result["epoch_rows"] is not None:
                     report.file_rows[f"epoch:{manifest.epoch}"] = load_result["epoch_rows"]
+                if mode == "production" and published_target_schema:
+                    _run_post_success_cleanup(
+                        source=manifest.category,
+                        run_id=run_id,
+                        target_db=published_target_schema,
+                    )
                 if activation_journal is not None:
                     activation_signal = _emit_completion_signal(
                         ledger=ledger, tracker=tracker, identity=identity, run_id=run_id,
@@ -2169,13 +2175,6 @@ def run(
             and load_result["epoch_rows"] is not None
         ):
             report.file_rows[f"epoch:{manifest.epoch}"] = load_result["epoch_rows"]
-
-        if mode == "production" and published_target_schema:
-            _run_post_success_cleanup(
-                source=manifest.category,
-                run_id=run_id,
-                target_db=published_target_schema,
-            )
 
         completion_signal = None
         if not completion_signal_emitted:
