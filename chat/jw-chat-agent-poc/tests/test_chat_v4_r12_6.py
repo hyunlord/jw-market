@@ -25,6 +25,7 @@ from jw_chat_agent_poc.service.v4.narrative_realization import (
 from jw_chat_agent_poc.service.v4.render_clinical import render_clinical
 from jw_chat_agent_poc.service.v4.runtime import _bind_session_state_contract
 from jw_chat_agent_poc.service.v4.session_state import SessionState
+from jw_chat_agent_poc.service.v4.tables import build_grounded_tables, filter_charts_bound_to_tables
 from jw_chat_agent_poc.service.v4.synthesizer import (
     _SYNTHESIS_SYSTEM_PROMPT,
     _synthesis_messages,
@@ -1382,3 +1383,108 @@ def test_h_explicit_new_subject_does_not_inherit_previous_comparison_scope() -> 
 
     assert bound.resolved_question == question
     assert "리바로젯" not in bound.resolved_question
+
+
+def test_i_table_specs_preserve_rows_bindings_and_omitted_columns() -> None:
+    records = tuple(
+        EvidenceRecord(
+            evidence_id=f"clinical:{nct_id}",
+            source="clinicaltrials",
+            result_kind="clinical_trial",
+            payload={"nct_id": nct_id},
+        )
+        for nct_id in ("NCT00000001", "NCT00000002")
+    )
+    evidence = _evidence("clinicaltrials", *records)
+    rendered = DeterministicRender(
+        profile="clinical_portfolio",
+        nodes=(
+            RenderNode(
+                block_id="clinical:records",
+                record_ids=tuple(record.evidence_id for record in records),
+                text=(
+                    "## 임상시험 상세\n"
+                    "| NCT ID | 상태 | 원천 미제공 열 |\n"
+                    "|---|---|---|\n"
+                    "| NCT00000001 | 모집 중 | 원천 미제공 |\n"
+                    "| NCT00000002 | 완료 | 원천 미제공 |"
+                ),
+            ),
+        ),
+    )
+
+    tables = build_grounded_tables((evidence,), rendered)
+
+    assert len(tables) == 1
+    assert tables[0]["title"] == "임상시험 상세"
+    assert tables[0]["source_label"] == "ClinicalTrials.gov"
+    assert tables[0]["row_count"] == 2
+    assert tables[0]["omitted_columns"] == ["원천 미제공 열"]
+    assert [column["label"] for column in tables[0]["columns"]] == ["NCT ID", "상태"]
+    assert [row["record_id"] for row in tables[0]["rows"]] == [
+        "clinical:NCT00000001",
+        "clinical:NCT00000002",
+    ]
+    assert tables[0]["rows"][0]["cells"] == {
+        "column_1": "NCT00000001",
+        "column_2": "모집 중",
+    }
+
+
+def test_i_table_specs_reject_ambiguous_row_binding() -> None:
+    records = tuple(
+        EvidenceRecord(
+            evidence_id=f"patent:{index}",
+            source="patent",
+            result_kind="patent",
+            payload={"patent_no": str(index)},
+        )
+        for index in range(3)
+    )
+    rendered = DeterministicRender(
+        profile="patent_portfolio",
+        nodes=(
+            RenderNode(
+                block_id="patent:records",
+                record_ids=tuple(record.evidence_id for record in records),
+                text="| 특허번호 |\n|---|\n| 1 |\n| 2 |",
+            ),
+        ),
+    )
+
+    assert build_grounded_tables((_evidence("patent", *records),), rendered) == ()
+
+
+def test_i_charts_require_matching_record_bound_values_in_tables() -> None:
+    chart = {
+        "chart_id": "v4-sales",
+        "chart_type": "line",
+        "title": "매출 추이",
+        "x": {"label": "기간", "values": ["2025", "2026"]},
+        "series": [
+            {
+                "label": "리바로젯",
+                "values": [100.0, 124.54],
+                "record_ids": ["mart:2025", "mart:2026"],
+            }
+        ],
+        "unit": "억원",
+        "source_label": "내부 데이터마트",
+    }
+    table = {
+        "rows": [
+            {"record_id": "mart:2025", "cells": {"period": "2025", "sales": "100억원"}},
+            {"record_id": "mart:2026", "cells": {"period": "2026", "sales": "124.54억원"}},
+        ]
+    }
+
+    assert filter_charts_bound_to_tables((chart,), (table,)) == (chart,)
+    assert filter_charts_bound_to_tables((chart,), ()) == ()
+    mismatched = {
+        **table,
+        "rows": [
+            *table["rows"][:1],
+            {"record_id": "mart:2026", "cells": {"sales": "125억원"}},
+        ],
+    }
+    assert filter_charts_bound_to_tables((chart,), (mismatched,)) == ()

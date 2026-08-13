@@ -20,6 +20,7 @@ from jw_chat_agent_poc.service.conversation import ConversationTurn
 from jw_chat_agent_poc.service.v4.adapters import build_source_adapters
 from jw_chat_agent_poc.service.v4.claim_ir import classify_answer_claims
 from jw_chat_agent_poc.service.v4.charts import build_grounded_charts
+from jw_chat_agent_poc.service.v4.tables import build_grounded_tables, filter_charts_bound_to_tables
 from jw_chat_agent_poc.service.v4.contracts import (
     SOURCE_NAMES,
     EvidenceEnvelope,
@@ -854,10 +855,23 @@ class V4Runtime:
             for node in deterministic_render.nodes
             for record_id in node.record_ids
         )
-        charts = build_grounded_charts(evidence_sets, rendered_record_ids)
+        tables = build_grounded_tables(evidence_sets, deterministic_render)
+        chart_candidates = build_grounded_charts(evidence_sets, rendered_record_ids)
+        charts = filter_charts_bound_to_tables(chart_candidates, tables)
+        trace["tables"] = {
+            "generated_count": len(tables),
+            "row_count": sum(table["row_count"] for table in tables),
+            "reason": (
+                "record_bound_markdown_tables"
+                if tables
+                else "no_unambiguous_record_bound_table"
+            ),
+        }
         trace["charts"] = {
             "generated_count": len(charts),
-            "reason": "grounded_series" if charts else "fewer_than_two_grounded_points",
+            "candidate_count": len(chart_candidates),
+            "table_binding_rejected_count": len(chart_candidates) - len(charts),
+            "reason": "grounded_table_bound_series" if charts else "no_table_bound_series",
         }
         trace["inspection_detail"] = build_inspection_detail(
             plan,
@@ -890,6 +904,7 @@ class V4Runtime:
         return V4Answer(
             text=final_text,
             charts=charts,
+            tables=tables,
             sources=sources,
             trace=trace,
             timing=stage_timing,

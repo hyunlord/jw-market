@@ -179,6 +179,7 @@ class GatedAnswer(_StrictModel):
 class V4Answer(_StrictModel):
     text: str
     charts: tuple[dict[str, Any], ...] = ()
+    tables: tuple[dict[str, Any], ...] = ()
     sources: tuple[str, ...] = ()
     trace: dict[str, Any] = Field(default_factory=dict)
     timing: dict[str, Any] = Field(default_factory=dict)

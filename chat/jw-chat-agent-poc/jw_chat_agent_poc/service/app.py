@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from functools import lru_cache, wraps
 from hmac import compare_digest
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -357,7 +357,7 @@ CHAT_ACCEPTED_DESCRIPTION = """
 CHAT_ANSWER_DESCRIPTION = """
 질문을 즉시 처리해 완성된 답변 JSON을 반환합니다.
 
-응답 최상위 필드는 `text`(마크다운 답변), `charts`(근거 기반 차트 스펙 배열), `trace`(라우팅·도구·타이밍 추적), `sources`(출처 라벨), `conversation_id`입니다.
+응답 최상위 필드는 `text`(마크다운 답변), `tables`(레코드 결속 표 스펙 배열), `charts`(표와 동일 레코드·값에 결속된 차트 스펙 배열), `trace`(라우팅·도구·타이밍 추적), `sources`(출처 라벨), `conversation_id`입니다.
 """
 
 CHAT_STREAM_DESCRIPTION = """
@@ -373,6 +373,7 @@ CHAT_STREAM_DESCRIPTION = """
 | file_sources | JSON array `[{file_name, i_page?, sheet_name?}]` | after sources, only when uploaded-file grounding was used | 0-1 |
 | delta | markdown text chunk | prose segments | 0-N |
 | markdown_block | JSON `{kind, markdown}` | table segments | 0-N |
+| tables | JSON array `[{table_id,title,source_label,columns,rows,row_count,omitted_columns}]` | after content, if grounded tables are present | 0-1 |
 | charts | JSON array | if charts are present | 0-1 |
 | timing | JSON `{stages, token_usage, ...}` | after content | 1 |
 | trace | JSON full trace envelope | after timing | 1 |
@@ -390,6 +391,7 @@ class FinalAnswer:
     trace: dict[str, Any]
     sources: tuple[str, ...]
     conversation_id: str | None
+    tables: list[dict[str, Any]] = field(default_factory=list)
     file_sources: tuple[dict[str, Any], ...] = ()
     conversation_slots: ConversationSlots = ConversationSlots()
 
@@ -459,6 +461,7 @@ def _run_v4_final_answer(
     return FinalAnswer(
         text=answer.text,
         charts=list(answer.charts),
+        tables=list(answer.tables),
         timing=answer.timing,
         trace=answer.trace,
         sources=answer.sources,
@@ -1072,6 +1075,7 @@ def create_app(
         return ChatAnswer(
             text=final_answer.text,
             charts=final_answer.charts,
+            tables=final_answer.tables,
             trace=final_answer.trace,
             sources=final_answer.sources,
             conversation_id=final_answer.conversation_id,
@@ -3501,6 +3505,7 @@ def _sse_events_from_final_answer(
         file_sources=_project_public_file_sources(final_answer.file_sources),
         text=final_answer.text,
         charts=final_answer.charts,
+        tables=final_answer.tables,
         timing=final_answer.timing,
         trace=final_answer.trace,
         streamed_prefix=streamed_prefix,
@@ -4628,6 +4633,7 @@ def _compute_mixed_final_answer(
     return FinalAnswer(
         text=answer,
         charts=[*market_final.charts, *file_final.charts],
+        tables=[*market_final.tables, *file_final.tables],
         timing=timing_payload,
         trace=trace,
         sources=tuple(dict.fromkeys([*market_final.sources, *file_final.sources])),

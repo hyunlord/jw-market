@@ -111,6 +111,7 @@ def iter_final_answer_events(
     file_sources: Sequence[Mapping[str, Any]],
     text: str,
     charts: Sequence[Mapping[str, Any]],
+    tables: Sequence[Mapping[str, Any]] = (),
     timing: Mapping[str, Any],
     trace: Mapping[str, Any],
     streamed_prefix: str = "",
@@ -134,6 +135,8 @@ def iter_final_answer_events(
         remaining_text = remaining_text[len(streamed_prefix) :].lstrip()
     if remaining_text:
         yield from iter_markdown_sse_events(remaining_text)
+    if tables:
+        yield sse_json_event("tables", tables)
     if charts:
         yield sse_json_event("charts", charts)
     yield sse_json_event("timing", timing)
@@ -148,6 +151,7 @@ def iter_legacy_final_answer_events(
     file_sources: Sequence[Mapping[str, Any]],
     text: str,
     charts: Sequence[Mapping[str, Any]],
+    tables: Sequence[Mapping[str, Any]] = (),
     timing: Mapping[str, Any],
     trace: Mapping[str, Any],
     streamed_prefix: str = "",
@@ -171,6 +175,8 @@ def iter_legacy_final_answer_events(
         remaining_text = remaining_text[len(streamed_prefix) :].lstrip()
     if remaining_text:
         yield from iter_markdown_sse_events(remaining_text)
+    if tables:
+        yield legacy_sse_json_event("tables", tables)
     if charts:
         yield legacy_sse_json_event("charts", charts)
     yield legacy_sse_json_event("timing", timing)
@@ -201,6 +207,7 @@ class SsePresenter(Protocol):
         file_sources: Sequence[Mapping[str, Any]],
         text: str,
         charts: Sequence[Mapping[str, Any]],
+        tables: Sequence[Mapping[str, Any]] = (),
         timing: Mapping[str, Any],
         trace: Mapping[str, Any],
         streamed_prefix: str = "",

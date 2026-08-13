@@ -50,6 +50,7 @@ class ChatAnswer(BaseModel):
 
     text: str
     charts: list[dict[str, Any]]
+    tables: list[dict[str, Any]] = Field(default_factory=list)
     trace: dict[str, Any]
     sources: tuple[str, ...]
     conversation_id: str | None = None

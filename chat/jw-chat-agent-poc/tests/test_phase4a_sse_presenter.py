@@ -16,11 +16,13 @@ def _answer(
     *,
     text: str = "본문",
     charts: list[dict] | None = None,
+    tables: list[dict] | None = None,
     file_sources: tuple[dict, ...] = (),
 ) -> FinalAnswer:
     return FinalAnswer(
         text=text,
         charts=list(charts or ()),
+        tables=list(tables or ()),
         timing={"stages": [{"name": "answer", "elapsed_ms": 1.0}]},
         trace={"qa_trace": {"status": "ok"}},
         sources=("cache", "document"),
@@ -52,6 +54,7 @@ def test_presenter_sequence_is_byte_identical_to_legacy(monkeypatch, answer: Fin
             file_sources=service_app._project_public_file_sources(answer.file_sources),
             text=answer.text,
             charts=answer.charts,
+            tables=answer.tables,
             timing=answer.timing,
             trace=answer.trace,
         )
@@ -93,6 +96,31 @@ def test_markdown_table_is_one_atomic_block(monkeypatch) -> None:
         "markdown": "\n\n| 브랜드 | 매출 |\n|---|---:|\n| 리바로 | 80.39억원 |\n\n",
     }
     assert not any(event.startswith("event: delta\n") for event in events)
+
+
+def test_grounded_tables_are_emitted_as_an_additive_sse_event() -> None:
+    table = {
+        "table_id": "v4-table-1",
+        "title": "임상시험 상세",
+        "source_label": "ClinicalTrials.gov",
+        "columns": [
+            {
+                "key": "column_1",
+                "label": "NCT ID",
+                "type": "string",
+                "unit": None,
+                "align": "left",
+            }
+        ],
+        "rows": [{"cells": {"column_1": "NCT00000001"}, "record_id": "clinical:NCT00000001"}],
+        "row_count": 1,
+        "omitted_columns": [],
+    }
+
+    events = list(service_app._sse_events_from_final_answer(_answer(tables=[table])))
+
+    payload = next(event for event in events if event.startswith("event: tables\n"))
+    assert json.loads(payload.split("data: ", 1)[1]) == [table]
 
 
 def test_step_initial_and_busy_frames_match_legacy(monkeypatch) -> None:
