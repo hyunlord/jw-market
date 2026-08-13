@@ -28,7 +28,7 @@ from jw_chat_agent_poc.service.v4.narrative_values import (
 from jw_chat_agent_poc.service.v4.source_labels import public_source_label
 
 
-MAX_T2_CLAIMS: Final = 20
+MAX_T2_CLAIMS: Final = 2_147_483_647  # Compatibility export; relations are uncapped.
 
 
 class _FrozenModel(BaseModel):
@@ -62,6 +62,62 @@ def build_relation_claims(
             )
         )
         output.extend(_field_relations(records, label))
+        output.extend(_derived_relations(records, label))
+    return tuple(output)
+
+
+def _derived_relations(
+    records: Sequence[EvidenceRecord],
+    source_label: str,
+) -> tuple[RealizedClaim, ...]:
+    output: list[RealizedClaim] = []
+    for record in records:
+        fields_and_operator = (
+            (("competitive_market_share", "overall_market_share"), "CER", "경쟁시장 대비 전체시장 점유율 비"),
+            (("sales_share", "volume_share"), "PRICE_MIX_INDEX", "매출 점유율 대비 물량 점유율 비"),
+            (("brand_growth", "market_growth", "share_change_contribution"), "GROWTH_DECOMP", "브랜드 성장 분해"),
+        )
+        for fields, operator, label in fields_and_operator:
+            if not all(numeric_value(field_value(record, field)) is not None for field in fields):
+                continue
+            path = "|".join(f"payload.{field}" for field in fields)
+            value = compute_value(operator, (record,), path)
+            output.append(
+                _relation(
+                    operator,
+                    (record,),
+                    None,
+                    f"{source_label}의 {label}는 재계산값 {value}입니다.",
+                    field_path=path,
+                )
+            )
+    share_records = tuple(
+        record
+        for record in records
+        if numeric_value(field_value(record, "market_share")) is not None
+    )
+    if len(share_records) >= 2:
+        path = "payload.market_share"
+        cr5 = compute_value("CONCENTRATION_CR5", share_records, path)
+        zscores = compute_value("PEER_ZSCORE", share_records, path)
+        output.append(
+            _relation(
+                "CONCENTRATION_CR5",
+                share_records,
+                None,
+                f"{source_label}의 상위 5개 점유율 합(CR5)은 {cr5}입니다.",
+                field_path=path,
+            )
+        )
+        output.append(
+            _relation(
+                "PEER_ZSCORE",
+                share_records,
+                None,
+                f"{source_label}의 경쟁군 점유율 표준화 값은 레코드별로 계산되었습니다.",
+                field_path=path,
+            )
+        )
     return tuple(output)
 
 
@@ -187,9 +243,11 @@ def _relation(
     records: Sequence[EvidenceRecord],
     field: str | None,
     sentence: str,
+    *,
+    field_path: str | None = None,
 ) -> RealizedClaim:
     record_ids = tuple(record.evidence_id for record in records)
-    field_path = f"payload.{field}" if field else None
+    field_path = field_path or (f"payload.{field}" if field else None)
     proof = RecomputationEvidence(
         operator_id=operator_id,
         record_ids=record_ids,

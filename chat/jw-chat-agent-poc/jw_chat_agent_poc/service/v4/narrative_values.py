@@ -28,17 +28,31 @@ NARRATIVE_FIELDS: Final = (
     "start_date",
     "completion_date",
     "expiration_date",
+    "patent_type",
+    "extinction_reason",
+    "owner",
+    "pms_end_date",
     "enrollment",
     "sales_krw",
     "market_share",
 )
-GROUP_FIELDS: Final = ("overall_status", "status", "phase", "sponsor", "company")
+GROUP_FIELDS: Final = (
+    "overall_status",
+    "status",
+    "phase",
+    "sponsor",
+    "company",
+    "patent_type",
+    "extinction_reason",
+    "owner",
+)
 DATE_FIELDS: Final = (
     "start_date",
     "completion_date",
     "expiration_date",
     "filing_date",
     "publication_date",
+    "pms_end_date",
 )
 NUMERIC_FIELDS: Final = (
     "enrollment",
@@ -57,6 +71,10 @@ FIELD_LABELS: Final = {
     "start_date": "시작일",
     "completion_date": "완료일",
     "expiration_date": "만료일",
+    "patent_type": "특허구분",
+    "extinction_reason": "소멸 사유",
+    "owner": "권리자",
+    "pms_end_date": "재심사기간 종료일",
     "filing_date": "출원일",
     "publication_date": "공개일",
     "enrollment": "등록 인원",

@@ -19,6 +19,7 @@ from uuid import uuid4
 from jw_chat_agent_poc.service.conversation import ConversationTurn
 from jw_chat_agent_poc.service.v4.adapters import build_source_adapters
 from jw_chat_agent_poc.service.v4.claim_ir import classify_answer_claims
+from jw_chat_agent_poc.service.v4.charts import build_grounded_charts
 from jw_chat_agent_poc.service.v4.contracts import (
     SOURCE_NAMES,
     EvidenceEnvelope,
@@ -27,6 +28,10 @@ from jw_chat_agent_poc.service.v4.contracts import (
     V4Answer,
 )
 from jw_chat_agent_poc.service.v4.executor import ParallelSourceExecutor
+from jw_chat_agent_poc.service.v4.expansion import (
+    build_second_hop_expansion,
+    expand_parameter_axes,
+)
 from jw_chat_agent_poc.service.v4.gates import (
     apply_v4_gates,
     is_typed_absence_record,
@@ -44,6 +49,7 @@ from jw_chat_agent_poc.service.v4.lossless_spine import (
     configured_request_satisfaction_mode,
     deterministic_fact_text,
 )
+from jw_chat_agent_poc.service.v4.inspection import build_inspection_detail
 from jw_chat_agent_poc.service.v4.planner import V4Planner
 from jw_chat_agent_poc.service.v4.clinical_query_policy import clinical_scope_suffix
 from jw_chat_agent_poc.service.v4.retrieval_events import (
@@ -136,6 +142,15 @@ class V4Runtime:
         progress_callback: ProgressCallback | None = None,
     ) -> V4Answer:
         started = time.monotonic()
+        progress_events: list[dict[str, Any]] = []
+        caller_progress_callback = progress_callback
+
+        def record_progress(event: dict[str, Any]) -> None:
+            progress_events.append(dict(event))
+            if caller_progress_callback is not None:
+                caller_progress_callback(event)
+
+        progress_callback = record_progress
         deadline = started + self._total_timeout_s
         deadline_at = utc_now() + timedelta(seconds=self._total_timeout_s)
         selected_turns = tuple(turns)[-10:]
@@ -170,6 +185,12 @@ class V4Runtime:
         plan = _bind_session_state_contract(plan, question, session_state)
         plan = _preserve_period_in_answer_queries(plan)
         plan = fan_out_tier_zero_queries(plan)
+        parameter_expansion = expand_parameter_axes(
+            plan,
+            question,
+            observed_on=current_kst_date(),
+        )
+        plan = parameter_expansion.plan
         clinical_query_anchor = _deterministic_clinical_query_anchor(
             question,
             session_state,
@@ -286,8 +307,26 @@ class V4Runtime:
             )
             first_execution.trace.setdefault("session_result_reused", False)
         first_results = first_execution.results
-        linked_plan = (
-            _call_with_state(
+        deterministic_link = (
+            build_second_hop_expansion(
+                plan,
+                question,
+                first_results,
+                max_queries=3,
+            )
+            if (
+                not first_execution.trace["session_result_reused"]
+                and _needs_deterministic_expansion(plan, question)
+            )
+            else None
+        )
+        linked_plan = deterministic_link.plan if deterministic_link is not None else None
+        if linked_plan is None and (
+            plan.needs_second_hop
+            and not first_execution.trace["session_result_reused"]
+            and _remaining(deadline) > 1.0
+        ):
+            linked_plan = _call_with_state(
                 self._planner.link,
                 plan,
                 first_results,
@@ -295,13 +334,6 @@ class V4Runtime:
                 budget_s=min(7.0, _remaining(deadline)),
                 state=session_state,
             )
-            if (
-                plan.needs_second_hop
-                and not first_execution.trace["session_result_reused"]
-                and _remaining(deadline) > 1.0
-            )
-            else None
-        )
         if linked_plan is not None:
             _emit_progress(
                 progress_callback,
@@ -680,6 +712,12 @@ class V4Runtime:
             "clinical_query_normalization": clinical_query_normalization,
             "planner_usage": planner_usage,
             "second_hop": linked_plan.model_dump(mode="json") if linked_plan else None,
+            "expansion": {
+                "parameter_axes": parameter_expansion.trace,
+                "second_hop": (
+                    deterministic_link.trace if deterministic_link is not None else None
+                ),
+            },
             "linked_clinical_query_normalization": linked_clinical_normalization,
             "tool_results": [
                 {
@@ -773,7 +811,30 @@ class V4Runtime:
                 "answer_mutation": composition.answer_mutated,
             },
             "typed_grounding_shadow": grounding_shadow,
+            "progress_events": progress_events,
+            "progress_restoration": {
+                "storage": "conversation_trace_json",
+                "event_count": len(progress_events),
+                "ddl_required": False,
+            },
         }
+        rendered_record_ids = tuple(
+            record_id
+            for node in deterministic_render.nodes
+            for record_id in node.record_ids
+        )
+        charts = build_grounded_charts(evidence_sets, rendered_record_ids)
+        trace["charts"] = {
+            "generated_count": len(charts),
+            "reason": "grounded_series" if charts else "fewer_than_two_grounded_points",
+        }
+        trace["inspection_detail"] = build_inspection_detail(
+            plan,
+            results,
+            evidence_sets,
+            deterministic_render,
+            expansion=trace["expansion"],
+        )
         source_names = [
                 citation.source
                 for result in results
@@ -796,6 +857,7 @@ class V4Runtime:
             self._state_store.save(session_id, next_state)
         return V4Answer(
             text=final_text,
+            charts=charts,
             sources=sources,
             trace=trace,
             timing=stage_timing,
@@ -842,6 +904,14 @@ def _call_with_state(
         if key in parameters or accepts_arbitrary_kwargs:
             kwargs[key] = value
     return function(*args, **kwargs)
+
+
+def _needs_deterministic_expansion(plan: Any, question: str) -> bool:
+    lowered = question.casefold()
+    return bool(
+        plan.needs_second_hop
+        or any(token in lowered for token in ("제네릭", "치료제", "동일 성분", "generic"))
+    )
 
 
 def _derive_session_state(
@@ -1427,12 +1497,11 @@ def _emit_progress(
 
 
 def _expanded_intents_detail(intents: Sequence[str]) -> str:
-    visible = [value.strip() for value in intents if value.strip()][:5]
+    visible = [value.strip() for value in intents if value.strip()]
     detail = "\n".join(f"- {value}" for value in visible)
     if not detail:
         return "질문에 맞는 조회 경로를 구성했습니다"
-    remaining = max(0, len(intents) - len(visible))
-    return f"{detail}\n- 외 {remaining}개" if remaining else detail
+    return detail
 
 
 def _emit_source_progress(
@@ -1477,10 +1546,9 @@ def _source_progress_line(
 
 
 def _source_query_summary(queries: Sequence[str]) -> str:
-    first = _public_progress_query(queries[0]) if queries else "조회 내용 확인 불가"
-    remaining = max(0, len(queries) - 1)
-    suffix = f" 외 {remaining}건" if remaining else ""
-    return _one_line(first + suffix, limit=100)
+    if not queries:
+        return "조회 내용 확인 불가"
+    return "\n".join(f"· {_public_progress_query(query)}" for query in queries)
 
 
 def _public_progress_query(value: str) -> str:

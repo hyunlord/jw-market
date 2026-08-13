@@ -32,7 +32,7 @@ from jw_chat_agent_poc.service.v4.narrative_values import (
 from jw_chat_agent_poc.service.v4.source_labels import public_source_label
 
 
-MAX_NARRATED_RECORDS: Final = 8
+MAX_NARRATED_RECORDS: Final = 2_147_483_647  # Compatibility export; narration is uncapped.
 _T2_OPERATOR_PRIORITY: Final = {
     operator: index
     for index, operator in enumerate(
@@ -44,6 +44,11 @@ _T2_OPERATOR_PRIORITY: Final = {
             "SIMULTANEITY",
             "COMPARE_NUMERIC",
             "RANGE",
+            "CER",
+            "GROWTH_DECOMP",
+            "PRICE_MIX_INDEX",
+            "PEER_ZSCORE",
+            "CONCENTRATION_CR5",
         )
     )
 }
@@ -76,8 +81,8 @@ def build_narrative_realization(
         for record_id in dict.fromkeys(rendered_ids)
         if record_id in records_by_id
     )
-    narrated = records[:MAX_NARRATED_RECORDS]
-    unnarrated_count = max(0, len(records) - len(narrated))
+    narrated = records
+    unnarrated_count = 0
     table_ids = frozenset(rendered_ids if table_record_ids is None else table_record_ids)
     micro_node, t1_claims, table_references = _micro_narratives(
         narrated,
@@ -98,13 +103,13 @@ def build_narrative_realization(
             ),
         )
     )
-    t2_claims = t2_candidates[:MAX_T2_CLAIMS]
+    t2_claims = t2_candidates
     nodes = tuple(node for node in (micro_node, _relation_node(t2_claims)) if node)
     return NarrativeRealization(
         nodes=nodes,
         claims=(*t1_claims, *t2_claims),
         recomputations=tuple(item.recomputation for item in t2_claims),
-        truncated_t2_count=max(0, len(t2_candidates) - len(t2_claims)),
+        truncated_t2_count=0,
         unnarrated_record_count=unnarrated_count,
         table_reference_record_ids=table_references,
     )

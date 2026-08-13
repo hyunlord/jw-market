@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import re
 from typing import Any, Literal
 
 from jw_chat_agent_poc.service.v4.source_labels import patent_lane_label
@@ -203,11 +204,17 @@ def _patent_record(
         "page_group": _text(page_group),
         "listed_status": _text(status),
         "status": _text(status),
+        "extinction_reason": _extinction_reason(status),
         "expiration_date": _text(expiration_date),
         "owner": _text(owner),
         "url": _text(call.get("safe_url")),
         "source_record": dict(item),
     }
+
+
+def _extinction_reason(value: Any) -> str:
+    match = re.search(r"소멸\s*\(([^)]+)\)", _text(value))
+    return match.group(1).strip() if match else ""
 
 
 def _news_records(

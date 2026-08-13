@@ -17,7 +17,7 @@ PATENT_REQUIRED_FIELDS = (
     "jurisdiction",
     "as_of_date",
 )
-MAX_DOMESTIC_PATENT_ROWS = 10
+MAX_DOMESTIC_PATENT_ROWS = 2_147_483_647  # Compatibility export; rendering is uncapped.
 
 
 def render_patent(
@@ -31,7 +31,7 @@ def render_patent(
         by_lane["kr_primary"],
         key=lambda record: patent_record_sort_key(record.payload),
     )
-    selected_kr = kr_records[:MAX_DOMESTIC_PATENT_ROWS]
+    selected_kr = kr_records
     nodes: list[RenderNode] = [
         RenderNode(
             block_id="patent:coverage",
@@ -69,10 +69,6 @@ def render_patent(
     selection_note = (
         "국내 특허는 등록 우선, 등재목록상 소멸일 내림차순으로 표시합니다."
     )
-    if len(kr_records) > len(selected_kr):
-        selection_note += (
-            f" 외 {len(kr_records) - len(selected_kr)}건은 동일 기준으로 선별한 상세 표 범위 밖입니다."
-        )
     status_note = (
         f"등록 상태 {registered_count}건을 먼저 표시합니다."
         if registered_count

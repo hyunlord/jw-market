@@ -26,7 +26,6 @@ ACTIVE_CLINICAL_STATUSES = {
     "ACTIVE_NOT_RECRUITING",
     "NOT_YET_RECRUITING",
 }
-MAX_CLINICAL_DETAIL_ROWS = 10
 _STATUS_PRIORITY = {
     "RECRUITING": 0,
     "NOT_YET_RECRUITING": 1,
@@ -98,7 +97,8 @@ def render_clinical(
             if part
         ),
     )
-    return [scope, record_table], CLINICAL_REQUIRED_FIELDS
+    detail_node = _record_detail_node(selected)
+    return [scope, record_table, *([detail_node] if detail_node else [])], CLINICAL_REQUIRED_FIELDS
 
 
 def _coverage_surface(
@@ -176,19 +176,7 @@ def _selection_notes(
     rendered: int,
     single: bool,
 ) -> str:
-    if single or total <= rendered:
-        return ""
-    joined = " ".join(query_spec).casefold()
-    generic = any(token in joined for token in _GENERIC_SIGNALS)
-    criterion = (
-        "제네릭·생동성 관련 시험 우선, 상태 우선순위와 최종 갱신일 순"
-        if generic
-        else "상태 우선순위와 최종 갱신일 순"
-    )
-    return (
-        f"{criterion}으로 {rendered}건을 표시했습니다. "
-        f"외 {total - rendered}건은 원천 집계에 포함되며 표에서는 생략했습니다."
-    )
+    return ""
 
 
 def _selected_records(
@@ -213,7 +201,86 @@ def _selected_records(
             text(payload.get("nct_id")),
         )
 
-    return sorted(records, key=sort_key)[:MAX_CLINICAL_DETAIL_ROWS]
+    return sorted(records, key=sort_key)
+
+
+def _record_detail_node(records: Sequence[EvidenceRecord]) -> RenderNode | None:
+    sections: list[str] = []
+    surface_fields: list[str] = []
+    for record in records:
+        payload = record.payload
+        details = (
+            ("적응증", "conditions", list_display(payload.get("conditions"), na="")),
+            ("개입약물", "interventions", list_display(payload.get("interventions"), na="")),
+            ("대상자수", "enrollment", _enrollment(payload.get("enrollment"))),
+            ("협력기관", "collaborators", list_display(payload.get("collaborators"), na="")),
+            ("국가", "countries", list_display(payload.get("countries"), na="")),
+            ("기관", "facilities", list_display(payload.get("facilities"), na="")),
+            ("1차 평가변수", "primary_outcomes", _outcome_text(payload.get("primary_outcomes"))),
+            ("2차 평가변수", "secondary_outcomes", _outcome_text(payload.get("secondary_outcomes"))),
+            ("간략 요약", "brief_summary", text(payload.get("brief_summary"))),
+            ("선정·제외 기준", "eligibility_criteria", _bounded_text(payload.get("eligibility_criteria"))),
+            ("대상 성별", "sex", text(payload.get("sex"))),
+            ("연령", "minimum_age", _age_range(payload)),
+            ("결과 게시", "has_results", _result_text(payload.get("has_results"))),
+        )
+        visible = [(label, field, value) for label, field, value in details if value]
+        if not visible:
+            continue
+        nct_id = display(payload.get("nct_id"))
+        sections.append(
+            "\n".join((f"### {nct_id} 조회 상세", *(f"- {label}: {value}" for label, _field, value in visible)))
+        )
+        surface_fields.extend(field for _label, field, _value in visible)
+    if not sections:
+        return None
+    return RenderNode(
+        block_id="clinical:record-details",
+        record_ids=tuple(record.evidence_id for record in records),
+        surface_fields=tuple(dict.fromkeys(surface_fields)),
+        text="## 주요 임상시험 건별 상세\n" + "\n\n".join(sections),
+    )
+
+
+def _enrollment(value: object) -> str:
+    if isinstance(value, Mapping):
+        count = value.get("count")
+        kind = text(value.get("type"))
+        return " ".join(part for part in (text(count), kind) if part)
+    return text(value)
+
+
+def _outcome_text(value: object) -> str:
+    if not isinstance(value, list):
+        return ""
+    output = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        measure = text(item.get("measure"))
+        time_frame = text(item.get("time_frame"))
+        if measure:
+            output.append(f"{measure} ({time_frame})" if time_frame else measure)
+    return "; ".join(output)
+
+
+def _bounded_text(value: object, limit: int = 1200) -> str:
+    raw = text(value)
+    return raw if len(raw) <= limit else raw[:limit] + "… [원문 있음]"
+
+
+def _age_range(payload: Mapping[str, object]) -> str:
+    return " ~ ".join(
+        part for part in (text(payload.get("minimum_age")), text(payload.get("maximum_age"))) if part
+    )
+
+
+def _result_text(value: object) -> str:
+    if value is True:
+        return "게시됨"
+    if value is False:
+        return "미게시"
+    return ""
 
 
 def _is_generic_study(payload: Mapping[str, object]) -> bool:
