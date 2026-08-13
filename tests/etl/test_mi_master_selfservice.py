@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime
 from pathlib import Path
 import shutil
 
 from openpyxl import load_workbook
 import pandas as pd
+import pytest
 import yaml
 
 from pipeline.etl.mi_master_registry import (
@@ -25,6 +27,10 @@ from pipeline.etl.io.catalog.dim.market_competitive_dynamics_schema import (
 from pipeline.etl.io.catalog.dim.market_competitive_dynamics_specs import (
     build_cd_specs,
 )
+from pipeline.etl.io.catalog.dim.market_competitive_dynamics_records import (
+    filter_master_drug_rows,
+)
+from pipeline.etl.io.catalog.market.cd_filter import raw_filter_records
 from pipeline.etl.io.catalog.dim.market_landscape_schema import (
     market_landscape_contract,
 )
@@ -57,7 +63,11 @@ def _canonical_sha256(value: object) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def _registry_with_seventeenth_market(tmp_path: Path) -> MiMasterRegistry:
+def _registry_with_seventeenth_market(
+    tmp_path: Path,
+    *,
+    direct_competition: str | None = None,
+) -> MiMasterRegistry:
     source = get_mi_master_path()
     candidate = tmp_path / source.name
     shutil.copy2(source, candidate)
@@ -74,7 +84,7 @@ def _registry_with_seventeenth_market(tmp_path: Path) -> MiMasterRegistry:
         definition.cell(10, 23, "IQVIA")
         definition.cell(14, 23, "Class")
         definition.cell(15, 23, "Molecule")
-        definition.cell(48, 23, "Z99A1")
+        definition.cell(48, 23, direct_competition)
         workbook.save(candidate)
     finally:
         workbook.close()
@@ -183,6 +193,66 @@ def test_temporary_seventeenth_market_reaches_catalog_and_api_registries(
     }
     assert strategic_market_count == 17
     assert canonical_brand_count == 26
+
+
+def test_empty_direct_competition_defaults_to_parent_market(tmp_path: Path) -> None:
+    registry = _registry_with_seventeenth_market(
+        tmp_path,
+        direct_competition=None,
+    )
+
+    spec = build_cd_specs(registry)[-1]
+
+    assert spec["filter_kind"] == "sheet_all"
+    assert spec["cd_filter_expression"] == "sheet 전체"
+
+
+def test_declared_atc4_direct_competition_filters_new_market(tmp_path: Path) -> None:
+    registry = _registry_with_seventeenth_market(
+        tmp_path,
+        direct_competition="Z99A1",
+    )
+    spec = build_cd_specs(registry)[-1]
+    rows = [
+        {"strategic_market_id": "strategy_017", "drug_index": "1", "atc4_code": "Z99A1"},
+        {"strategic_market_id": "strategy_017", "drug_index": "2", "atc4_code": "Z99A2"},
+    ]
+
+    assert spec["filter_kind"] == "master_atc4"
+    assert spec["filter_values"] == ("Z99A1",)
+    assert filter_master_drug_rows(spec, rows) == [rows[0]]
+
+
+def test_declared_atc4_direct_competition_reaches_cd_filter_catalog(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    registry = _registry_with_seventeenth_market(
+        tmp_path,
+        direct_competition="Z99A1",
+    )
+    monkeypatch.setattr(
+        "pipeline.etl.io.catalog.market.cd_filter_specs.default_mi_master_registry",
+        lambda: registry,
+    )
+
+    records = raw_filter_records(
+        "mi-master.xlsx",
+        datetime(2026, 8, 13),
+    )
+
+    assert records[-1]["cd_filter_id"] == "cdf_020"
+    assert json.loads(records[-1]["atc4"]) == ["Z99A1"]
+
+
+def test_unrecognized_direct_competition_remains_fail_closed(tmp_path: Path) -> None:
+    registry = _registry_with_seventeenth_market(
+        tmp_path,
+        direct_competition="임의 문구",
+    )
+
+    with pytest.raises(ValueError, match="unrecognized direct competition"):
+        build_cd_specs(registry)
 
 
 def test_market_metadata_uses_discovered_topology(

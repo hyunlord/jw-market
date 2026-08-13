@@ -49,6 +49,7 @@ class MiMasterRegistry:
     market_definition_columns: dict[str, tuple[int, ...]]
     analyze_matrix: dict[str, dict[str, bool]]
     cd_specs: tuple[dict[str, Any], ...]
+    direct_competition_by_cd_id: dict[str, tuple[str, ...]]
     detail_sheets: tuple[str, ...]
     target_brands: tuple[TargetBrand, ...]
 
@@ -386,6 +387,7 @@ def discover_mi_master_registry(
         cd_name_overrides = dict(rules.get("cd_name_overrides", {}))
         cd_specs: list[dict[str, Any]] = []
         cd_id_by_column: dict[int, str] = {}
+        direct_competition_by_cd_id: dict[str, tuple[str, ...]] = {}
         for column_id, product_name in sorted(target_columns.items()):
             sheet_name = target_sheet[column_id]
             columns = tuple(columns_by_sheet[sheet_name])
@@ -424,6 +426,15 @@ def discover_mi_master_registry(
                     "strategic_market_id": strategic_id,
                     "column_ids": spec_columns,
                 }
+            )
+            direct_competition_by_cd_id[cd_id] = tuple(
+                str(value).strip()
+                for spec_column in spec_columns
+                for row_id in range(48, 51)
+                if (
+                    value := definition_sheet.cell(row_id, spec_column).value
+                ) is not None
+                and str(value).strip()
             )
             for spec_column in spec_columns:
                 cd_id_by_column[spec_column] = cd_id
@@ -480,6 +491,7 @@ def discover_mi_master_registry(
             market_definition_columns=market_definition_columns,
             analyze_matrix=analyze_matrix,
             cd_specs=tuple(cd_specs),
+            direct_competition_by_cd_id=direct_competition_by_cd_id,
             detail_sheets=tuple(ordered),
             target_brands=tuple(target_brands),
         )

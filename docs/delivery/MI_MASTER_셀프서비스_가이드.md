@@ -1,116 +1,183 @@
-# MI Master 셀프서비스 가이드
+# MI Master 셀프서비스 가이드 v1.4
 
-이 문서는 MI Master에서 전략 시장을 추가하거나 기존 시장 정의를 바꿀 때
-어디까지 파일 수정만으로 반영되는지 설명합니다. 일반뷰는 계속 ATC4 기준이며,
-이 절차는 `market_landscape`와 `competitive_dynamics` 전략뷰에만 적용됩니다.
+MI Master는 NFS 데이터가 아니라 저장소와 이미지에 포함되는 시장 정의 자산이다.
+일반뷰는 ATC4 기준이고, 이 절차의 대상은 `market_landscape`와
+`competitive_dynamics` 전략뷰다. 시장 추가는 워크북 맨 뒤에서만 한다.
 
-## 1. 새 시장 추가
+## 1. 새 시장 작성
 
-1. 기존 전략 시장 시트를 복사해 새 상세 시트를 만듭니다.
-2. `시장정의 & Target` 시트에 새 열을 추가합니다.
-3. 새 열의 6행에 대상 제품명, 7행에 ATC 코드, 10행에 데이터 소스를 입력합니다.
-4. 분석 축을 사용할 경우 14~19행의 해당 항목을 채웁니다.
-5. 경쟁시장 정의와 고객 우선순위가 있으면 48~50행과 54~57행을 채웁니다.
-6. 상세 시트에는 3~12행 사이에 ATC 열과 성분 또는 제품 열을 포함한 헤더가
-   있어야 합니다.
+1. `시장정의 & Target` 시트의 마지막 시장 오른쪽에 새 열을 추가한다.
+2. 6행에 대상 제품명, 7행에 ATC 코드, 10행에 `UBIST`, `IQVIA` 또는 둘 다를
+   적는다.
+3. 같은 이름의 상세 시트를 만들고 3~12행 중 한 행에 표 헤더를 둔다.
+4. 분석할 축은 14~19행에 값을 적고, 사용하지 않을 축은 비운다.
+5. 경쟁 시장을 부모 ML과 같게 쓸 때는 48~50행을 모두 비운다.
+6. 경쟁 시장을 ATC4로 좁힐 때만 48~50행에 `A06B1`,
+   `A06B1 + A06B2`처럼 ATC4 코드만 적는다.
 
-저장 후 catalog를 실행하면 다음 항목은 자동 생성됩니다.
+> [!IMPORTANT]
+> 48~50행이 모두 비어 있으면 CD는 부모 ML 구성원 전체를 사용한다. 임의 설명문,
+> ATC3, Class, 급여, 제형 등의 복합 조건은 자동 해석하지 않고 오류로 중단한다.
+> 이 조건들은 아직 개발자 선언이 필요하다.
 
-- `strategy_NNN`, `ml_NNN`, `cd_NNN`, `cdf_NNN`
-- Market Landscape 시장 목록과 분석 축
-- Competitive Dynamics 기본 시장
-- API 브랜드 목록과 시장 메타데이터
-- JW 대상 제품 목록
+### 상세 시트 헤더 사전
 
-테스트용 17번째 시장은 원본 파일을 복사한 임시 workbook에서 검증하며, 실제
-MI Master 원본은 수정하지 않습니다.
+헤더 행은 3~12행에서 찾는다. 같은 행에 `ATC`가 들어간 열 하나와
+`MOLECULE`, `성분`, `PRODUCT`, `제품` 중 하나가 들어간 열 하나가 있어야 한다.
 
-## 2. 기존 시장 정의 변경
+| 축 | 정의 시트 행 | 권장 열 이름 | 현재 인식되는 다른 표기 |
+| --- | ---: | --- | --- |
+| 필수 ATC | 필수 | `ATC4` | 열 이름에 `ATC` 포함 |
+| 필수 제품 | 필수 | `PRODUCT NAME KOR` | `제품` |
+| Brand 선언 | 16 | `PRODUCT NAME KOR` | `제품` (현재 분석축 비활성) |
+| Class | 14 | `Class` | `Class Recode`, `Class Recode 1`, `Class Recode 2`, `Class Recode 분류2`, `Dosage Form`, `Recode Class(성분)` |
+| Molecule | 15 | `MOLECULE DESC` | `Molecule`, `Molecule Recode`, `성분`, `성분 Recode` |
+| 제형 | 17 | `Dosage Form` | `Recode 제형`, `제형 Recode`, `투여 경로` |
+| 함량·포장 | 18 | `PACK DESC` | `Strength`, `Strength2`, `규격 Recode`, `성분용량` |
+| 기타 | 19 | `NHI TYPE` | `Fish oil 여부`, `Ox/Gx`, `Ox/Gx(바이오시밀러)` |
 
-MI Master의 recode 열을 바꾸고 catalog를 다시 실행하면 다음 정책으로 반영됩니다.
+코드는 앞뒤 공백만 제거한 뒤 대소문자를 구분해 먼저 정확 일치로 찾고, 없으면
+헤더가 선언 문자열로 시작하는 첫 번째 열을 사용한다. 전각/반각이나 대소문자를
+자동 통일하지 않는다. 비슷한 열이 여러 개면 시트의 왼쪽 열이 먼저 선택되므로
+권장 열 이름을 그대로 쓰는 것이 안전하다.
 
-| 정책 | 대상 예 | 동작 |
-| --- | --- | --- |
-| OVERWRITE | molecule, dosage_form, nhi_type, manufacturer | canonical 값이 있으면 기존 값을 교체 |
-| ADD_ONLY | class 등 분류 축 | 기존 값을 지우지 않고 선언된 분류를 추가 |
+백지에서 시작하는 최소 예시는 다음과 같다.
 
-변경 후에는 대상 시장의 catalog 행과 API 응답 골든을 함께 확인해야 합니다.
-시장 구성원이 의도치 않게 늘거나 줄면 반영하지 않습니다.
-
-## 3. 브랜드 예외 규칙 선언
-
-코드의 개별 `if` 문 대신
-`pipeline/etl/config/mi_master_rules.yaml`의 `record_rules`에 규칙을 추가합니다.
-
-```yaml
-record_rules:
-  - id: example_rule
-    stage: strategic_brand_fields
-    match:
-      sheet_name: "예시 시장"
-      molecule: "EXAMPLE"
-    actions:
-      set:
-        class: "Example Class"
-    reason: "업무 근거를 한 문장으로 기록"
+```text
+ATC4 | PRODUCT NAME KOR
+A06B1 | 예시브랜드
 ```
 
-지원하는 action은 다음과 같습니다.
+Molecule 분석이 필요하면 `MOLECULE DESC`, Class 분석이 필요하면 `Class`를
+추가한다. 분석 축을 정의 시트에서 켰는데 상세 시트 열을 인식하지 못하는 경우는
+오류로 취급해야 한다. 현재 워크북의 16개 시트는 16행 Brand를 모두 선언하지만
+Brand는 분석 축으로 활성화되지 않는다. 이 기존 동작은 화면 변경 위험 때문에
+이번 버전에서 자동 오류로 바꾸지 않았으며 별도 계약 정리가 필요하다.
 
-- `set`: 지정 값을 덮어씁니다.
-- `copy`: `raw.FIELD` 또는 `record.field` 값을 복사합니다.
-- `first_present`: 후보 중 첫 번째 비어 있지 않은 값을 사용합니다.
-- `null_if_equal`: 두 축이 같은 값을 중복 노출하면 첫 번째 축을 null로 만듭니다.
+## 2. CD 범위
 
-모든 규칙에는 고유한 `id`, 적용 단계인 `stage`, 선택 조건인 `match`, 업무
-근거인 `reason`을 작성합니다. 제이클의 Trisulfate 처리와 가드렛의
-TIRZEPATIDE → GLP-1RA 처리가 이 형식의 기준 사례입니다.
+| 48~50행 | 결과 | 코드 작업 |
+| --- | --- | --- |
+| 모두 비움 | 부모 ML과 동일한 CD | 없음 |
+| ATC4 코드만 입력 | 입력한 ATC4로 CD를 좁힘 | 없음 |
+| 설명문·ATC3·Class·급여·제형·복합식 | 오류로 중단 | 필터 선언 필요 |
 
-## 4. 자동 처리되지 않는 결정
+기존 19개 CD의 업무 필터는 그대로 유지된다. 기존 필터 중 부모 ML과 같은 것은
+`cd_004`, `cd_006`, `cd_007`, `cd_014`, `cd_016`, `cd_017` 여섯 개다.
+이들도 향후 빈 48~50행 기본값으로 옮길 수 있지만 이번 변경에서는 건드리지 않았다.
 
-다음 항목은 데이터만 보고 안전하게 추론할 수 없으므로 선언 파일 검토가
-필요합니다. Python 코드 수정은 필요하지 않지만 개발자 또는 데이터 담당자의
-검토 없이 임의로 정하지 않습니다.
+## 3. 저장소 반영
 
-- 여러 제품 열을 하나의 CD 시장으로 합치는 `cd_collapses`
-- 과거 ID 순서를 유지해야 하는 `strategy_order`
-- 분석 축의 업무상 예외인 `analysis_axis_overrides`
-- 기존 적재 계약과 화면용 데이터 소스가 다른 `catalog_source_type_overrides`
-- 제품명 표기와 alias를 바꾸는 target/JW product override
-- 기존 CD 시장의 특수 필터 의미
+워크북과 코드 변경을 Gitea의 승인된 브랜치에 커밋한다. MI Master 파일명은 현재
+여러 모듈의 버전 검증 상수와 연결돼 있으므로 파일명은 임의로 바꾸지 않는다.
+파일명 독립화는 별도 계약 변경이다.
 
-새 시장의 CD 정의가 단순한 “상세 시트 전체”가 아니라 별도 필터를 요구하면
-필터 선언과 계약 테스트를 함께 추가해야 합니다.
-
-## 5. 반영 전 확인
+변경 전 다음 검증을 실행한다.
 
 ```bash
 PYTHONPATH=.:pipeline/scripts/etl python3 -m pytest -q \
-  tests/etl/test_mi_master_selfservice.py \
-  tests/api/test_api_response_golden_v2.py
+  tests/etl/test_mi_master_selfservice.py
 ```
 
-필수 확인 항목:
+## 4. 이미지 빌드와 DEV 배포
 
-- 임시 신규 시장이 registry, catalog, API 목록에 모두 나타나는가
-- 제이클과 가드렛 API 응답이 기존 골든과 동일한가
-- 기존 일반뷰와 전략뷰 응답이 바뀌지 않았는가
-- 가드렛 TIRZEPATIDE 원천 행과 MOUNJARO 제품은 존재하며, 중복 영문
-  molecule placeholder만 제외되고 한국어 canonical 브랜드 `마운자로`가
-  유지되는가
-- 전체 `tests/` 회귀의 신규 실패가 0건인가
+실측 배포 좌표는 Artifact Registry의 `stg` 프로젝트와 DEV GKE 클러스터 조합이다.
+레지스트리는
+`asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01`,
+워크로드는 `llmops/jw-ingest-hook`이다. 다음 블록은 commit, tag, digest,
+resourceVersion을 자동 산출한다. 실행 승인 회차에서만 사용한다.
 
-## 6. 담당 경계
+```bash
+set -euo pipefail
 
-| 작업 | MI Master 또는 선언 파일만으로 가능 | 개발자 확인 |
-| --- | --- | --- |
-| 표준 형식의 신규 전략 시장 추가 | 예 | 최초 검증 권장 |
-| 기존 recode 값 변경 | 예 | 시장 구성 변화 시 필요 |
-| 선언 엔진이 지원하는 브랜드 예외 추가 | 예 | 골든 갱신 검토 필요 |
-| CD 단순 전체시장 추가 | 예 | 최초 검증 권장 |
-| 새로운 필터 연산자 또는 계산식 추가 | 아니오 | 필요 |
-| 일반뷰 ATC4 계약 변경 | 아니오 | 필요 |
-| API 응답 필드 변경 | 아니오 | 필요 |
+CTX='gke_prj-jw-agn-dev-ai-490605_asia-northeast3_kcl-jw-agn-dev-genos'
+NS='llmops'
+DEPLOY='jw-ingest-hook'
+REGISTRY='asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01'
+COMMIT="$(git rev-parse HEAD)"
+TAG="mi-master-${COMMIT:0:8}-$(date -u +%Y%m%d%H%M%S)"
+IMAGE="${REGISTRY}/jw-pipeline-orchestrator:${TAG}"
 
-운영 반영은 이 파일 변경과 별개입니다. catalog 재생성, mart 검증, 캐시 처리,
-test2/운영 승격은 해당 배포 절차의 승인을 따라야 합니다.
+test -z "$(git status --porcelain)"
+docker build --platform linux/amd64 \
+  -f deploy/docker/pipeline-orchestrator.Dockerfile \
+  --build-arg "APP_VERSION=${COMMIT}" \
+  -t "${IMAGE}" .
+docker push "${IMAGE}"
+DIGEST="$(gcloud artifacts docker images describe "${IMAGE}" \
+  --format='value(image_summary.digest)')"
+IMAGE_REF="${REGISTRY}/jw-pipeline-orchestrator@${DIGEST}"
+RV="$(kubectl --context "${CTX}" -n "${NS}" get deploy "${DEPLOY}" \
+  -o jsonpath='{.metadata.resourceVersion}')"
+PATCH="$(jq -nc \
+  --arg rv "${RV}" --arg image "${IMAGE_REF}" --arg app "${COMMIT}" \
+  '{metadata:{resourceVersion:$rv},spec:{template:{spec:{containers:[{
+    name:"trigger",image:$image,env:[
+      {name:"APP_VERSION",value:$app},
+      {name:"INGEST_JOB_IMAGE",value:$image}
+    ]
+  }]}}}}')"
+kubectl --context "${CTX}" -n "${NS}" patch deploy "${DEPLOY}" \
+  --type=strategic -p "${PATCH}"
+kubectl --context "${CTX}" -n "${NS}" rollout status deploy/"${DEPLOY}"
+kubectl --context "${CTX}" -n "${NS}" get deploy "${DEPLOY}" -o json \
+  | jq -r '[.status.readyReplicas,
+            .spec.template.spec.containers[0].image,
+            ([.spec.template.spec.containers[0].env[]
+              | select(.name=="APP_VERSION") | .value][0])] | @tsv'
+```
+
+성공 판단 출력은 `1`, 새 `sha256:` digest, 현재 commit SHA가 한 줄에 나오는 것이다.
+이 문서 작성 회차에서는 빌드·push·배포를 실행하지 않았다.
+
+## 5. catalog와 mart 반영
+
+배포만으로 catalog DB는 바뀌지 않는다. `sync_catalog_tables`는 현재
+`--sync-catalog-db`를 명시한 경로에서만 DB를 갱신한다. 라이브 계보의 기존
+`정의·로직 재반영`은 기존 raw를 이용한 mart-only 경로이며, 변경된 MI Master를
+표준 승인 게이트로 승격하는 경로로 인정하지 않는다.
+
+> [!WARNING]
+> catalog 기본 동기화와 업로드/재반영 경로 통합 변경이 배포되기 전에는 어느
+> 버튼도 MI Master 셀프서비스 완료 경로가 아니다. 통합 변경이 배포된 뒤에는
+> `인입 포털 > 진행 현황`에서 대상 소스를 선택해 `정의·로직 재반영` 또는 기존
+> 파일 업로드 중 하나를 1회 실행하고, 승인 대기와 publish가 끝날 때까지 중단하지
+> 않는다. 그 전에는 PL 승인 실행 회차를 사용한다.
+
+예상 시간은 UBIST 약 6시간, IQVIA NSA 약 2시간이다. 실행 직후에는 다음 SQL을
+읽기 전용으로 확인한다. `ingested_at`은 실행 당일이어야 하고 두 테이블의
+`source_file_version`은 배포된 MI Master와 같아야 한다.
+
+```sql
+SELECT source_file_version, COUNT(*) AS rows, MAX(ingested_at) AS ingested_at
+FROM catalog_ml_market
+GROUP BY source_file_version
+ORDER BY source_file_version;
+
+SELECT source_file_version, COUNT(*) AS rows, MAX(ingested_at) AS ingested_at
+FROM catalog_cd_market
+GROUP BY source_file_version
+ORDER BY source_file_version;
+```
+
+## 6. MI팀 확인
+
+1. 원인분석의 Market Landscape에서 한 시트의 브랜드가 같은 시장으로 묶였는지
+   전건 확인한다.
+2. 변경한 시장의 ATC4만 값 계산에 쓰였는지 확인한다.
+3. 추가·삭제·수정한 브랜드의 노출이 정의대로 바뀌었는지 확인한다.
+4. 변경하지 않은 시장과 일반뷰가 그대로인지 확인한다.
+
+## 7. 막혔을 때
+
+| 증상 | 확인 |
+| --- | --- |
+| `unrecognized direct competition declaration` | 48~50행을 비우거나 ATC4 코드만 적었는지 확인 |
+| 분석 축이 비어 있음 | 위 헤더 사전의 정확한 문자열과 14~19행 선언을 확인 |
+| MI Master SHA 불일치 | 빌드에 포함된 워크북과 catalog manifest의 SHA를 대조 |
+| 시장 ID가 이동함 | 새 시장을 중간에 삽입하지 않았는지 확인 |
+| source type 오류 | 10행을 `UBIST`, `IQVIA` 또는 둘 다로 선언했는지 확인 |
+| catalog 날짜가 갱신되지 않음 | 배포만 하고 적재/재반영을 실행하지 않았는지 확인 |
+
+시장 삭제 정책과 시트 순서 변경 정책은 아직 PL 확정 전이다. 시트를 삭제하거나
+기존 시트 사이에 삽입하지 않는다.

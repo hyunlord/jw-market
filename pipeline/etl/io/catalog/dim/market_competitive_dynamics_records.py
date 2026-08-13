@@ -90,6 +90,16 @@ def filter_master_drug_rows(
     ]
     filter_kind = str(spec["filter_kind"])
 
+    if filter_kind == "master_atc4":
+        allowed = {str(value) for value in spec["filter_values"]}
+        filtered = [
+            row
+            for row in market_rows
+            if clean_text(row.get("atc4_code")) in allowed
+        ]
+        filtered.sort(key=lambda row: int(str(row.get("drug_index"))))
+        return filtered
+
     predicates: dict[str, Callable[[dict[str, Any]], bool]] = {
         "sheet_all": lambda row: True,
         "molecule_rabeprazole": lambda row: clean_text(row.get("molecule")) == "Rabeprazole",

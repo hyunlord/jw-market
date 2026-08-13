@@ -1,14 +1,12 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Any
 
-from pipeline.etl.io.catalog.market.cd_filter_schema import CD_FILTER_COLUMNS
 from pipeline.etl.io.catalog._lib.catalog_text import clean_text
-from pipeline.etl.mi_master_registry import (
-    default_mi_master_registry,
-)
-import json
+from pipeline.etl.io.catalog.market.cd_filter_schema import CD_FILTER_COLUMNS
+from pipeline.etl.mi_master_registry import default_mi_master_registry
 
 
 def dumps_json_array(values: list[str] | None) -> str | None:
@@ -19,7 +17,20 @@ def dumps_json_array(values: list[str] | None) -> str | None:
         raise ValueError(f"JSON array values must be non-empty strings: {values!r}")
     return json.dumps(cleaned, ensure_ascii=False, separators=(",", ":"))
 
-def raw_filter_records(source_file_version_value: str, ingested_at: datetime) -> list[dict[str, Any]]:
+
+def raw_filter_records(
+    source_file_version_value: str,
+    ingested_at: datetime,
+) -> list[dict[str, Any]]:
+    from pipeline.etl.io.catalog.dim.market_competitive_dynamics_specs import (
+        build_cd_specs,
+    )
+
+    registry = default_mi_master_registry()
+    dynamic_by_cd_id = {
+        str(spec["competitive_dynamics_id"]): spec
+        for spec in build_cd_specs(registry)
+    }
     rows: list[dict[str, Any]] = [
         {
             "cd_filter_id": "cdf_001",
@@ -215,17 +226,21 @@ def raw_filter_records(source_file_version_value: str, ingested_at: datetime) ->
     existing_ids = {str(row["cd_filter_id"]) for row in rows}
     rows.extend(
         {
-            "cd_filter_id": str(spec["cd_filter_id"]),
-            "name": str(spec["name"]),
+            "cd_filter_id": str(topology["cd_filter_id"]),
+            "name": str(topology["name"]),
             "atc3": None,
-            "atc4": None,
+            "atc4": dumps_json_array(
+                list(dynamic_by_cd_id[str(topology["cd_id"])].get("filter_values", ()))
+            )
+            if dynamic_by_cd_id[str(topology["cd_id"])]["filter_kind"] == "master_atc4"
+            else None,
             "molecule": None,
             "class": None,
             "nhi": None,
             "dosage_form": None,
         }
-        for spec in default_mi_master_registry().cd_specs
-        if str(spec["cd_filter_id"]) not in existing_ids
+        for topology in registry.cd_specs
+        if str(topology["cd_filter_id"]) not in existing_ids
     )
     return [
         {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from pipeline.etl.mi_master_registry import (
@@ -242,6 +243,46 @@ _CD_BUSINESS_SPECS: tuple[dict[str, Any], ...] = (
     },
 )
 
+_ATC4_CODE = r"[A-Z]\d{2}[A-Z]\d"
+_ATC4_PATTERN = re.compile(_ATC4_CODE)
+_ATC4_DECLARATION = re.compile(
+    rf"\s*\[?{_ATC4_CODE}\]?(?:\s*(?:,|&|\+|/)\s*\[?{_ATC4_CODE}\]?)*\s*"
+)
+
+
+def _default_business_spec(
+    registry: MiMasterRegistry,
+    cd_id: str,
+) -> dict[str, Any]:
+    declarations = registry.direct_competition_by_cd_id.get(cd_id, ())
+    if not declarations:
+        return {
+            "cd_definition_type": "ml_equals_cd_by_empty",
+            "cd_definition_brand_class": "default_sheet_all",
+            "cd_filter_expression": "sheet 전체",
+            "filter_kind": "sheet_all",
+        }
+
+    codes: list[str] = []
+    for declaration in declarations:
+        normalized = declaration.upper()
+        if _ATC4_DECLARATION.fullmatch(normalized) is None:
+            raise ValueError(
+                f"{cd_id} unrecognized direct competition declaration: "
+                f"{declaration!r}"
+            )
+        found = _ATC4_PATTERN.findall(normalized)
+        for code in found:
+            if code not in codes:
+                codes.append(code)
+    return {
+        "cd_definition_type": "filter_from_master_atc4",
+        "cd_definition_brand_class": " + ".join(codes),
+        "cd_filter_expression": f"atc4_code in ({','.join(codes)})",
+        "filter_kind": "master_atc4",
+        "filter_values": tuple(codes),
+    }
+
 
 def _excel_column_name(column_id: int) -> str:
     name = ""
@@ -264,14 +305,9 @@ def build_cd_specs(
     for topology in active_registry.cd_specs:
         cd_id = str(topology["cd_id"])
         column_ids = tuple(int(value) for value in topology["column_ids"])
-        business = business_by_id.get(
+        business = business_by_id.get(cd_id) or _default_business_spec(
+            active_registry,
             cd_id,
-            {
-                "cd_definition_type": "ml_equals_cd_by_empty",
-                "cd_definition_brand_class": "default_sheet_all",
-                "cd_filter_expression": "sheet 전체",
-                "filter_kind": "sheet_all",
-            },
         )
         specs.append(
             {
