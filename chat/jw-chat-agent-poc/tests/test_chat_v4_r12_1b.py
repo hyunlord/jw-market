@@ -119,13 +119,13 @@ def test_lossless_surface_reorders_commentary_and_facts_with_one_source_block() 
 
     expected_order = (
         "## 핵심 답",
+        "## 근거와 맥락",
+        "## 종합 인사이트",
+        "## 미확인 요소",
         "## 조사 범위와 완전성",
         "## 국내 NeDrug 특허목록 정본",
         "## 미국 Orange Book 보조표",
         "## 뉴스 맥락",
-        "## 근거와 맥락",
-        "## 종합 인사이트",
-        "## 미확인 요소",
         "## 해석 상한",
         "## 출처",
     )
@@ -180,8 +180,8 @@ def test_lossless_surface_does_not_duplicate_commentary_when_core_headings_are_e
     assert composed.text.count("## 종합 인사이트") == 1
     assert composed.text.count("## 출처") == 1
     assert composed.text.count("공식 목록에서 확인된 상태를 설명합니다.") == 1
-    assert composed.text.index("## 조사 범위와 완전성") < composed.text.index(
-        "## 종합 인사이트"
+    assert composed.text.index("## 종합 인사이트") < composed.text.index(
+        "## 조사 범위와 완전성"
     )
 
 

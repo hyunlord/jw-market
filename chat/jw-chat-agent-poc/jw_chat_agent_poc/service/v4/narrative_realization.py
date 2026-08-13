@@ -208,27 +208,63 @@ def _cross_source_fusion_node(
     if len(available) < 2:
         return None
     anchor_set, anchor_records = available[0]
+    anchor_fact = _source_fact_fragment(anchor_set, anchor_records)
+    if anchor_fact is None:
+        return None
+    anchor_record, anchor_text = anchor_fact
     lines: list[str] = []
     bound_ids: list[str] = []
     for other_set, other_records in available[1:4]:
+        other_fact = _source_fact_fragment(other_set, other_records)
+        if other_fact is None:
+            continue
+        other_record, other_text = other_fact
         citations = "; ".join(
             (
-                _citation_label(anchor_set, anchor_records[0]),
-                _citation_label(other_set, other_records[0]),
+                _citation_label(anchor_set, anchor_record),
+                _citation_label(other_set, other_record),
             )
         )
         lines.append(
-            f"{public_source_label(anchor_set.source)} {len(anchor_records)}건과 "
-            f"{public_source_label(other_set.source)} {len(other_records)}건이 같은 "
-            f"질문 범위에서 함께 확인됐습니다. [출처: {citations}]"
+            f"{anchor_text} 한편, {other_text} [출처: {citations}]"
         )
-        bound_ids.extend(record.evidence_id for record in anchor_records)
-        bound_ids.extend(record.evidence_id for record in other_records)
+        bound_ids.extend((anchor_record.evidence_id, other_record.evidence_id))
+    if not lines:
+        return None
     return RenderNode(
         block_id="narrative:cross-source-fusion",
         record_ids=tuple(dict.fromkeys(bound_ids)),
         text="\n".join(lines),
     )
+
+
+def _source_fact_fragment(
+    evidence_set: EvidenceSet,
+    records: Sequence[EvidenceRecord],
+) -> tuple[EvidenceRecord, str] | None:
+    ranked = sorted(
+        records,
+        key=lambda record: (
+            -sum(field_value(record, field) is not None for field in NARRATIVE_FIELDS),
+            record.evidence_id,
+        ),
+    )
+    for index, record in enumerate(ranked, start=1):
+        identity = record_identity(record, index)
+        fields = tuple(
+            field for field in NARRATIVE_FIELDS if field_value(record, field) is not None
+        )[:3]
+        if identity is None or not fields:
+            continue
+        details = ", ".join(
+            f"{FIELD_LABELS.get(field, field)} {display_field_value(record, field) or ''}"
+            for field in fields
+        )
+        return (
+            record,
+            f"{public_source_label(evidence_set.source)} {identity}: {details}.",
+        )
+    return None
 
 
 def _citation_label(evidence_set: EvidenceSet, record: EvidenceRecord) -> str:

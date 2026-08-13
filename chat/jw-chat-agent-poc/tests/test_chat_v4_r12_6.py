@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -24,6 +25,9 @@ from jw_chat_agent_poc.service.v4.synthesizer import (
     _SYNTHESIS_SYSTEM_PROMPT,
     _synthesis_messages,
 )
+from jw_chat_agent_poc.service.v4 import adapters as v4_adapters
+from jw_chat_agent_poc.service.web_relevance import filter_web_results
+from jw_chat_agent_poc.tools.external.client import ExternalCall
 
 
 def _evidence(source: str, *records: EvidenceRecord) -> EvidenceSet:
@@ -222,6 +226,30 @@ def test_a_composition_preserves_question_driven_sections_and_deduplicates() -> 
     assert "두 번째 관찰입니다." in composed.text
 
 
+def test_a_all_commentary_precedes_deterministic_coverage_and_tables() -> None:
+    rendered = DeterministicRender(
+        profile="clinical_portfolio",
+        nodes=(
+            RenderNode(block_id="clinical:coverage", text="## 조사 범위\n14건"),
+            RenderNode(block_id="clinical:table", text="| 시험 | 상태 |\n|---|---|\n| NCT1 | 모집 중 |"),
+        ),
+    )
+    commentary = (
+        "질문에 대한 답입니다.\n\n"
+        "## 경쟁 구도\n후속 해설입니다.\n\n"
+        "## 의미\n마지막 해설입니다."
+    )
+
+    composed = compose_lossless_answer(
+        rendered,
+        commentary,
+        synthesis_trace={},
+        mode="inject",
+    )
+
+    assert composed.text.index("마지막 해설입니다.") < composed.text.index("## 조사 범위")
+
+
 def test_a_auxiliary_table_has_no_source_heading_or_internal_sequence() -> None:
     record = EvidenceRecord(
         evidence_id="fda:opaque-internal-id",
@@ -317,6 +345,11 @@ def test_a_cross_source_fusion_binds_three_sentences_to_source_records() -> None
     assert len(fusion.text.splitlines()) == 3
     assert set(fusion.record_ids) == set(record_ids)
     assert "데일리팜 · 2026-08-13 · 「web 자료」" in fusion.text
+    assert "같은 질문 범위에서 함께 확인됐습니다" not in fusion.text
+    assert "patent 자료" in fusion.text
+    assert "clinicaltrials 자료" in fusion.text
+    assert "상태 게재 중" in fusion.text
+    assert "단계 3상" in fusion.text
     assert "원인" not in fusion.text
     assert "때문" not in fusion.text
 
@@ -459,6 +492,142 @@ def test_b_clinical_table_localizes_status_and_phase_enums() -> None:
     assert "3상" in surface
     assert "RECRUITING" not in surface
     assert "PHASE3" not in surface
+
+
+def test_b_clinical_table_localizes_phase_na() -> None:
+    record = EvidenceRecord(
+        evidence_id="ct:NCT00000002",
+        source="clinicaltrials",
+        result_kind="structured_clinical_record",
+        payload={
+            "nct_id": "NCT00000002",
+            "brief_title": "관찰 연구",
+            "overall_status": "COMPLETED",
+            "phases": ["PHASE_NA"],
+            "sponsor": "JW중외제약",
+        },
+    )
+
+    nodes, _required = render_clinical(_evidence("clinicaltrials", record), single=True)
+    surface = "\n".join(node.text for node in nodes)
+
+    assert "해당 없음" in surface
+    assert "PHASE_NA" not in surface
+
+
+@pytest.mark.parametrize(
+    ("question", "requested_axis"),
+    (
+        ("2024년 D693 성별 연령5세구간별 내원일수", "성별·연령5세구간별"),
+        ("2024년 D693 진료년월 기준 월별 환자수 추이", "진료년월별"),
+    ),
+)
+def test_c_unsupported_hira_axis_falls_back_to_2024_inpatient_outpatient(
+    question: str,
+    requested_axis: str,
+) -> None:
+    route = v4_adapters._hira_stat_route(question)
+
+    assert route.tool == "hira_disease_hospitalization_outpatient_stats"
+    assert route.label == "입원/외래"
+    assert route.requested_label == requested_axis
+    assert route.scope_notice is not None
+    assert requested_axis in route.scope_notice
+    assert "입원/외래 기준 데이터로 답변합니다" in route.scope_notice
+
+
+def test_c_hira_fallback_notice_uses_requested_year(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    class Resolver:
+        def resolve(self, _query: str, *, allow_default: bool) -> object:
+            assert allow_default is False
+            raise LookupError
+
+    class External:
+        timeout_s = 12
+
+        def hira_disease_name_code(self, code: str) -> ExternalCall:
+            return ExternalCall(
+                tool="hira_disease_name_code",
+                source="HIRA",
+                status="live",
+                summary_text=code,
+                render_data={"items": [{"sick_cd": code}]},
+            )
+
+        def hira_disease_hospitalization_outpatient_stats(
+            self,
+            code: str,
+            year: str,
+        ) -> ExternalCall:
+            calls.append((code, year))
+            return ExternalCall(
+                tool="hira_disease_hospitalization_outpatient_stats",
+                source="HIRA",
+                status="live",
+                summary_text="one row",
+                render_data={
+                    "items": [
+                        {"sick_cd": code, "year": year, "inpatient_count": 10}
+                    ]
+                },
+            )
+
+    from jw_chat_agent_poc.agent_loop import factory
+    from jw_chat_agent_poc.service import general_view_routing
+
+    monkeypatch.setattr(
+        factory,
+        "build_chat_agent_dependencies",
+        lambda **_kwargs: SimpleNamespace(
+            external=External(),
+            resolver=Resolver(),
+            query_layer=None,
+        ),
+    )
+    monkeypatch.setattr(
+        general_view_routing.GeneralViewService,
+        "from_env",
+        lambda _resolver: SimpleNamespace(),
+    )
+
+    result = v4_adapters.build_source_adapters()["hira"](
+        "2023년 D693 진료년월 기준 월별 환자수 추이"
+    )
+
+    assert calls == [("D693", "2023")]
+    assert result.status == "ok"
+    assert result.notice == (
+        "요청하신 진료년월별 집계는 현재 지원되지 않아, "
+        "입원/외래 기준 2023년 데이터로 답변합니다."
+    )
+    assert result.payload["period_coverage"]["requested_axis"] == "진료년월별"
+    assert result.payload["period_coverage"]["actual_axis"] == "입원/외래"
+
+
+def test_d_disease_code_web_result_requires_medical_domain_context() -> None:
+    decision = filter_web_results(
+        "24년 D693 성별 연령5세구간별 내원일수",
+        (
+            {
+                "title": "D693 타이어 규격 안내",
+                "snippet": "자동차 타이어 제품 규격과 가격",
+                "url": "https://example.com/tire",
+            },
+            {
+                "title": "D693 상병 환자 진료 통계",
+                "snippet": "질병 환자의 입원 외래 내원일수",
+                "url": "https://example.com/medical",
+            },
+        ),
+    )
+
+    assert [rank for rank, _item in decision.accepted] == [2]
+    assert len(decision.exclusions) == 1
+    assert decision.exclusions[0].reason_code == "web_medical_domain_not_matched"
 
 
 def test_a_short_narrative_for_five_records_records_explicit_reason() -> None:

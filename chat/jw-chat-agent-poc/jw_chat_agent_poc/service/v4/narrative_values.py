@@ -113,12 +113,13 @@ _PUBLIC_ENUMS: Final = {
     "WITHDRAWN": "철회",
     "UNKNOWN": "미확인",
     "NO_DATA": "자료 없음",
-    "LIVE": "조회됨",
+    "LIVE": "게재 중",
     "PHASE1": "1상",
     "PHASE2": "2상",
     "PHASE3": "3상",
     "PHASE4": "4상",
     "EARLY_PHASE1": "초기 1상",
+    "PHASE_NA": "해당 없음",
     "NA": "해당 없음",
 }
 _NUMBER_RE: Final = re.compile(r"[-+]?\d[\d,]*(?:\.\d+)?%?")

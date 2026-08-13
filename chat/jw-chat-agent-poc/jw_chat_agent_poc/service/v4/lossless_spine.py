@@ -271,14 +271,11 @@ def _assemble_injected_answer(
             )
         )
 
-    first = commentary_blocks[:1]
-    remainder = commentary_blocks[1:]
     blocks = [
-        *first,
+        *commentary_blocks,
         *fact_coverage,
         *fact_narratives,
         *fact_tables,
-        *remainder,
         *fact_limits,
         *(_render_sections(limits)),
     ]

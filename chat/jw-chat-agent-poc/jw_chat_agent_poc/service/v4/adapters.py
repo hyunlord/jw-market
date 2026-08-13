@@ -151,6 +151,7 @@ class _FailedHiraYearCall:
 class _HiraStatRoute:
     tool: str | None
     label: str
+    requested_label: str | None = None
     scope_notice: str | None = None
 
 
@@ -551,20 +552,22 @@ def _hira_stat_route(query: str) -> _HiraStatRoute:
     normalized = re.sub(r"\s+", "", query)
     if "5세구간" in normalized:
         return _HiraStatRoute(
-            tool=None,
-            label="성별·연령5세구간별",
+            tool="hira_disease_hospitalization_outpatient_stats",
+            label="입원/외래",
+            requested_label="성별·연령5세구간별",
             scope_notice=(
-                "요청하신 성별·연령5세구간별 집계는 현재 연결된 HIRA 조회에서 "
-                "지원되지 않아 다른 집계축으로 대체하지 않았습니다."
+                "요청하신 성별·연령5세구간별 집계는 현재 지원되지 않아, "
+                "입원/외래 기준 데이터로 답변합니다."
             ),
         )
     if "진료년월" in normalized or "월별" in normalized:
         return _HiraStatRoute(
-            tool=None,
-            label="진료년월별",
+            tool="hira_disease_hospitalization_outpatient_stats",
+            label="입원/외래",
+            requested_label="진료년월별",
             scope_notice=(
-                "요청하신 진료년월별 집계는 현재 연결된 HIRA 조회에서 "
-                "지원되지 않아 다른 집계축으로 대체하지 않았습니다."
+                "요청하신 진료년월별 집계는 현재 지원되지 않아, "
+                "입원/외래 기준 데이터로 답변합니다."
             ),
         )
     if "입원" in normalized or "외래" in normalized:
@@ -1274,6 +1277,7 @@ def build_source_adapters() -> dict[SourceName, Any]:
                     render_data={
                         **render_data,
                         "requested_axis": route.label,
+                        "original_requested_axis": route.requested_label,
                         "requested_year": year,
                     },
                 )
@@ -1286,9 +1290,17 @@ def build_source_adapters() -> dict[SourceName, Any]:
                 )
             )
             result = external_calls("hira", query, calls)
+            scope_notice = route.scope_notice
+            if route.requested_label:
+                year_label = "·".join(years)
+                scope_notice = (
+                    f"요청하신 {route.requested_label} 집계는 현재 지원되지 않아, "
+                    f"입원/외래 기준 {year_label}년 데이터로 답변합니다."
+                )
             coverage = {
                 "requested_periods": list(years),
-                "requested_axis": route.label,
+                "requested_axis": route.requested_label or route.label,
+                "actual_axis": route.label,
                 "tool": route.tool,
                 "periods": [
                     {"period": year, "status": _hira_period_status(call)}
@@ -1296,7 +1308,10 @@ def build_source_adapters() -> dict[SourceName, Any]:
                 ],
             }
             return result.model_copy(
-                update={"payload": {**result.payload, "period_coverage": coverage}}
+                update={
+                    "payload": {**result.payload, "period_coverage": coverage},
+                    "notice": scope_notice or result.notice,
+                }
             )
 
         if query_kind == "reimbursement":

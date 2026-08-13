@@ -295,12 +295,12 @@ def test_a_single_kcd_and_abbreviated_year_range_expand_without_substitution() -
         ),
         (
             "2024년 D693 성별 연령5세구간별 내원일수",
-            None,
+            "hira_disease_hospitalization_outpatient_stats",
             "성별·연령5세구간별",
         ),
         (
             "2024년 D693 진료년월 기준 월별 환자수 추이",
-            None,
+            "hira_disease_hospitalization_outpatient_stats",
             "진료년월별",
         ),
     ),
