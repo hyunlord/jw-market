@@ -149,7 +149,9 @@ class V4Runtime:
         caller_progress_callback = progress_callback
 
         def record_progress(event: dict[str, Any]) -> None:
-            progress_events.append(dict(event))
+            stored_event = dict(event)
+            stored_event.setdefault("recorded_at", utc_now().isoformat())
+            progress_events.append(stored_event)
             if caller_progress_callback is not None:
                 caller_progress_callback(event)
 

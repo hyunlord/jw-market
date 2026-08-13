@@ -854,6 +854,38 @@ def _agent_flow(turn: CompletedTurn) -> list[dict[str, Any]]:
         }
     ]
     previous = flow[0]["nodeId"]
+    progress_events = turn.trace.get("progress_events")
+    if isinstance(progress_events, Sequence) and not isinstance(progress_events, str | bytes):
+        for index, event in enumerate(progress_events, start=1):
+            if not isinstance(event, Mapping):
+                continue
+            name = str(event.get("name") or "진행 단계").strip() or "진행 단계"
+            detail = str(event.get("detail") or "").strip()
+            node_id = f"direct-progress-{turn.turn_id}-{index}"
+            flow.append(
+                {
+                    "nodeId": node_id,
+                    "nodeLabel": name,
+                    "data": {
+                        "id": node_id,
+                        "name": name,
+                        "input": {"question": turn.question},
+                        "output": {
+                            "detail": detail,
+                            "recorded_at": str(event.get("recorded_at") or ""),
+                            "status": str(event.get("status") or "done"),
+                        },
+                        "state": {
+                            "restored": True,
+                            "schema": "r12.6.progress.v1",
+                        },
+                    },
+                    "previousNodeIds": [previous],
+                    "status": "FINISHED",
+                }
+            )
+            previous = node_id
+        return flow
     stages = turn.timing.get("stages")
     if isinstance(stages, Sequence) and not isinstance(stages, str | bytes):
         for index, stage in enumerate(stages, start=1):
