@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
 import json
 import os
 import re
@@ -23,6 +24,7 @@ from pipeline.scripts.ingest_hook import csd_channel_activation
 from pipeline.scripts.ingest_hook import csd_keyword_activation
 from pipeline.scripts.ingest_hook import iqvia_nsa_mart_activation as iqvia_activation
 from pipeline.scripts.ingest_hook import post_success_cleanup
+from pipeline.scripts.ingest_hook.keyword_semantic_refresh import refresh_keyword_semantic
 from pipeline.scripts.ingest_hook import ubist_mart_activation
 from pipeline.scripts.ingest_hook.category_map import CategorySpec, resolve_category
 from pipeline.scripts.ingest_hook.completion_signal import PublishResult
@@ -175,8 +177,10 @@ def run(
                 )
             case "iqvia_csd_keyword":
                 publication = _recompute_publish_csd_keyword(context, active_ledger)
-                _record_external_stage_chain(
-                    active_ledger, context, ("topic_extraction",)
+                _run_keyword_topic_extraction(
+                    active_ledger,
+                    context,
+                    publication.target_db,
                 )
                 _record_stage(
                     active_ledger,
@@ -687,6 +691,49 @@ def _run_post_success_cleanup(context: RequestContext, target_db: str) -> None:
         f"dry_run={result.dry_run} dropped={len(result.dropped)} "
         f"plan={result.plan_path} sha256={result.plan_sha256}",
         flush=True,
+    )
+
+
+def _run_keyword_topic_extraction(ledger, context: RequestContext, target_db: str) -> None:
+    started_at = _stamp()
+    started = time.monotonic()
+    _record_stage(
+        ledger,
+        context,
+        "topic_extraction",
+        "running",
+        started_at=started_at,
+    )
+    connection = config.open_mart_connection(target_db)
+    try:
+        result = refresh_keyword_semantic(
+            connection,
+            schema=target_db,
+            ingest_run_id=context.run_id,
+            created_by=ACTOR,
+        )
+    except Exception as exc:
+        _record_stage(
+            ledger,
+            context,
+            "topic_extraction",
+            "failed",
+            _reason(exc),
+            started_at=started_at,
+            finished_at=_stamp(),
+            duration_ms=max(1, round((time.monotonic() - started) * 1000)),
+        )
+        raise
+    finally:
+        connection.close()
+    _record_stage(
+        ledger,
+        context,
+        "topic_extraction",
+        reason=json.dumps(asdict(result), ensure_ascii=False, sort_keys=True),
+        started_at=started_at,
+        finished_at=_stamp(),
+        duration_ms=max(1, round((time.monotonic() - started) * 1000)),
     )
 
 

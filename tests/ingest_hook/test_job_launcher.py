@@ -216,6 +216,26 @@ def test_complete_reingest_job_explicitly_uses_canonical_ingest_runner() -> None
     ]
 
 
+def test_keyword_job_receives_genos_token_by_secret_reference() -> None:
+    body = render_complete_reingest_job(
+        epoch="2026-06",
+        category="iqvia_csd_keyword",
+        manifest_sha=SHA,
+        manifest_path="_manifests/iqvia_csd_keyword/2026-06/manifest.json",
+        request_id=REQUEST_ID,
+        run_id="20260809221530123456",
+        affected_scope={"dimension": "source", "count": 1, "values": ["iqvia_csd_keyword"]},
+        namespace="llmops",
+    )
+
+    env = body["spec"]["template"]["spec"]["containers"][0]["env"]
+    token = next(item for item in env if item["name"] == "GENOS_BEARER_TOKEN")
+    assert token["valueFrom"]["secretKeyRef"] == {
+        "name": "jw-chat-agent-poc-secrets",
+        "key": "GENOS_BEARER_TOKEN",
+    }
+
+
 def test_complete_reingest_completed_job_conflict_is_not_submission_success() -> None:
     def conflict(_path: str, _body: dict) -> dict:
         raise urllib.error.HTTPError("http://k8s", 409, "Conflict", {}, None)

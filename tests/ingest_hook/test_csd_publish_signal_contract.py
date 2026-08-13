@@ -190,7 +190,7 @@ def test_keyword_complete_signal_identifies_published_schema_and_time(monkeypatc
         lambda: ("jw_brand_activity_raw_stage", "jw_brand_activity_stage"),
     )
     monkeypatch.setattr(csd_keyword_publish_runner.config, "open_csd_channel_connection", Mock)
-    monkeypatch.setattr(csd_keyword_publish_runner.config, "open_mart_connection", Mock)
+    monkeypatch.setattr(csd_keyword_publish_runner.config, "open_mart_connection", lambda *_args: Mock())
     monkeypatch.setattr(csd_keyword_publish_runner, "acquire_writer_lock", Mock())
     monkeypatch.setattr(csd_keyword_publish_runner, "_release_writer_lock_preserving_primary", Mock())
     monkeypatch.setattr(
@@ -223,6 +223,24 @@ def test_keyword_complete_signal_identifies_published_schema_and_time(monkeypatc
         csd_keyword_publish_runner,
         "_mark_complete_after_required_stages",
         Mock(),
+    )
+    monkeypatch.setattr(
+        csd_keyword_publish_runner,
+        "refresh_keyword_semantic",
+        lambda *_args, **_kwargs: csd_keyword_publish_runner.KeywordSemanticRefreshResult(
+            stage_generation_id="generation-1",
+            bridge_inserted_rows=0,
+            bridge_reused_rows=9512,
+            bridge_generation_rows=9512,
+            reused_semantic_identities=9512,
+            new_semantic_identities=0,
+            planned_calls=0,
+            llm_calls=0,
+            estimated_usd=0.0,
+            active_release_id="release-1",
+            pointer_generation=1,
+            pointer_changed=False,
+        ),
     )
 
     assert csd_keyword_publish_runner.run(

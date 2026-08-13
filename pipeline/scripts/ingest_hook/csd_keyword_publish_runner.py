@@ -1,12 +1,18 @@
 """Approval-triggered IQVIA CSD keyword raw+stage publisher."""
 from __future__ import annotations
 
+from dataclasses import asdict
+import json
 import sys
 import time
 from typing import Any, Callable
 
 from pipeline.scripts.ingest_hook import config, csd_keyword_activation
 from pipeline.scripts.ingest_hook import post_success_cleanup
+from pipeline.scripts.ingest_hook.keyword_semantic_refresh import (
+    KeywordSemanticRefreshResult,
+    refresh_keyword_semantic,
+)
 from pipeline.scripts.ingest_hook.job_launcher import publish_job_name
 from pipeline.scripts.ingest_hook.job_runner import (
     _StageTracker,
@@ -21,12 +27,6 @@ from pipeline.scripts.ingest_hook.job_runner import (
 )
 from pipeline.scripts.ingest_hook.ledger import STATUS_PUBLISH_RUNNING, Ledger
 from pipeline.scripts.ingest_hook.ubist_mart_activation import acquire_writer_lock
-from pipeline.scripts.deploy.brand_activity_307.row_topic_monthly_wrapper import (
-    RowTopicRunResult,
-    run_for_ingest,
-)
-
-
 def _candidate_period_scope(connection: Any, plan: Any) -> dict[str, object]:
     ref = plan.stage.candidate
     with connection.cursor() as cursor:
@@ -41,56 +41,51 @@ def _candidate_period_scope(connection: Any, plan: Any) -> dict[str, object]:
 
 def _record_topic_assignment(
     *,
+    connection: Any,
+    schema: str,
     ledger: Ledger,
     identity: tuple[str, str, str],
     run_id: str,
-    affected_scope: dict[str, object],
-    runner: Callable[..., RowTopicRunResult] = run_for_ingest,
+    runner: Callable[..., KeywordSemanticRefreshResult] | None = None,
 ) -> None:
     started_at = _stamp()
-    duration_ms: int | None = None
-    status = "failed_nonfatal"
+    started = time.monotonic()
     try:
-        enabled = config.keyword_topic_assign_enabled()
+        active_runner = runner or refresh_keyword_semantic
+        result = active_runner(
+            connection,
+            schema=schema,
+            ingest_run_id=run_id,
+            created_by="keyword_ingest",
+        )
+        reason = json.dumps(asdict(result), ensure_ascii=False, sort_keys=True)
     except Exception as exc:
-        enabled = None
         reason = f"배정 실패: {type(exc).__name__}: {exc}"
-    if enabled is False:
-        status = "skipped"
-        reason = "배정 비활성 (KEYWORD_TOPIC_ASSIGN_ENABLED=false)"
-    elif enabled is True:
-        started = time.monotonic()
-        try:
-            result = runner(
-                affected_scope=affected_scope,
-                category=identity[1],
-                epoch=identity[0],
-                manifest_sha=identity[2],
-                run_id=run_id,
-            )
-            reason = (
-                "배정 대상 없음"
-                if result.pending_rows == 0
-                else f"배정 {result.inserts}건 생성 · LLM 호출 {result.calls}회"
-            )
-            status = "complete"
-        except Exception as exc:  # Assignment is intentionally non-fatal to atomic ingest.
-            reason = f"배정 실패: {type(exc).__name__}: {exc}"
-            print(f"[stage] topic_extraction nonfatal reason={reason}", file=sys.stderr)
-        duration_ms = max(1, round((time.monotonic() - started) * 1000))
-    finished_at = _stamp()
+        ledger.record_stage(
+            *identity,
+            run_id=run_id,
+            seq=4,
+            stage="topic_extraction",
+            status="failed",
+            reason=reason,
+            started_at=started_at,
+            finished_at=_stamp(),
+            duration_ms=max(1, round((time.monotonic() - started) * 1000)),
+        )
+        print(f"[stage] topic_extraction end rc=1 reason={reason}", file=sys.stderr)
+        raise
     ledger.record_stage(
         *identity,
         run_id=run_id,
         seq=4,
         stage="topic_extraction",
-        status=status,
+        status="complete",
         reason=reason,
         started_at=started_at,
-        finished_at=finished_at,
-        duration_ms=duration_ms,
+        finished_at=_stamp(),
+        duration_ms=max(1, round((time.monotonic() - started) * 1000)),
     )
-    print("[stage] topic_extraction end rc=0")
+    print(f"[stage] topic_extraction end rc=0 result={reason}")
 
 
 def run(
@@ -151,6 +146,7 @@ def run(
 
     tracker = _StageTracker(ledger, identity, publish_run_id)
     writer_connection = None
+    topic_connection = None
     activation_connection = None
     lock_acquired = False
     failure_reason = None
@@ -181,11 +177,13 @@ def run(
         publish_execution = tracker.done(
             reason=_publish_source_set_reason(publish_source_set)
         )
+        topic_connection = config.open_mart_connection(stage_schema)
         _record_topic_assignment(
+            connection=topic_connection,
+            schema=stage_schema,
             ledger=ledger,
             identity=identity,
             run_id=publish_run_id,
-            affected_scope=affected_scope,
         )
         tracker.complete_from(
             "dashboard",
@@ -247,6 +245,8 @@ def run(
             )
         if writer_connection is not None:
             writer_connection.close()
+        if topic_connection is not None:
+            topic_connection.close()
         if activation_connection is not None:
             activation_connection.close()
 

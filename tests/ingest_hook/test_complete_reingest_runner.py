@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from pipeline.scripts.ingest_hook import complete_reingest_runner as runner
+from pipeline.scripts.ingest_hook.keyword_semantic_refresh import KeywordSemanticRefreshResult
 from pipeline.scripts.ingest_hook import ubist_mart_activation
 
 
@@ -542,6 +543,24 @@ def test_csd_reingest_records_only_source_core_stages(
         runner,
         "_publish_table_group",
         lambda *_args, **_kwargs: pytest.fail("CSD must publish through source activation"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "refresh_keyword_semantic",
+        lambda *_args, **_kwargs: KeywordSemanticRefreshResult(
+            stage_generation_id="generation-1",
+            bridge_inserted_rows=0,
+            bridge_reused_rows=8,
+            bridge_generation_rows=8,
+            reused_semantic_identities=8,
+            new_semantic_identities=0,
+            planned_calls=0,
+            llm_calls=0,
+            estimated_usd=0.0,
+            active_release_id="release-1",
+            pointer_generation=1,
+            pointer_changed=False,
+        ),
     )
 
     # When: the runner handles the CSD attempt.

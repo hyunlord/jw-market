@@ -75,6 +75,7 @@ _FORECAST_RUNTIME_PINS = {
 }
 _MART_SECRET = "jw-mart-d2-writer"
 _CSD_CHANNEL_ACTIVATOR_SECRET = "jw-csd-channel-activator"
+_GENOS_SECRET = "jw-chat-agent-poc-secrets"
 _PORTAL_SECRET = "jw-data-portal-secrets"      # bucket name (site-owned)
 _MINIO_READ_SECRET = "jw-ingest-hook-minio"     # hook-owned read-only credentials
 _LOCAL_INPUT_VOLUME = "ingest-input"
@@ -145,6 +146,8 @@ def _job_env(category: str) -> list[dict]:
             _CSD_CHANNEL_ACTIVATOR_SECRET,
             "password",
         )
+    if category == "iqvia_csd_keyword":
+        secret_ref("GENOS_BEARER_TOKEN", _GENOS_SECRET, "GENOS_BEARER_TOKEN")
     # Agent2 still consumes the DB_* family from its pinned YAML configs.
     # Keep these aliases explicit; omitting them silently restores localhost.
     agent2_aliases = {
