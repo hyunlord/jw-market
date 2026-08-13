@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -32,7 +33,7 @@ from pipeline.scripts.ingest_hook.load_verify import (
     verify_epoch_loaded,
     verify_table_load,
 )
-from ingest_fixtures import write_submission
+from ingest_fixtures import GOOD_ROWS, write_submission
 
 UBIST = resolve_category("ubist")
 
@@ -775,6 +776,39 @@ def test_run_real_staging_verify_completes(staging_env, bucket, sqlite_ledger, m
     entry = sqlite_ledger.status(manifest.epoch, "ubist", manifest.manifest_sha)
     assert entry.status == "complete"
     assert entry.row_counts.get("epoch:2026-07") == 9
+
+
+def test_run_passes_g3_output_epoch_to_loader(
+    staging_env, bucket, sqlite_ledger, monkeypatch
+):
+    rows = GOOD_ROWS + [("2026-08", "Class", "신규", 1.0)]
+    manifest_path = write_submission(bucket, epoch="2026-07", rows=rows)
+    manifest = load_manifest(manifest_path)
+    observed: dict[str, str] = {}
+
+    def fake_run(label, argv):
+        if label != "load":
+            return
+        observed["epoch"] = argv[argv.index("--epoch") + 1] if "--epoch" in argv else ""
+        target = Path(argv[argv.index("--target-dir") + 1])
+        _write_load_manifest(target, "2026-08", 1)
+
+    spec = replace(UBIST, load_epoch_flag="--epoch")
+    monkeypatch.setattr(job_runner, "resolve_category", lambda _category: spec)
+    monkeypatch.setattr(job_runner, "_run_commands", fake_run)
+
+    rc = job_runner.run(
+        manifest_path,
+        input_root=bucket,
+        ledger=sqlite_ledger,
+        rehearsal_root=None,
+    )
+
+    assert rc == 0
+    assert observed["epoch"] == "2026-08"
+    entry = sqlite_ledger.status(manifest.epoch, "ubist", manifest.manifest_sha)
+    assert entry is not None
+    assert entry.row_counts.get("epoch:2026-08") == 1
 
 
 def test_run_real_silent_failure_marks_failed(staging_env, bucket, sqlite_ledger, monkeypatch):

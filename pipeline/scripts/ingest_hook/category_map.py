@@ -56,8 +56,8 @@ class CategorySpec:
     description: str
     # G3 schema expectation: required header columns per data file (csv/xlsx).
     required_columns: tuple[str, ...]
-    # Column whose distinct values must contain the manifest epoch (period
-    # consistency). None = fall back to files[].period_start/end containment.
+    # Column whose distinct values contribute to the collection epoch derived
+    # by G3. None means a workbook reader supplies periods from file contents.
     period_column: str | None
     # System A load phase base argv. The uploaded files and the output target
     # are injected per-run by job_runner (load_input_flag / load_target_flag);

@@ -92,7 +92,7 @@ def test_g1_end_to_end_rehearsal(client, service, bucket, tmp_path, fake_transpo
         {"sha_override": "0" * 64},                                    # sha mismatch
         {"rows": [], "declared_rows": 0},                              # zero rows
         {"header": ("period", "level", "name", "amount")},             # broken schema
-        {"rows": GOOD_ROWS + [("2026-08", "Class", "미래", 1.0)]},      # period beyond epoch
+        {"rows": [row for row in GOOD_ROWS if row[0] != "2026-07"]},     # requested epoch absent
     ],
 )
 def test_g2_rejected_submission_loads_nothing(sqlite_ledger, bucket, tmp_path, corruption):

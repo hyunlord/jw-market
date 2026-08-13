@@ -1318,8 +1318,16 @@ def run(
             ),
         )
         periods = set(report.observed_periods)
-        print(f"gate=g3 status=pass files={len(report.file_rows)} rows={report.total_rows}")
+        print(
+            f"gate=g3 status=pass files={len(report.file_rows)} rows={report.total_rows} "
+            f"epoch={report.epoch}"
+        )
         tracker.done()
+
+        # The submission identity stays immutable in the ledger, while every
+        # downstream data operation consumes the epoch derived by G3 from the
+        # selected source contents.
+        manifest = replace(manifest, epoch=report.epoch)
 
         # 2) load + 3) fail-closed post-gates
         if rehearsal_root is not None:

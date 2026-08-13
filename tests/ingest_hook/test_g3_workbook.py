@@ -8,8 +8,12 @@ parser (ubist_loader) so G3 and the loader share one contract.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import time
+from pathlib import Path
 
+import openpyxl
 import pytest
 
 from pipeline.scripts.ingest_hook.category_map import resolve_category
@@ -24,11 +28,99 @@ def _validate(bucket, manifest_path, **kwargs):
     return validate(load_manifest(manifest_path), SPEC, bucket, **kwargs)
 
 
+def _write_workbook(path: Path, periods: tuple[str, ...]) -> dict[str, object]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    workbook = openpyxl.Workbook()
+    worksheet = workbook.active
+    worksheet.append(["브랜드", *(["처방조제액(원)"] * len(periods))])
+    worksheet.append(["브랜드", *[f"{period[:4]}년 {int(period[5:])}월" for period in periods]])
+    worksheet.append(["브랜드A", *([1.0] * len(periods))])
+    workbook.save(path)
+    return {
+        "path": path.as_posix(),
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "rows": 1,
+        "period_start": "2021-01",
+        "period_end": "2026-02",
+    }
+
+
+def _write_manifest(bucket: Path, *, epoch: str, files: list[dict[str, object]]) -> Path:
+    for entry in files:
+        entry["path"] = Path(str(entry["path"])).relative_to(bucket).as_posix()
+    payload = {
+        "contract_version": "v2",
+        "epoch": epoch,
+        "category": "ubist",
+        "complete": True,
+        "files": files,
+    }
+    path = bucket / "manifest.json"
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
 def test_good_workbook_passes(bucket):
     manifest_path = write_ubist_workbook_submission(bucket, periods=("2026-06", "2026-07"))
     report = _validate(bucket, manifest_path)
     assert "2026-07" in report.observed_periods
     assert any("workbook validated via loader parser" in note for note in report.notes)
+
+
+def test_collection_epoch_comes_from_internal_periods_not_names_or_declared_range(bucket):
+    files = [
+        _write_workbook(bucket / "병원 2021.xlsx", ("2021-01",)),
+        _write_workbook(bucket / "Sales_2506.xlsx", ("2026-06",)),
+    ]
+    manifest_path = _write_manifest(bucket, epoch="2026-06", files=files)
+
+    report = _validate(bucket, manifest_path)
+    persisted_manifest = load_manifest(manifest_path)
+
+    assert report.epoch == "2026-06"
+    assert report.observed_periods == {"2021-01", "2026-06"}
+    assert any("epoch_source_files" in note and "Sales_2506.xlsx" in note for note in report.notes)
+    assert {(entry.period_start, entry.period_end) for entry in persisted_manifest.files} == {
+        ("2021-01", "2026-02")
+    }
+
+
+def test_collection_allows_historical_workbooks_without_target_epoch(bucket):
+    historical_periods = [
+        f"{2021 + index // 12:04d}-{index % 12 + 1:02d}" for index in range(65)
+    ]
+    files = [
+        *[
+            _write_workbook(bucket / f"history_{index:02d}.xlsx", (period,))
+            for index, period in enumerate(historical_periods, start=1)
+        ],
+        _write_workbook(bucket / "latest.xlsx", ("2026-06",)),
+    ]
+    manifest_path = _write_manifest(bucket, epoch="2026-06", files=files)
+
+    report = _validate(bucket, manifest_path)
+
+    assert report.epoch == "2026-06"
+    assert len(report.file_rows) == 66
+    print(
+        "NEGATIVE_PAST_FILES_ALLOWED",
+        f"historical_files={len(historical_periods)}",
+        f"total_files={len(report.file_rows)}",
+        f"epoch={report.epoch}",
+    )
+
+
+def test_collection_without_requested_epoch_stays_blocked(bucket):
+    files = [_write_workbook(bucket / "only_past.xlsx", ("2026-05",))]
+    manifest_path = _write_manifest(bucket, epoch="2026-06", files=files)
+
+    with pytest.raises(G3Error, match="requested epoch 2026-06 absent from collected periods"):
+        _validate(bucket, manifest_path)
+    print(
+        "NEGATIVE_REQUESTED_EPOCH_ABSENT_BLOCKED",
+        "requested=2026-06",
+        "observed=2026-05",
+    )
 
 
 def test_workbook_without_metric_column_fails(bucket):
@@ -47,21 +139,21 @@ def test_workbook_unparseable_period_fails(bucket):
         _validate(bucket, manifest_path)
 
 
-def test_workbook_epoch_absent_fails(bucket):
+def test_workbook_requested_epoch_absent_from_collection_fails(bucket):
     # Workbook only carries 2026-06 but the manifest epoch is 2026-07.
     manifest_path = write_ubist_workbook_submission(
         bucket, epoch="2026-07", periods=("2026-06",), period_start="2026-06"
     )
-    with pytest.raises(G3Error, match="absent from workbook periods"):
+    with pytest.raises(G3Error, match="requested epoch 2026-07 absent from collected periods"):
         _validate(bucket, manifest_path)
 
 
-def test_workbook_future_period_fails(bucket):
+def test_workbook_newer_internal_period_becomes_output_epoch(bucket):
     manifest_path = write_ubist_workbook_submission(
         bucket, epoch="2026-07", periods=("2026-07", "2026-08")
     )
-    with pytest.raises(G3Error, match="beyond epoch"):
-        _validate(bucket, manifest_path)
+    report = _validate(bucket, manifest_path)
+    assert report.epoch == "2026-08"
 
 
 def test_workbook_sha_mismatch_still_fails(bucket):

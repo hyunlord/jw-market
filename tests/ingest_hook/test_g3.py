@@ -61,11 +61,11 @@ def test_epoch_absent_from_file_fails(bucket):
         _validate(bucket, manifest_path)
 
 
-def test_future_period_fails(bucket):
+def test_newer_internal_period_becomes_output_epoch(bucket):
     rows = GOOD_ROWS + [("2026-08", "Class", "미래", 1.0)]
     manifest_path = write_submission(bucket, rows=rows)
-    with pytest.raises(G3Error, match="beyond epoch"):
-        _validate(bucket, manifest_path)
+    report = _validate(bucket, manifest_path)
+    assert report.epoch == "2026-08"
 
 
 def test_declared_row_mismatch_fails(bucket):
@@ -110,10 +110,10 @@ def test_weekly_epoch_period_consistency_passes(bucket):
     assert report.total_rows == len(WEEKLY_ROWS)
 
 
-def test_weekly_epoch_future_week_fails(bucket):
+def test_weekly_newer_internal_period_becomes_output_epoch(bucket):
     rows = WEEKLY_ROWS + [("2026-W28", "Class", "미래", 1.0)]
     manifest_path = write_submission(
         bucket, epoch="2026-W27", rows=rows, period_start="2026-W26"
     )
-    with pytest.raises(G3Error, match="beyond epoch"):
-        _validate(bucket, manifest_path)
+    report = _validate(bucket, manifest_path)
+    assert report.epoch == "2026-W28"

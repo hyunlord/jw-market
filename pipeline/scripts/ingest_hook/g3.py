@@ -3,7 +3,7 @@
 Contract v2 checks, in order:
   1. file existence (confined to the input root) and sha256 identity
   2. schema: required header columns per category
-  3. period consistency: manifest epoch vs the actual periods inside the files
+  3. period consistency: collection epoch derived from periods inside the files
   4. row sanity: zero rows, declared-vs-actual mismatch, crash vs previous run
   5. dedup: delegated to the frame loader (recorded, not re-implemented here)
 
@@ -41,6 +41,7 @@ class G3Report:
     file_rows: dict[str, int] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
     observed_periods: set[str] = field(default_factory=set)
+    file_periods: dict[str, set[str]] = field(default_factory=dict)
 
     @property
     def total_rows(self) -> int:
@@ -84,15 +85,6 @@ def _period_values(path: Path, column: str) -> set[str]:
         return {(row.get(actual) or "").strip() for row in rows if (row.get(actual) or "").strip()}
 
 
-def _check_declared_period(entry: ManifestFile, epoch: str, failures: list[str]) -> None:
-    if entry.period_start and entry.period_end:
-        if not (entry.period_start <= epoch <= entry.period_end):
-            failures.append(
-                f"{entry.path}: epoch {epoch} outside declared period "
-                f"[{entry.period_start}..{entry.period_end}]"
-            )
-
-
 def _validate_workbook(
     spec: CategorySpec,
     path: Path,
@@ -106,7 +98,7 @@ def _validate_workbook(
     is (STOP ③: one contract, not two). Only the two header rows per sheet are
     read — no data rows are streamed — so an 80MB file is judged in seconds."""
     if spec.workbook_reader == "ubist":
-        _validate_ubist_workbook(path, entry, epoch, failures, report)
+        _validate_ubist_workbook(path, entry, failures, report)
         return
     from pipeline.scripts.ingest_hook.workbook_contracts import summarize
 
@@ -120,12 +112,7 @@ def _validate_workbook(
         return
     periods = set(summary.periods)
     report.observed_periods.update(periods)
-    if periods and epoch not in periods:
-        failures.append(f"{entry.path}: epoch {epoch} absent from workbook periods {sorted(periods)[:6]}")
-    future = sorted(value for value in periods if value > epoch)
-    if future:
-        failures.append(f"{entry.path}: periods beyond epoch {epoch}: {future[:6]}")
-    _check_declared_period(entry, epoch, failures)
+    report.file_periods[entry.path] = periods
     if entry.rows is not None and entry.rows != summary.rows:
         failures.append(f"{entry.path}: manifest declares rows={entry.rows}, actual {summary.rows}")
     report.file_rows[entry.path] = summary.rows
@@ -135,7 +122,6 @@ def _validate_workbook(
 def _validate_ubist_workbook(
     path: Path,
     entry: ManifestFile,
-    epoch: str,
     failures: list[str],
     report: G3Report,
 ) -> None:
@@ -156,16 +142,7 @@ def _validate_ubist_workbook(
         return
 
     report.observed_periods.update(periods)
-    # Period consistency — mirror the CSV path exactly (epoch present, none future).
-    if epoch not in periods:
-        failures.append(
-            f"{entry.path}: epoch {epoch} absent from workbook periods {sorted(periods)[:6]}"
-        )
-    future = sorted(value for value in periods if value > epoch)
-    if future:
-        failures.append(f"{entry.path}: periods beyond epoch {epoch}: {future[:6]}")
-
-    _check_declared_period(entry, epoch, failures)
+    report.file_periods[entry.path] = periods
 
     # Portal manifests do not declare workbook rows. In that case count through
     # the loader's iterator so the crash floor and post-gate use the same row
@@ -175,7 +152,7 @@ def _validate_ubist_workbook(
         row_note = "rows manifest-declared, verified on load"
     else:
         rows_by_period = ubist_loader.count_source_rows_by_period(path)
-        report.file_rows[entry.path] = rows_by_period.get(epoch, 0)
+        report.file_rows[entry.path] = rows_by_period.get(max(periods), 0)
         row_note = "rows counted via loader iterator"
     report.notes.append(
         f"{entry.path}: UBIST workbook validated via loader parser "
@@ -191,7 +168,7 @@ def validate(
     previous_total_rows: int | None = None,
 ) -> G3Report:
     """Run all G3 checks; raise :class:`G3Error` with every failure collected."""
-    report = G3Report(manifest_sha=manifest.manifest_sha, epoch=manifest.epoch, category=manifest.category)
+    report = G3Report(manifest_sha=manifest.manifest_sha, epoch="", category=manifest.category)
     failures: list[str] = []
 
     # 0) set completeness — the manifest's own completeness assertion is enforced
@@ -230,7 +207,6 @@ def validate(
                 report.notes.append(
                     f"{entry.path}: workbook sheet schema gated by s2 catalog gate (category {manifest.category})"
                 )
-                _check_declared_period(entry, manifest.epoch, failures)
             continue
         if suffix not in _CSV_SUFFIXES:
             failures.append(f"{entry.path}: unsupported suffix {suffix!r} (contract expects .csv/.xlsx)")
@@ -243,18 +219,12 @@ def validate(
             failures.append(f"{entry.path}: missing required columns {missing} (header={header})")
             continue
 
-        # 3) period consistency (actual file contents vs epoch)
-        _check_declared_period(entry, manifest.epoch, failures)
+        # 3) period consistency comes only from file contents. Manifest period
+        # fields remain immutable audit data but are not validation authority.
         if spec.period_column:
             periods = _period_values(path, spec.period_column)
             report.observed_periods.update(periods)
-            if manifest.epoch not in periods:
-                failures.append(
-                    f"{entry.path}: epoch {manifest.epoch} absent from {spec.period_column!r} values {sorted(periods)[:6]}"
-                )
-            future = sorted(value for value in periods if value > manifest.epoch)
-            if future:
-                failures.append(f"{entry.path}: periods beyond epoch {manifest.epoch}: {future[:6]}")
+            report.file_periods[entry.path] = periods
 
         # 4) row sanity (per file)
         if row_count == 0:
@@ -262,6 +232,27 @@ def validate(
         if entry.rows is not None and entry.rows != row_count:
             failures.append(f"{entry.path}: manifest declares rows={entry.rows}, actual {row_count}")
         report.file_rows[entry.path] = row_count
+
+    # The collection epoch is scan output. Historical workbooks need not each
+    # contain it; at least one selected file must carry the requested epoch so a
+    # regressed source tree cannot silently move the run backwards.
+    if report.observed_periods:
+        report.epoch = max(report.observed_periods)
+        epoch_files = sorted(
+            path for path, periods in report.file_periods.items() if report.epoch in periods
+        )
+        report.notes.append(
+            f"epoch={report.epoch} epoch_source_files={epoch_files}"
+        )
+        if manifest.epoch != "unknown" and manifest.epoch not in report.observed_periods:
+            failures.append(
+                f"requested epoch {manifest.epoch} absent from collected periods "
+                f"{sorted(report.observed_periods)}"
+            )
+    elif spec.period_column or spec.workbook_reader:
+        failures.append("no periods parsed from collected source files")
+    else:
+        report.epoch = manifest.epoch
 
     # 4b) row sanity (crash vs previous completed submission of this category)
     if not failures and previous_total_rows and previous_total_rows > 0:
