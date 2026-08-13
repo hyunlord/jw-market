@@ -16,6 +16,7 @@ from jw_chat_agent_poc.service.v4.evidence_set_support import (
     has_reimbursement,
     mapping,
     mapping_list,
+    normalize_generic_record,
     optional_int,
     patent_evidence_id,
     record_refs,
@@ -215,7 +216,12 @@ def _patent_set(results: Sequence[SourceResult], observed_on: date) -> EvidenceS
                     f"{lane_name} 조회가 상류 호출 상한 {source_limit or '미상'}건에 도달"
                 )
             for index, raw_record in enumerate(mapping_list(lane.get("records")), start=1):
-                record = {**raw_record, "as_of_date": observed_on.isoformat()}
+                record = (
+                    normalize_generic_record("web", raw_record)
+                    if lane_name == "news"
+                    else dict(raw_record)
+                )
+                record["as_of_date"] = observed_on.isoformat()
                 evidence_id = patent_evidence_id(lane_name, record, index)
                 result_kind = "web_document" if lane_name == "news" else "structured_patent_record"
                 records.append(

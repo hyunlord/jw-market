@@ -1059,6 +1059,49 @@ def test_b_web_items_survive_as_records_with_publication_fields() -> None:
     assert record.payload["summary"] == "제네릭 경쟁 현황을 정리한 기사입니다."
 
 
+def test_a_patent_news_snippet_is_available_to_narrative_realization() -> None:
+    result = SourceResult(
+        source="patent",
+        query="리바로젯 특허현황",
+        status="ok",
+        payload={
+            "patent_lanes": {
+                "news": {
+                    "records_received": 1,
+                    "records_unique": 1,
+                    "records": [
+                        {
+                            "lane": "news",
+                            "title": "리바로젯 제네릭 개발 열풍",
+                            "snippet": "지난해 4개사에 이어 올해 12개사가 생동성 시험에 착수했습니다.",
+                            "url": "https://example.com/news/1",
+                        }
+                    ],
+                }
+            }
+        },
+    )
+
+    evidence = build_evidence_sets(
+        _plan("리바로젯 특허현황"),
+        (result,),
+        observed_on=date(2026, 8, 14),
+    )[0]
+    record = evidence.records[0]
+    realized = build_narrative_realization(
+        (evidence,),
+        (record.evidence_id,),
+    )
+
+    assert record.payload["summary"] == (
+        "지난해 4개사에 이어 올해 12개사가 생동성 시험에 착수했습니다."
+    )
+    assert record.evidence_id in realized.narrated_record_ids
+    assert realized.unnarrated_record_count == 0
+    assert "리바로젯 제네릭 개발 열풍" in realized.nodes[0].text
+    assert "올해 12개사" in realized.nodes[0].text
+
+
 def test_a_final_surface_metrics_ignore_identifiers_that_only_survive_in_tables() -> None:
     records = (
         EvidenceRecord(
