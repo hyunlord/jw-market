@@ -45,6 +45,7 @@ from jw_chat_agent_poc.service.v4.runtime import (
     _tag_absence_context,
     _tag_gap_result,
 )
+from jw_chat_agent_poc.service.v4.session_state import SessionState
 from jw_chat_agent_poc.service.v4.source_tiers import (
     entity_completion_rows,
     fan_out_tier_zero_queries,
@@ -1913,7 +1914,7 @@ def test_h_planner_variance_is_normalized_only_for_execution() -> None:
 
 
 def test_h_execution_normalization_preserves_first_and_second_hop_provenance() -> None:
-    raw_question = "그 조건으로 임상현황 알려줘"
+    raw_question = "리바로젯 제네릭 임상현황"
     resolved_question = "국내 모집 중 리바로젯 제네릭 임상현황"
     first_plan = _plan(resolved_question).model_copy(
         update={
@@ -2000,8 +2001,8 @@ def test_h_execution_normalization_preserves_first_and_second_hop_provenance() -
     )
 
     assert executor.executed_queries == [
-        ("normalized:국내 모집 중 리바로젯 제네릭 임상현황",),
-        ("normalized:리바로젯 관련 임상 Korea RECRUITING",),
+        ("normalized:리바로젯 제네릭 임상현황",),
+        ("normalized:리바로젯 관련 임상",),
     ]
     assert synthesizer.plan.tool_queries.clinicaltrials == ("planner first query",)
     assert answer.trace["planner"]["tool_queries"]["clinicaltrials"] == [
@@ -2011,11 +2012,30 @@ def test_h_execution_normalization_preserves_first_and_second_hop_provenance() -
         "planner linked query"
     ]
     assert answer.trace["clinical_query_normalization"]["execution_queries"] == [
-        "normalized:국내 모집 중 리바로젯 제네릭 임상현황"
+        "normalized:리바로젯 제네릭 임상현황"
     ]
     assert answer.trace["linked_clinical_query_normalization"][
         "execution_queries"
-    ] == ["normalized:리바로젯 관련 임상 Korea RECRUITING"]
+    ] == ["normalized:리바로젯 관련 임상"]
+
+
+def test_h_clinical_anchor_uses_only_user_and_inherited_session_scope() -> None:
+    raw_question = "리바로젯 제네릭 임상현황"
+    followup = "그 결과 임상현황 알려줘"
+    state = SessionState(
+        primary_entity="리바로젯",
+        record_type="clinical_trial",
+        status_filter=("active",),
+        country_filter=("KR",),
+    )
+
+    assert (
+        v4_runtime._deterministic_clinical_query_anchor(raw_question, None)
+        == raw_question
+    )
+    assert v4_runtime._deterministic_clinical_query_anchor(followup, state) == (
+        "그 결과 임상현황 알려줘 리바로젯 진행 중 국내"
+    )
 
 
 def test_h_unresolved_korean_query_fails_typed_instead_of_silent_empty() -> None:

@@ -163,10 +163,14 @@ class V4Runtime:
         plan = _bind_session_state_contract(plan, question, session_state)
         plan = _preserve_period_in_answer_queries(plan)
         plan = fan_out_tier_zero_queries(plan)
+        clinical_query_anchor = _deterministic_clinical_query_anchor(
+            question,
+            session_state,
+        )
         execution_plan, clinical_query_normalization = _execution_plan(
             self._executor,
             plan,
-            clinical_query_anchor=plan.resolved_question,
+            clinical_query_anchor=clinical_query_anchor,
         )
         _emit_progress(
             progress_callback,
@@ -302,7 +306,7 @@ class V4Runtime:
                 self._executor,
                 linked_plan,
                 clinical_query_anchor=_linked_clinical_query_anchor(
-                    plan.resolved_question,
+                    clinical_query_anchor,
                     linked_plan.resolved_question,
                 ),
             )
@@ -1192,6 +1196,19 @@ def _linked_clinical_query_anchor(first_question: str, linked_question: str) -> 
     if not inherited_scope:
         return linked_question
     return f"{linked_question} {inherited_scope}"
+
+
+def _deterministic_clinical_query_anchor(
+    question: str,
+    state: SessionState | None,
+) -> str:
+    normalized = " ".join(question.split())
+    if state is None or not _should_inherit_session_contract(question, state):
+        return normalized
+    return _append_missing_constraints(
+        normalized,
+        _session_query_constraints(state, question),
+    )
 
 
 def _clinical_normalization_trace(
