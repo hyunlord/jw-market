@@ -5,11 +5,13 @@ from datetime import date
 from jw_chat_agent_poc.service.v4.charts import build_grounded_charts
 from jw_chat_agent_poc.service.v4.clinical import normalize_clinical_study
 from jw_chat_agent_poc.service.v4.contracts import (
+    EvidenceEnvelope,
     PlannerOutput,
     RequestedAnswerShape,
     SourceResult,
     ToolQueries,
 )
+from jw_chat_agent_poc.service.v4.gates import apply_v4_gates
 from jw_chat_agent_poc.service.v4.expansion import (
     build_second_hop_expansion,
     expand_parameter_axes,
@@ -25,6 +27,7 @@ from jw_chat_agent_poc.service.v4.lossless_contracts import (
 from jw_chat_agent_poc.service.v4.render_clinical import render_clinical
 from jw_chat_agent_poc.service.v4.narrative_realization import build_narrative_realization
 from jw_chat_agent_poc.service.v4.source_tiers import source_tier
+from jw_chat_agent_poc.service.v4.synthesizer import _select_usable_results
 
 
 def _plan(question: str, *, answer_sources=("hira",)) -> PlannerOutput:
@@ -92,6 +95,62 @@ def test_a_second_hop_uses_observed_products_and_records_truncation() -> None:
     )
     assert expanded.trace["truncated_count"] == 1
     assert expanded.trace["source"] == "nedrug"
+
+
+def test_b_synthesizer_keeps_every_expanded_hira_axis() -> None:
+    plan = _plan("E10~E14 환자수")
+    results = tuple(
+        SourceResult(source="hira", query=f"{code} 환자수", status="ok", payload={"calls": []})
+        for code in ("E10", "E11", "E12", "E13", "E14")
+    )
+
+    assert _select_usable_results(plan, results) == results
+
+
+def test_b_hira_repair_keeps_each_code_bound_to_its_value() -> None:
+    results = tuple(
+        SourceResult(
+            source="hira",
+            query=f"{code} 환자수",
+            status="ok",
+            payload={
+                "calls": [
+                    {
+                        "render_data": {
+                            "request": {"sickCd": code, "year": "2024"},
+                            "items": [
+                                {
+                                    "inpatOpat": "외래",
+                                    "ptntCnt": value,
+                                    "units": {"ptntCnt": "명"},
+                                }
+                            ],
+                        }
+                    }
+                ]
+            },
+            evidence=EvidenceEnvelope(
+                kind="hira",
+                entity_match="EXACT",
+                source_scope="KR",
+                time_match="MATCH",
+                eligible_claims=("patient_count",),
+                causal=False,
+            ),
+        )
+        for code, value in (("E10", "50895"), ("E11", "3585979"), ("E12", "1300"))
+    )
+
+    gated = apply_v4_gates("E10~E12 환자수", "확인된 값을 정리합니다.", results)
+
+    assert "E10 외래 환자수 50,895명" in gated.text
+    assert "E11 외래 환자수 3,585,979명" in gated.text
+    assert "E12 외래 환자수 1,300명" in gated.text
+    assert [item["subject"] for item in gated.trace["requested_hira_surface"]["expected"]] == [
+        "E10",
+        "E11",
+        "E12",
+    ]
 
 
 def test_c_web_is_tier_one_when_not_the_primary_answer_source() -> None:

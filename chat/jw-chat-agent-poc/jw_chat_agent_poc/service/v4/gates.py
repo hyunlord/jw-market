@@ -188,6 +188,7 @@ _HIRA_PATIENT_SURFACE_RE = re.compile(
 
 @dataclass(frozen=True)
 class _HiraSurfaceFact:
+    subject: str
     year: str
     care_type: str
     field: str
@@ -1471,7 +1472,7 @@ def _requested_hira_facts(
     }
 
     facts: list[_HiraSurfaceFact] = []
-    seen: set[tuple[str, str, str, str]] = set()
+    seen: set[tuple[str, str, str, str, str]] = set()
     for result in results:
         if result.source != "hira" or result.status != "ok" or not isinstance(result.payload, dict):
             continue
@@ -1485,6 +1486,10 @@ def _requested_hira_facts(
             if not isinstance(render, dict):
                 continue
             request = render.get("request") if isinstance(render.get("request"), dict) else {}
+            subject = str(request.get("sickCd") or "").strip().upper()
+            if not subject:
+                match = re.search(r"\b[A-Z]\d{2,3}(?:\.\d+)?\b", result.query.upper())
+                subject = match.group(0) if match else result.query.strip()
             request_year = str(request.get("year") or "").strip()
             items = render.get("items")
             if not isinstance(items, list):
@@ -1506,7 +1511,7 @@ def _requested_hira_facts(
                     value = _normalized_hira_value(field, row[field], row.get("units"))
                     if value is None:
                         continue
-                    key = (year, care_type, field, value)
+                    key = (subject, year, care_type, field, value)
                     if key in seen:
                         continue
                     seen.add(key)
@@ -1514,6 +1519,7 @@ def _requested_hira_facts(
                     display_number = _format_decimal(value)
                     facts.append(
                         _HiraSurfaceFact(
+                            subject=subject,
                             year=year,
                             care_type=care_type,
                             field=field,
@@ -1522,7 +1528,10 @@ def _requested_hira_facts(
                             display=f"{display_number}{unit}",
                         )
                     )
-    return sorted(facts, key=lambda fact: (fact.year, fact.care_type, fact.field))
+    return sorted(
+        facts,
+        key=lambda fact: (fact.subject, fact.year, fact.care_type, fact.field),
+    )
 
 
 def _requested_hira_years(question: str) -> set[str]:
@@ -1561,28 +1570,31 @@ def _hira_fact_is_rendered(text: str, fact: _HiraSurfaceFact) -> bool:
     value = re.escape(fact.value)
     year = re.escape(fact.year)
     care_type = re.escape(fact.care_type)
+    subject = re.escape(fact.subject)
     patterns = (
-        rf"{year}년?.{{0,500}}{care_type}.{{0,160}}{label}.{{0,40}}{value}\s*{unit}",
-        rf"{care_type}.{{0,160}}{label}.{{0,40}}{value}\s*{unit}.{{0,500}}{year}년?",
+        rf"{subject}.{{0,160}}{year}년?.{{0,500}}{care_type}.{{0,160}}{label}.{{0,40}}{value}\s*{unit}",
+        rf"{year}년?.{{0,160}}{subject}.{{0,500}}{care_type}.{{0,160}}{label}.{{0,40}}{value}\s*{unit}",
+        rf"{subject}.{{0,500}}{care_type}.{{0,160}}{label}.{{0,40}}{value}\s*{unit}",
     )
     return any(re.search(pattern, compact, re.DOTALL) for pattern in patterns)
 
 
 def _render_hira_surface_facts(facts: list[_HiraSurfaceFact]) -> str:
-    grouped: dict[tuple[str, str], list[_HiraSurfaceFact]] = {}
+    grouped: dict[tuple[str, str, str], list[_HiraSurfaceFact]] = {}
     for fact in facts:
-        grouped.setdefault((fact.year, fact.care_type), []).append(fact)
+        grouped.setdefault((fact.subject, fact.year, fact.care_type), []).append(fact)
     lines = [
-        f"{year}년 {care_type} "
+        f"{year}년 {subject} {care_type} "
         + ", ".join(f"{fact.label} {fact.display}" for fact in group)
         + "으로 확인되었습니다. [출처: HIRA]"
-        for (year, care_type), group in sorted(grouped.items())
+        for (subject, year, care_type), group in sorted(grouped.items())
     ]
     return "\n".join(lines)
 
 
 def _public_hira_fact(fact: _HiraSurfaceFact) -> dict[str, str]:
     return {
+        "subject": fact.subject,
         "year": fact.year,
         "care_type": fact.care_type,
         "metric": fact.label,

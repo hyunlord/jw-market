@@ -1189,18 +1189,15 @@ def _select_usable_results(
     plan: PlannerOutput,
     results: tuple[SourceResult, ...],
 ) -> tuple[SourceResult, ...]:
-    selected: list[SourceResult] = []
-    counts: dict[str, int] = {}
-    for result in sorted(
-        results,
-        key=lambda item: (item.source not in plan.answer_sources, SOURCE_ORDER[item.source]),
-    ):
-        limit = 2 if result.source in plan.answer_sources else 1
-        if counts.get(result.source, 0) >= limit:
-            continue
-        counts[result.source] = counts.get(result.source, 0) + 1
-        selected.append(result)
-    return tuple(selected)
+    return tuple(
+        sorted(
+            results,
+            key=lambda item: (
+                item.source not in plan.answer_sources,
+                SOURCE_ORDER[item.source],
+            ),
+        )
+    )
 
 
 SOURCE_ORDER = {

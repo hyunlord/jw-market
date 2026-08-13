@@ -59,9 +59,18 @@ def mcp_attempt_limit(max_attempts: int) -> Iterator[None]:
 
 
 class McpJsonClient:
-    def __init__(self, url: str, timeout_s: int = 12) -> None:
+    def __init__(
+        self,
+        url: str,
+        timeout_s: float = 12,
+        *,
+        connect_timeout_s: float | None = None,
+        first_attempt_timeout_s: float | None = None,
+    ) -> None:
         self.url = url
         self.timeout_s = timeout_s
+        self.connect_timeout_s = connect_timeout_s
+        self.first_attempt_timeout_s = first_attempt_timeout_s
 
     def call_tool(self, name: str, arguments: dict[str, Any]) -> McpToolResult:
         result = self._post(
@@ -101,14 +110,21 @@ class McpJsonClient:
         last_error: Exception | None = None
         max_attempts = _MCP_MAX_ATTEMPTS.get()
         for attempt in range(max_attempts):
-            requested_timeout_s = MCP_FIRST_ATTEMPT_TIMEOUT_S if attempt == 0 else self.timeout_s
+            requested_timeout_s = (
+                self.first_attempt_timeout_s or MCP_FIRST_ATTEMPT_TIMEOUT_S
+                if attempt == 0
+                else self.timeout_s
+            )
             timeout_s = _remaining_timeout_s(requested_timeout_s)
+            request_timeout: float | tuple[float, float] = timeout_s
+            if self.connect_timeout_s is not None:
+                request_timeout = (min(self.connect_timeout_s, timeout_s), timeout_s)
             try:
                 response = requests.post(
                     self.url,
                     json=payload,
                     headers={"Accept": MCP_ACCEPT_HEADER},
-                    timeout=timeout_s,
+                    timeout=request_timeout,
                 )
                 response.raise_for_status()
                 response.encoding = "utf-8"
