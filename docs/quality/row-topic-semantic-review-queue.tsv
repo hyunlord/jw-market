@@ -1,0 +1,2 @@
+identity	scope_id	brand	accepted_topic_set	candidate_topic	candidate_name	reason	reevaluation_gate	status
+79f82e3fd16bb8a37a3ee4e88e1e3cc5b0ce01f3b1fa2eb53b12323f675f6f71	atc4:A02B2	K-CAB	T2,T3,T5	T1	disease_treatment	Preserve the immutable first-write result for the active topic-set version.	Reevaluate under a new taxonomy and topic-set version.	pending
