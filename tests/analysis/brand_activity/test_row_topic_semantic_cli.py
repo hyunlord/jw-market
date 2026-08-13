@@ -290,6 +290,60 @@ def test_legacy_adapter_maps_occurrence_results_and_preserves_empty_topics(
     )
 
 
+def test_unexpected_row_id_parse_failure_preserves_raw_response() -> None:
+    batch = runner.build_semantic_batches(
+        (_occurrence(11, brand="A"),),
+        topic_set_version="topics-v1",
+        prompt_version="row_topic_v1",
+        wave_no=1,
+        batch_size=150,
+    )[0]
+
+    class FakeRecorder:
+        responses = ('{"assignments":[{"row_id":40351}]}',)
+
+        def clear(self) -> None:
+            pass
+
+    adapter = cli.LegacyGenosSemanticAdapter(
+        prepared=cli.PreparedRun(
+            topic_set_version="topics-v1",
+            rows=(
+                AssignmentInputRow(
+                    row_id=11,
+                    scope_id=batch.scope_id,
+                    brand=batch.brand,
+                    keyword_text="keyword-11",
+                ),
+            ),
+            rubrics={(batch.scope_id, batch.brand): ()},
+        ),
+        client=None,
+        call_budget=cli.CallBudget(cli.MAX_WAVE_CALLS),
+        response_recorder=FakeRecorder(),  # type: ignore[arg-type]
+        classify_legacy=lambda *_args, **_kwargs: {
+            "assignments": [
+                RowTopicAssignment(
+                    row_id=40351,
+                    scope_id=batch.scope_id,
+                    brand=batch.brand,
+                    topic_id="T1",
+                    topic_set_version="topics-v1",
+                    prompt_version="row_topic_v1",
+                    batch_id=batch.batch_id,
+                )
+            ],
+            "calls": 1,
+            "missing_row_ids": [],
+        },
+    )
+
+    with pytest.raises(cli.SemanticResponseParseError) as caught:
+        adapter.classify(batch)
+
+    assert caught.value.raw_responses == FakeRecorder.responses
+
+
 @pytest.mark.parametrize(
     ("message", "expected"),
     (

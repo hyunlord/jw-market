@@ -295,10 +295,15 @@ class LegacyGenosSemanticAdapter:
         topics_by_row: dict[int, set[str]] = {
             occurrence.stage_row_id: set() for occurrence in batch.occurrences
         }
+        raw_responses = (
+            self._response_recorder.responses if self._response_recorder is not None else ()
+        )
         for assignment in assignments:
             if assignment.row_id not in topics_by_row:
                 raise SemanticResponseParseError(
-                    f"legacy adapter returned unexpected row_id {assignment.row_id}"
+                    f"legacy adapter returned unexpected row_id {assignment.row_id}",
+                    calls_used=calls_used,
+                    raw_responses=raw_responses,
                 )
             topics_by_row[assignment.row_id].add(assignment.topic_id)
         return SemanticClassification(
@@ -307,9 +312,7 @@ class LegacyGenosSemanticAdapter:
                 for row_id, topic_ids in sorted(topics_by_row.items())
             ),
             calls_used=calls_used,
-            raw_responses=(
-                self._response_recorder.responses if self._response_recorder is not None else ()
-            ),
+            raw_responses=raw_responses,
         )
 
     def _row_for(self, occurrence: SemanticOccurrence) -> AssignmentInputRow:
