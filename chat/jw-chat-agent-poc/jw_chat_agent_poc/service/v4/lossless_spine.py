@@ -450,7 +450,9 @@ def _deduplicate_sentences(text: str) -> tuple[str, int]:
     seen: set[str] = set()
     removed = 0
     output: list[str] = []
-    sentence_re = re.compile(r"[^.!?\n]+[.!?](?:\s*\[[^\n]+\])?")
+    sentence_re = re.compile(
+        r".+?[.!?](?:\s*\[[^\n]+\])?(?=\s|$)",
+    )
     for line in text.splitlines():
         if line.lstrip().startswith(("#", "|")):
             output.append(line)

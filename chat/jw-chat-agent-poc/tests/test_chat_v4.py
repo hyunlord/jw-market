@@ -1137,7 +1137,7 @@ def test_v4_synthesis_prompt_preserves_source_payload_verbatim() -> None:
     assert '"sickCd": "D693"' in serialized
     assert '"ptntCnt": "9231"' in serialized
     assert "다운로드 후 담당부서로 연락주시기 바랍니다." in serialized
-    assert "## 핵심 답" in system
+    assert "질문에 대한 답을 첫 문장에서 바로 제시" in system
     assert "한 문단은 최대 4문장" in system
     assert "다운로드 안내문" in system
 

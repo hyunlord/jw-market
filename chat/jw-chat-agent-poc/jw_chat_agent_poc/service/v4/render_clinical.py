@@ -4,6 +4,7 @@ from collections.abc import Mapping, Sequence
 from datetime import date
 
 from jw_chat_agent_poc.service.v4.lossless_contracts import EvidenceRecord, EvidenceSet, RenderNode
+from jw_chat_agent_poc.service.v4.narrative_values import public_enum_value
 from jw_chat_agent_poc.service.v4.render_common import display, list_display, table, text
 
 
@@ -57,8 +58,16 @@ def render_clinical(
     column_specs = (
         ("nct_id", "NCT ID", _nct_link),
         ("brief_title", "간략 시험명", lambda payload: display(payload.get("brief_title"))),
-        ("overall_status", "상태", lambda payload: display(payload.get("overall_status"))),
-        ("phases", "단계", lambda payload: list_display(payload.get("phases"))),
+        (
+            "overall_status",
+            "상태",
+            lambda payload: public_enum_value(payload.get("overall_status")),
+        ),
+        (
+            "phases",
+            "단계",
+            lambda payload: _public_list(payload.get("phases")),
+        ),
         ("sponsor", "스폰서", lambda payload: display(payload.get("sponsor"))),
         (
             "last_update_date",
@@ -293,6 +302,12 @@ def _result_text(value: object) -> str:
     if value is False:
         return "미게시"
     return ""
+
+
+def _public_list(value: object) -> str:
+    if not isinstance(value, (list, tuple, set)):
+        return public_enum_value(value)
+    return ", ".join(public_enum_value(item) for item in value)
 
 
 def _is_generic_study(payload: Mapping[str, object]) -> bool:

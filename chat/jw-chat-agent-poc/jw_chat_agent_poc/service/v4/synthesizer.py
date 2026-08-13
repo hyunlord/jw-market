@@ -405,6 +405,7 @@ def _synthesis_messages(
 ) -> list[dict[str, str]]:
     mart = tuple(result for result in results if result.source == "mart")
     external = tuple(result for result in results if result.source != "mart")
+    fact_backed = bool(deterministic_facts)
     history = [
         {"question": turn.question, "answer": turn.answer}
         for turn in tuple(turns)[-3:]
@@ -417,8 +418,14 @@ def _synthesis_messages(
         for block in _deep_analysis_blocks(result)
     ]
     prompt = {
-        "internal_datamart": [_mart_block(result) for result in mart],
-        "external_evidence": [_evidence_packet(result) for result in external],
+        "internal_datamart": [
+            _fact_backed_source_packet(result) if fact_backed else _mart_block(result)
+            for result in mart
+        ],
+        "external_evidence": [
+            _evidence_packet(result, include_detail=not fact_backed)
+            for result in external
+        ],
         "source_mapping": [
             {
                 "source": _PUBLIC_SOURCE[result.source],
@@ -980,7 +987,22 @@ def _topic_particle(subject: str) -> str:
     return "는"
 
 
-def _evidence_packet(result: SourceResult) -> dict[str, Any]:
+def _fact_backed_source_packet(result: SourceResult) -> dict[str, Any]:
+    return {
+        "source": _PUBLIC_SOURCE[result.source],
+        "query": result.query,
+        "status": result.status,
+        "detail": {
+            "omitted": "deterministic_facts contains the rendered evidence",
+        },
+    }
+
+
+def _evidence_packet(
+    result: SourceResult,
+    *,
+    include_detail: bool = True,
+) -> dict[str, Any]:
     evidence = result.evidence
     packet = {
         "source": _PUBLIC_SOURCE[result.source],
@@ -990,7 +1012,11 @@ def _evidence_packet(result: SourceResult) -> dict[str, Any]:
             "source_scope": _SOURCE_SCOPE[result.source],
             "time_match": _time_match(result),
         },
-        "detail": result.payload,
+        "detail": (
+            result.payload
+            if include_detail
+            else {"omitted": "deterministic_facts contains the rendered evidence"}
+        ),
     }
     if result.source == "hira":
         packet["field_labels"] = dict(_HIRA_FIELD_LABELS)

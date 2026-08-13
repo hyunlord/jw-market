@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+import json
 
 import pytest
 
@@ -19,7 +20,10 @@ from jw_chat_agent_poc.service.v4.narrative_realization import (
     build_narrative_realization,
 )
 from jw_chat_agent_poc.service.v4.render_clinical import render_clinical
-from jw_chat_agent_poc.service.v4.synthesizer import _SYNTHESIS_SYSTEM_PROMPT
+from jw_chat_agent_poc.service.v4.synthesizer import (
+    _SYNTHESIS_SYSTEM_PROMPT,
+    _synthesis_messages,
+)
 
 
 def _evidence(source: str, *records: EvidenceRecord) -> EvidenceSet:
@@ -371,6 +375,90 @@ def test_a_composition_deduplicates_repeated_leading_sentence() -> None:
     )
 
     assert composed.text.count(repeated) == 1
+
+
+def test_a_sentence_deduplication_preserves_dotted_source_name() -> None:
+    rendered = DeterministicRender(
+        profile="clinical_portfolio",
+        nodes=(
+            RenderNode(
+                block_id="clinical:detail",
+                record_ids=("ct:1",),
+                text="ClinicalTrials.gov에서 임상시험 14건을 확인했습니다.",
+            ),
+        ),
+    )
+
+    composed = compose_lossless_answer(
+        rendered,
+        "ClinicalTrials.gov에서 임상시험 14건을 확인했습니다.",
+        synthesis_trace={},
+        mode="inject",
+    )
+
+    assert "ClinicalTrials.gov" in composed.text
+    assert "gov에서 임상시험" not in composed.text.replace("ClinicalTrials.gov에서", "")
+    assert composed.text.count("임상시험 14건을 확인했습니다.") == 1
+
+
+def test_a_lossless_synthesis_uses_fact_surface_instead_of_duplicate_raw_payload() -> None:
+    payload = {
+        "calls": [
+            {
+                "render_data": {
+                    "items": [
+                        {
+                            "nct_id": "NCT00000001",
+                            "brief_summary": "가" * 500_000,
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+    result = SourceResult(
+        source="clinicaltrials",
+        query="리바로젯 임상현황",
+        status="ok",
+        payload=payload,
+    )
+
+    messages = _synthesis_messages(
+        _plan("리바로젯 임상현황"),
+        (result,),
+        (),
+        deterministic_facts="NCT00000001은 모집 중이며 3상입니다.",
+    )
+    prompt = json.loads(messages[-1]["content"])
+
+    assert len(messages[-1]["content"]) < 20_000
+    assert prompt["deterministic_facts"].startswith("NCT00000001")
+    assert prompt["external_evidence"][0]["detail"] == {
+        "omitted": "deterministic_facts contains the rendered evidence"
+    }
+
+
+def test_b_clinical_table_localizes_status_and_phase_enums() -> None:
+    record = EvidenceRecord(
+        evidence_id="ct:NCT00000001",
+        source="clinicaltrials",
+        result_kind="structured_clinical_record",
+        payload={
+            "nct_id": "NCT00000001",
+            "brief_title": "시험",
+            "overall_status": "RECRUITING",
+            "phases": ["PHASE3"],
+            "sponsor": "JW중외제약",
+        },
+    )
+
+    nodes, _required = render_clinical(_evidence("clinicaltrials", record), single=True)
+    surface = "\n".join(node.text for node in nodes)
+
+    assert "모집 중" in surface
+    assert "3상" in surface
+    assert "RECRUITING" not in surface
+    assert "PHASE3" not in surface
 
 
 def test_a_short_narrative_for_five_records_records_explicit_reason() -> None:

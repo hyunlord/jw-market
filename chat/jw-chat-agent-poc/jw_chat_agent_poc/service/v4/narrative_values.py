@@ -142,8 +142,13 @@ def display_field_value(record: EvidenceRecord, field: str | None) -> str | None
     if value is None:
         return None
     if ", " in value:
-        return ", ".join(_PUBLIC_ENUMS.get(item.upper(), item) for item in value.split(", "))
-    return _PUBLIC_ENUMS.get(value.upper(), value)
+        return ", ".join(public_enum_value(item) for item in value.split(", "))
+    return public_enum_value(value)
+
+
+def public_enum_value(value: object) -> str:
+    raw = str(value)
+    return _PUBLIC_ENUMS.get(raw.upper(), raw)
 
 
 def record_identity(record: EvidenceRecord, index: int) -> str | None:

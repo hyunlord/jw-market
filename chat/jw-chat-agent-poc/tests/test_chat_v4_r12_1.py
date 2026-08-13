@@ -1681,10 +1681,12 @@ def test_runtime_inject_mode_composes_deterministic_facts_before_commentary(
         synthesizer=Synthesizer(),
     ).answer("리바로젯 임상현황", conversation_id="lossless", turns=())
 
-    assert answer.text.startswith("## 핵심 답\n임상 포트폴리오 해설입니다.")
+    assert answer.text.startswith("임상 포트폴리오 해설입니다.")
     assert "NCT00000001" in answer.text
     assert "## 자동 해설" not in answer.text
-    assert answer.text.index("## 핵심 답") < answer.text.index("## 조사 범위와 완전성")
+    assert answer.text.index("임상 포트폴리오 해설입니다.") < answer.text.index(
+        "## 조사 범위와 완전성"
+    )
     assert answer.trace["lossless_spine"]["answer_mutation"] is True
     assert answer.trace["lossless_spine"]["records_rendered"] == 1
 
@@ -2090,7 +2092,8 @@ def test_exact_nct_detail_builds_one_evidence_record_and_single_record_render() 
     assert evidence_set.records[0].payload["nct_id"] == "NCT05151731"
     assert rendered.profile == "single_record_detail"
     assert "NCT05151731" in rendered.text
-    assert "PHASE3" in rendered.text
+    assert "3상" in rendered.text
+    assert "PHASE3" not in rendered.text
     assert "A randomized pitavastatin trial" in rendered.text
 
 
