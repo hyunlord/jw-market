@@ -6,7 +6,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from pipeline.scripts.ingest_hook import config
+from pipeline.scripts.ingest_hook import config, post_success_cleanup
 from pipeline.scripts.ingest_hook.category_map import ActivationKind, resolve_category
 from pipeline.scripts.ingest_hook.job_launcher import publish_job_name
 from pipeline.scripts.ingest_hook.job_runner import (
@@ -51,6 +51,27 @@ def _snapshot(payload: list[dict]) -> SourceSnapshot:
             )
             for item in payload
         )
+    )
+
+
+def _run_post_success_cleanup(
+    *,
+    connection,
+    source: str,
+    run_id: str,
+    target_db: str,
+) -> None:
+    result = post_success_cleanup.run_post_success_cleanup(
+        connection,
+        serving_db=target_db,
+        source=source,
+        run_id=run_id,
+    )
+    print(
+        "phase=post_success_cleanup status=complete "
+        f"dry_run={str(result.dry_run).lower()} "
+        f"targets={len(result.dropped)} "
+        f"plan_path={result.plan_path} plan_sha256={result.plan_sha256}"
     )
 
 
@@ -241,6 +262,12 @@ def run(
                     f"target_schema={activation.target_db}; "
                     f"refresh_argv={' '.join(spec.refresh_argv)}"
                 ),
+            )
+            _run_post_success_cleanup(
+                connection=writer_conn,
+                source=category,
+                run_id=build_run_id,
+                target_db=activation.target_db,
             )
         row_counts = {
             str(key): int(value)

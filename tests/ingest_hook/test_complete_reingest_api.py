@@ -79,7 +79,8 @@ def test_complete_reingest_api_submits_append_only_attempt(
         "-m",
         "pipeline.scripts.ingest_hook.stage_log_runner",
     ]
-    assert "--runner" not in container["command"]
+    runner_index = container["command"].index("--runner")
+    assert container["command"][runner_index + 1] == "ingest"
     assert container["name"] == "ingest"
 
     attempt_events = [

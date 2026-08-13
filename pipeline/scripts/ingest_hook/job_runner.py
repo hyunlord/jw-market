@@ -1293,6 +1293,7 @@ def run(
     baseline_live_snapshot = None
     baseline_manifest_sha = None
     scan_outcome = None
+    load_result: dict[str, object] = {"epoch_rows": None}
     post_gate_verified = False
     retained_quarters: tuple[str, ...] = ()
     activation_journal = None

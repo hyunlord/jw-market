@@ -316,6 +316,7 @@ def test_production_publish_binds_dashboard_to_real_refresh(
 
     connection = SimpleNamespace(close=lambda: None)
     refresh_calls: list[tuple[str, ...]] = []
+    completion_order: list[str] = []
     monkeypatch.setattr(publish_runner.config, "open_mart_connection", lambda *_args: connection)
     monkeypatch.setattr(publish_runner, "acquire_writer_lock", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(publish_runner, "_verify_publish_integrity", lambda *_args: None)
@@ -334,7 +335,16 @@ def test_production_publish_binds_dashboard_to_real_refresh(
         "_run_commands_with_writer_lock",
         lambda _label, argv, **_kwargs: refresh_calls.append(argv),
     )
-    monkeypatch.setattr(publish_runner, "_emit_completion_signal", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        publish_runner,
+        "_run_post_success_cleanup",
+        lambda **_kwargs: completion_order.append("cleanup"),
+    )
+    monkeypatch.setattr(
+        publish_runner,
+        "_emit_completion_signal",
+        lambda **_kwargs: completion_order.append("signal"),
+    )
     monkeypatch.setattr(
         publish_runner,
         "_measure_publish_source_set",
@@ -369,6 +379,7 @@ def test_production_publish_binds_dashboard_to_real_refresh(
     refresh = next(event for event in events if event.stage == "refresh")
     dashboard = next(event for event in events if event.stage == "dashboard")
     assert refresh_calls
+    assert completion_order == ["cleanup", "signal"]
     assert dashboard.status == "complete"
     assert dashboard.started_at == refresh.started_at
     assert dashboard.finished_at == refresh.finished_at
