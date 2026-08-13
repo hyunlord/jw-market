@@ -25,7 +25,6 @@ from pipeline.scripts.ingest_hook import iqvia_nsa_mart_activation as iqvia_acti
 from pipeline.scripts.ingest_hook import post_success_cleanup
 from pipeline.scripts.ingest_hook import ubist_mart_activation
 from pipeline.scripts.ingest_hook.category_map import CategorySpec, resolve_category
-from pipeline.scripts.ingest_hook.completion_signal import PublishResult
 from pipeline.scripts.ingest_hook.contract import load_manifest, parse_manifest_bytes
 
 
@@ -81,6 +80,13 @@ _SECRET_RE = re.compile(
 
 class CompleteReingestRejected(RuntimeError):
     """A complete reingest attempt failed a prerequisite gate."""
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalPublishResult:
+    status: str
+    attempts: int
+    reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1045,7 +1051,7 @@ def _publish_reingest_terminal(
     attempts: int,
     opener=urllib.request.urlopen,
     sleeper=time.sleep,
-) -> PublishResult:
+) -> TerminalPublishResult:
     attempts = min(max(int(attempts), 3), 5)
     body = json.dumps(
         payload,
@@ -1065,13 +1071,13 @@ def _publish_reingest_terminal(
             with opener(request, timeout=15) as response:
                 status = int(getattr(response, "status", 0))
             if 200 <= status < 300:
-                return PublishResult("published", index + 1)
+                return TerminalPublishResult("published", index + 1)
             last_reason = f"HTTP {status}"
         except Exception as exc:  # queue startup reconciliation is the recovery path
             last_reason = _reason(exc)
         if index + 1 < attempts:
             sleeper(float(2**index))
-    return PublishResult("failed", attempts, last_reason)
+    return TerminalPublishResult("failed", attempts, last_reason)
 
 
 def _parse_scope_json(raw: str) -> dict[str, object]:

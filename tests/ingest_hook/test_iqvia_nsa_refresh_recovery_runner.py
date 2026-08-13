@@ -107,7 +107,6 @@ def test_recovery_reuses_preserved_tables_and_runs_refresh_only(
     monkeypatch.setattr(runner.activation, "restore_failed_publication_atomically", lambda *_a, **_k: observed.append("restore"))
     monkeypatch.setattr(runner.publication, "mark_publication_recovered", lambda *_a, **_k: observed.append("provenance"))
     monkeypatch.setattr(runner.job_runner, "_run_commands_with_writer_lock", lambda *_a, **_k: observed.append("refresh"))
-    monkeypatch.setattr(runner.job_runner, "_emit_completion_signal", lambda **kwargs: observed.append(f"signal:{kwargs['run_id']}"))
     monkeypatch.setattr(runner.ubist_activation, "acquire_writer_lock", lambda *_a, **_k: observed.append("lock"))
     monkeypatch.setattr(runner.ubist_activation, "release_writer_lock", lambda *_a, **_k: observed.append("unlock"))
     monkeypatch.setattr(runner.ubist_activation, "require_writer_lock_owner", lambda *_a, **_k: None)
@@ -127,7 +126,6 @@ def test_recovery_reuses_preserved_tables_and_runs_refresh_only(
         "promote",
         "refresh",
         "provenance",
-        "signal:recovery-1",
         "unlock",
     ]
     assert ledger.completed == {"nsa.xlsx": 891567}
@@ -155,7 +153,6 @@ def test_recovery_resumes_an_already_promoted_table_group_without_renaming(
     )
     monkeypatch.setattr(runner.publication, "mark_publication_recovered", lambda *_a, **_k: observed.append("provenance"))
     monkeypatch.setattr(runner.job_runner, "_run_commands_with_writer_lock", lambda *_a, **_k: observed.append("refresh"))
-    monkeypatch.setattr(runner.job_runner, "_emit_completion_signal", lambda **_kwargs: observed.append("signal"))
     monkeypatch.setattr(runner.ubist_activation, "acquire_writer_lock", lambda *_a, **_k: observed.append("lock"))
     monkeypatch.setattr(runner.ubist_activation, "release_writer_lock", lambda *_a, **_k: observed.append("unlock"))
     monkeypatch.setattr(runner.ubist_activation, "require_writer_lock_owner", lambda *_a, **_k: None)
@@ -171,7 +168,7 @@ def test_recovery_resumes_an_already_promoted_table_group_without_renaming(
         refresh_argv=("refresh",),
     )
 
-    assert observed == ["lock", "resume", "refresh", "provenance", "signal", "unlock"]
+    assert observed == ["lock", "resume", "refresh", "provenance", "unlock"]
     assert ledger.completed == {"nsa.xlsx": 891567}
     interrupted_records = [
         record[-1]

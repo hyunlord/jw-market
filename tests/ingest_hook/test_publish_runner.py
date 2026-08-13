@@ -342,11 +342,6 @@ def test_production_publish_binds_dashboard_to_real_refresh(
     )
     monkeypatch.setattr(
         publish_runner,
-        "_emit_completion_signal",
-        lambda **_kwargs: completion_order.append("signal"),
-    )
-    monkeypatch.setattr(
-        publish_runner,
         "_measure_publish_source_set",
         lambda _category, evidence: evidence,
     )
@@ -379,7 +374,7 @@ def test_production_publish_binds_dashboard_to_real_refresh(
     refresh = next(event for event in events if event.stage == "refresh")
     dashboard = next(event for event in events if event.stage == "dashboard")
     assert refresh_calls
-    assert completion_order == ["cleanup", "signal"]
+    assert completion_order == ["cleanup"]
     assert dashboard.status == "complete"
     assert dashboard.started_at == refresh.started_at
     assert dashboard.finished_at == refresh.finished_at

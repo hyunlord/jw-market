@@ -48,7 +48,7 @@ def test_v1_happy_path_records_stages_in_code_order(service, bucket, tmp_path):
     # order is the declared code order
     assert [e.stage for e in events] == [
         "g3", "load", "load_verify", "mart_build", "sigma", "post_gate",
-        "mart_publish", "refresh", "signal",
+        "mart_publish", "refresh",
     ]
     assert by_stage["g3"].status == STAGE_COMPLETE
     assert by_stage["load"].status == STAGE_COMPLETE
@@ -84,12 +84,10 @@ def test_v1_stages_exposed_on_status_api(service, client, bucket, tmp_path):
     stage_names = [s["stage"] for s in status["stages"]]
     assert stage_names == [
         "job_submit", "g3", "load", "load_verify", "mart_build", "sigma", "post_gate",
-        "mart_publish", "refresh", "signal",
+        "mart_publish", "refresh",
     ]
     assert status["current_stage"] is None  # completed run has no in-flight stage
-    assert len(status["signals"]) == 1
-    assert status["signals"][0]["event"] == "complete"
-    assert status["signals"][0]["mode"] == "staging"
+    assert status["signals"] == []
 
 
 def test_status_exposes_deterministic_expected_stage_contract(client, bucket):
@@ -118,7 +116,6 @@ def test_status_exposes_deterministic_expected_stage_contract(client, bucket):
         "mart_publish",
         "refresh",
         "dashboard",
-        "signal",
     ]
     assert all(item["applicable"] is True for item in status["expected_stages"])
 
@@ -159,7 +156,7 @@ def test_terminal_run_ignores_stale_running_stage_from_prior_run(
 
     assert status["status"] == "failed"
     assert status["current_stage"] is None
-    assert len(status["expected_stages"]) == 11
+    assert len(status["expected_stages"]) == 10
 
 
 def test_running_run_reports_only_its_own_current_stage(sqlite_ledger, bucket):
@@ -194,7 +191,7 @@ def test_running_run_reports_only_its_own_current_stage(sqlite_ledger, bucket):
 
     assert status["status"] == "running"
     assert status["current_stage"] == "refresh"
-    assert len(status["expected_stages"]) == 11
+    assert len(status["expected_stages"]) == 10
 
 
 def test_running_run_reports_startup_recovery_stage(sqlite_ledger, bucket):
@@ -283,7 +280,6 @@ def test_expected_stage_contract_contains_only_keyword_stages(client, bucket):
         "mart_publish",
         "topic_extraction",
         "dashboard",
-        "signal",
     ]
     assert all(item["applicable"] is True for item in status["expected_stages"])
 
@@ -316,11 +312,8 @@ def test_v2_g3_failure_records_g3_failed_with_reason(sqlite_ledger, bucket, tmp_
     assert g3.status == STAGE_FAILED
     assert "G3Error" in (g3.reason or "")
     # no later stage should be recorded (failure stopped the run at g3)
-    assert [e.stage for e in events] == ["g3", "signal"]
-    signals = sqlite_ledger.signal_events("2026-07", "ubist", sha)
-    assert len(signals) == 1
-    assert signals[0].event == "gate_failed"
-    assert "G3Error" in (signals[0].payload["failure_reason"] or "")
+    assert [e.stage for e in events] == ["g3"]
+    assert sqlite_ledger.signal_events("2026-07", "ubist", sha) == []
 
 
 def test_v2_gate_failure_records_post_gate_failed(sqlite_ledger, bucket, tmp_path):
@@ -338,10 +331,7 @@ def test_v2_gate_failure_records_post_gate_failed(sqlite_ledger, bucket, tmp_pat
     assert by_stage["load"].status == STAGE_COMPLETE
     assert by_stage["post_gate"].status == STAGE_FAILED
     assert "PG-1" in (by_stage["post_gate"].reason or "")
-    signals = sqlite_ledger.signal_events("2026-07", "ubist", sha)
-    assert len(signals) == 1
-    assert signals[0].event == "gate_failed"
-    assert "PG-1" in (signals[0].payload["failure_reason"] or "")
+    assert sqlite_ledger.signal_events("2026-07", "ubist", sha) == []
 
 
 def test_v5_retry_accumulates_per_run_id(sqlite_ledger):

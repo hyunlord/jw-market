@@ -295,7 +295,6 @@ def test_numeric_reingest_runs_core_stages_without_weekly_agent_path(
         "mart_publish",
         "refresh",
         "dashboard",
-        "signal",
     ]
     assert [stage for stage in _complete_stage_names(ledger) if stage.startswith("agent")] == []
     assert not any(name == "agent_refresh" for name, _ in calls)
@@ -381,7 +380,6 @@ def test_iqvia_numeric_reingest_uses_attempt_raw_build_and_real_refresh(
         "mart_publish",
         "refresh",
         "dashboard",
-        "signal",
     ]
 
 
@@ -469,11 +467,11 @@ def test_refresh_failure_restores_numeric_publication_under_writer_lock(
     [
         (
             "iqvia_csd_channel",
-            ["g3", "load", "load_verify", "mart_publish", "context_bridge", "dashboard", "signal"],
+            ["g3", "load", "load_verify", "mart_publish", "context_bridge", "dashboard"],
         ),
         (
             "iqvia_csd_keyword",
-            ["g3", "load", "load_verify", "post_gate", "mart_publish", "topic_extraction", "dashboard", "signal"],
+            ["g3", "load", "load_verify", "post_gate", "mart_publish", "topic_extraction", "dashboard"],
         ),
     ],
 )

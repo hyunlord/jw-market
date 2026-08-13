@@ -9,7 +9,6 @@ from fastapi.testclient import TestClient
 
 from pipeline.scripts.ingest_hook import job_runner
 from pipeline.scripts.ingest_hook.app import IngestService, create_app
-from pipeline.scripts.ingest_hook.completion_signal import PublishResult
 from pipeline.scripts.ingest_hook.job_launcher import render_job
 
 
@@ -1133,7 +1132,6 @@ def test_terminal_callback_promotes_next_only_after_slot_release(
         "mart_publish",
         "refresh",
         "dashboard",
-        "signal",
     ]
 
 
@@ -1230,59 +1228,6 @@ def test_terminal_callback_rejects_unknown_identity_without_promotion(
     assert response.status_code == 404
     assert sqlite_ledger.status(*queued).status == "queued"
     assert fake_transport.submitted == []
-
-
-def test_runner_publishes_terminal_signal_to_internal_drain_callback(
-    monkeypatch,
-    sqlite_ledger,
-) -> None:
-    calls: list[tuple[str, str]] = []
-    monkeypatch.setattr(
-        "pipeline.scripts.ingest_hook.config.completion_webhook",
-        lambda: ("", 3),
-    )
-    monkeypatch.setattr(
-        "pipeline.scripts.ingest_hook.config.queue_drain_webhook",
-        lambda: ("http://jw-ingest-hook/ingest/terminal", 3),
-    )
-    monkeypatch.setattr(
-        "pipeline.scripts.ingest_hook.completion_signal.publish",
-        lambda signal, *, endpoint, attempts: (
-            calls.append((signal.event, endpoint))
-            or PublishResult("published", 1, None)
-        ),
-    )
-    tracker_reasons: list[str] = []
-    tracker = type(
-        "Tracker",
-        (),
-        {
-            "complete": lambda _self, _stage, *, reason: tracker_reasons.append(
-                reason
-            )
-        },
-    )()
-
-    job_runner._emit_completion_signal(
-        ledger=sqlite_ledger,
-        tracker=tracker,
-        identity=("2026-06", "ubist", "a" * 64),
-        run_id="run",
-        event="failed",
-        mode="staging",
-        rows_before=0,
-        rows_after=0,
-        rows_loaded=0,
-        periods=set(),
-        started_at="2026-07-29T00:00:00+00:00",
-        failure_reason="injected failure",
-    )
-
-    assert calls == [
-        ("failed", ""),
-        ("failed", "http://jw-ingest-hook/ingest/terminal"),
-    ]
-    assert "queue_drain=published" in tracker_reasons[0]
 
 
 def test_rendered_job_inherits_internal_drain_callback(monkeypatch) -> None:
