@@ -916,7 +916,7 @@ def test_v4_synthesizer_sends_detail_rows_in_question_first_layout() -> None:
         def complete(self, messages, *, budget_s=None, max_tokens=None) -> str:
             self.messages = messages
             assert budget_s == 15.0
-            assert max_tokens == 8192
+            assert max_tokens == 16384
             return "2024년 D693 외래 환자수는 12,345명입니다. [출처: HIRA]"
 
     client = Client()
@@ -2280,11 +2280,11 @@ def test_v4_synthesizer_transport_preserves_finish_reason_and_usage(monkeypatch)
 def test_v4_synthesizer_uses_grounded_fallback_for_length_cutoff() -> None:
     class Client:
         def complete_detailed(self, _messages, *, budget_s=None, max_tokens=None):
-            assert max_tokens == 8192
+            assert max_tokens == 16384
             return v4_llm.CompletionResult(
                 text="잘린 답변입니다",
                 finish_reason="length",
-                usage={"completion_tokens": 8192},
+                usage={"completion_tokens": 16384},
                 elapsed_ms=12_000,
             )
 
@@ -2311,6 +2311,23 @@ def test_v4_synthesizer_uses_grounded_fallback_for_length_cutoff() -> None:
     assert "2024년 입원 환자수는 1,606명(청구 실인원)" in outcome.text
     assert outcome.trace["finish_reason"] == "length"
     assert outcome.trace["fallback_reason"] == "length"
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    ((None, 16384), ("12288", 12288), ("4096", 8192), ("bogus", 16384)),
+)
+def test_v4_synthesizer_output_budget_is_configurable_and_bounded(
+    monkeypatch,
+    configured: str | None,
+    expected: int,
+) -> None:
+    if configured is None:
+        monkeypatch.delenv("V4_SYNTHESIZER_MAX_TOKENS", raising=False)
+    else:
+        monkeypatch.setenv("V4_SYNTHESIZER_MAX_TOKENS", configured)
+
+    assert v4_synthesizer._synthesis_max_tokens() == expected
 
 
 def test_hira_year_calls_are_parallel_and_retry_only_failures() -> None:

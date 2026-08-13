@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -106,6 +107,9 @@ _SYNTHESIS_SYSTEM_PROMPT = (
     " `required_hira_surface`가 있으면 모든 항목을 첫 합성에서 본문에 정확히 포함한다."
 )
 _CAUSE_MARKERS = ("원인", "왜 ", "이유")
+_DEFAULT_SYNTHESIS_MAX_TOKENS = 16384
+_MIN_SYNTHESIS_MAX_TOKENS = 8192
+_MAX_SYNTHESIS_MAX_TOKENS = 32768
 
 
 @dataclass(frozen=True)
@@ -148,6 +152,7 @@ class V4Synthesizer:
         deterministic_facts: str | None = None,
     ) -> SynthesisOutcome:
         observed_on = _current_kst_date()
+        synthesis_max_tokens = _synthesis_max_tokens()
         usable = _select_usable_results(plan, tuple(
             result
             for result in results
@@ -198,7 +203,7 @@ class V4Synthesizer:
                 self._client,
                 messages,
                 budget_s=budget_s,
-                max_tokens=8192,
+                max_tokens=synthesis_max_tokens,
             )
             answer = completion.text.strip()
         except Exception as exc:  # noqa: BLE001 - a grounded fallback is preferable to a 500
@@ -291,7 +296,7 @@ class V4Synthesizer:
                     self._client,
                     retry_messages,
                     budget_s=min(30.0, budget_s),
-                    max_tokens=8192,
+                    max_tokens=synthesis_max_tokens,
                 )
                 retried_answer = retried.text.strip()
                 if retried_answer and retried.finish_reason != "length":
@@ -344,6 +349,7 @@ class V4Synthesizer:
                     len(json.dumps(result.payload, ensure_ascii=False, default=str))
                     for result in usable
                 ),
+                "max_tokens": synthesis_max_tokens,
                 "coverage_notices": list(_coverage_notices(usable)),
                 "requested_hira_surface_retry": {
                     "attempted": hira_retry_attempted,
@@ -373,6 +379,21 @@ class V4Synthesizer:
                 "model": completion.model if completion else "not_applicable",
             },
         )
+
+
+def _synthesis_max_tokens() -> int:
+    raw = os.environ.get(
+        "V4_SYNTHESIZER_MAX_TOKENS",
+        str(_DEFAULT_SYNTHESIS_MAX_TOKENS),
+    )
+    try:
+        configured = int(raw)
+    except ValueError:
+        configured = _DEFAULT_SYNTHESIS_MAX_TOKENS
+    return min(
+        _MAX_SYNTHESIS_MAX_TOKENS,
+        max(_MIN_SYNTHESIS_MAX_TOKENS, configured),
+    )
 
 
 def _complete_detailed(
