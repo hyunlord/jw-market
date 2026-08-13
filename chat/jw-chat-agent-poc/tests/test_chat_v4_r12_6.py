@@ -1154,3 +1154,80 @@ def test_b_mart_is_available_for_inspection_without_changing_market_surface() ->
     assert len(evidence_sets) == 1
     assert evidence_sets[0].source == "mart"
     assert evidence_sets[0].records[0].payload["brand"] == "리바로"
+
+
+@pytest.mark.parametrize(
+    ("call", "expected_sales"),
+    (
+        (
+            {
+                "tool": "get_market_landscape",
+                "render_data": {
+                    "anchor_brand": "리바로젯",
+                    "period": "2026-06",
+                    "brand_sales_krw": 12_453_782_153.7,
+                    "level_segments": [
+                        {"brand": "리바로젯", "ms_recent_pct": 5.3951}
+                    ],
+                },
+            },
+            12_453_782_153.7,
+        ),
+        (
+            {
+                "tool": "entity_bundle",
+                "entity_bundle": {
+                    "anchor": "리바로젯",
+                    "members": [
+                        {
+                            "brand": "리바로젯",
+                            "role": "target",
+                            "render_data": {
+                                "period": "2026-06",
+                                "value": 12_453_782_153.7,
+                                "ms_recent_pct": 5.3951,
+                            },
+                        }
+                    ],
+                },
+            },
+            12_453_782_153.7,
+        ),
+        (
+            {
+                "tool": "cause_card_data",
+                "render_data": {
+                    "ei_ms": {
+                        "brand": "리바로젯",
+                        "period": "2026-06",
+                        "value": 12_453_782_153.7,
+                        "ms_recent_pct": 5.3951,
+                    }
+                },
+            },
+            12_453_782_153.7,
+        ),
+    ),
+)
+def test_a_mart_wrappers_promote_public_identity_and_metrics(
+    call: dict[str, object],
+    expected_sales: float,
+) -> None:
+    result = SourceResult(
+        source="mart",
+        query="리바로젯 특허현황",
+        status="ok",
+        payload={"calls": [call]},
+    )
+
+    (evidence_set,) = build_evidence_sets(
+        _plan("리바로젯 특허현황"),
+        (result,),
+        observed_on=date(2026, 8, 14),
+    )
+    record = evidence_set.records[0]
+
+    assert record.payload["brand"] == "리바로젯"
+    assert record.payload["period"] == "2026-06"
+    assert record.payload["sales_krw"] == expected_sales
+    assert record.payload["market_share"] == 5.3951

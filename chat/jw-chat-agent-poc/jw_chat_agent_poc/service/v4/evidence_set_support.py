@@ -96,7 +96,9 @@ def generic_call_records(source: str, call: Mapping[str, Any]) -> list[dict[str,
 
 def normalize_generic_record(source: str, raw_record: Mapping[str, Any]) -> dict[str, Any]:
     record = dict(raw_record)
-    if source == "web":
+    if source == "mart":
+        record.update(_mart_public_fields(record))
+    elif source == "web":
         summary = text(record.get("summary") or record.get("snippet") or record.get("content"))
         bounded_summary, summary_truncated = _bounded_text(summary, limit=800)
         url = text(record.get("url"))
@@ -139,6 +141,60 @@ def normalize_generic_record(source: str, raw_record: Mapping[str, Any]) -> dict
             }
         )
     return record
+
+
+def _mart_public_fields(record: Mapping[str, Any]) -> dict[str, Any]:
+    tool = text(record.get("tool"))
+    render_data = mapping(record.get("render_data"))
+    candidate: Mapping[str, Any] = render_data or record
+    brand = text(candidate.get("anchor_brand") or candidate.get("brand"))
+
+    if tool == "entity_bundle":
+        bundle = mapping(record.get("entity_bundle"))
+        members = mapping_list(bundle.get("members"))
+        target = next(
+            (
+                member
+                for member in members
+                if text(member.get("role")).casefold() == "target"
+            ),
+            members[0] if members else {},
+        )
+        candidate = mapping(target.get("render_data"))
+        brand = text(target.get("brand") or bundle.get("anchor"))
+    elif mapping(candidate.get("ei_ms")):
+        candidate = mapping(candidate.get("ei_ms"))
+        brand = text(candidate.get("brand"))
+
+    segment = next(
+        (
+            item
+            for item in mapping_list(candidate.get("level_segments"))
+            if text(item.get("brand")) == brand
+        ),
+        {},
+    )
+    sales = _first_present(candidate, "sales_krw", "brand_sales_krw", "value")
+    market_share = _first_present(candidate, "ms_recent_pct")
+    if market_share is None:
+        market_share = _first_present(segment, "ms_recent_pct")
+    return {
+        key: value
+        for key, value in {
+            "brand": brand or None,
+            "period": text(candidate.get("period")) or None,
+            "sales_krw": sales,
+            "market_share": market_share,
+        }.items()
+        if value not in (None, "")
+    }
+
+
+def _first_present(mapping_value: Mapping[str, Any], *keys: str) -> Any | None:
+    return next(
+        (mapping_value[key] for key in keys if mapping_value.get(key) is not None),
+        None,
+    )
 
 
 def _publisher_from_url(url: str) -> str | None:
