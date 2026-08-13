@@ -452,7 +452,7 @@ def test_clinical_client_discloses_safety_cap_without_silent_truncation() -> Non
 def test_clinical_normalizer_preserves_all_named_fields_without_inference() -> None:
     record = normalize_clinical_study(_study("NCT00000001"), matched_queries=("q1",))
 
-    assert record == {
+    expected = {
         "nct_id": "NCT00000001",
         "brief_title": "Brief NCT00000001",
         "official_title": "Official NCT00000001",
@@ -473,6 +473,11 @@ def test_clinical_normalizer_preserves_all_named_fields_without_inference() -> N
         "matched_query": ["q1"],
         "url": "https://clinicaltrials.gov/study/NCT00000001",
     }
+    assert {key: record[key] for key in expected} == expected
+    assert "primary_outcomes" in record
+    assert "secondary_outcomes" in record
+    assert "brief_summary" in record
+    assert "eligibility_criteria" in record
     assert "success" not in record
     assert "approval" not in record
 
@@ -1027,10 +1032,9 @@ def test_clinical_portfolio_keeps_full_table_and_major_cards_above_twelve() -> N
         observed_on=date(2026, 8, 12),
     )
 
-    assert rendered.coverage.records_rendered == 10
-    assert sum(f"NCT{index:08d}" in rendered.text for index in range(1, 14)) == 10
-    assert "외 3건" in rendered.text
-    assert "### NCT" not in rendered.text
+    assert rendered.coverage.records_rendered == 13
+    assert sum(f"NCT{index:08d}" in rendered.text for index in range(1, 14)) == 13
+    assert "외 3건" not in rendered.text
 
 
 def test_lossless_timeout_composition_keeps_full_clinical_facts() -> None:

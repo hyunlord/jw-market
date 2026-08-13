@@ -42,7 +42,7 @@ def _prepared_parameters(question: str, resolution: SimpleNamespace) -> dict[str
     return compile_clinical_query(prepared[0][1]).parameters
 
 
-def test_a_combo_uses_and_and_default_active_statuses_deterministically() -> None:
+def test_a_combo_uses_and_without_an_implicit_status_filter_deterministically() -> None:
     question = "리바로젯 제네릭 임상현황"
 
     first = _prepared_parameters(question, _resolution())
@@ -50,21 +50,17 @@ def test_a_combo_uses_and_and_default_active_statuses_deterministically() -> Non
 
     assert first == second
     assert first["query.intr"] == "ezetimibe AND pitavastatin"
-    assert first["filter.overallStatus"] == "|".join(
-        DEFAULT_ACTIVE_CLINICAL_STATUSES
-    )
+    assert "filter.overallStatus" not in first
 
 
-def test_a_single_ingredient_keeps_a_single_intervention_term() -> None:
+def test_a_single_ingredient_keeps_a_single_intervention_term_without_status_filter() -> None:
     parameters = _prepared_parameters(
         "리바로 임상현황",
         _resolution("리바로", ("pitavastatin",)),
     )
 
     assert parameters["query.intr"] == "pitavastatin"
-    assert parameters["filter.overallStatus"] == "|".join(
-        DEFAULT_ACTIVE_CLINICAL_STATUSES
-    )
+    assert "filter.overallStatus" not in parameters
 
 
 def test_a_explicit_historical_scope_replaces_default_active_statuses() -> None:
@@ -121,7 +117,6 @@ def test_b_client_audits_status_filter_and_records_relevance_exclusions() -> Non
     seen: list[dict[str, Any]] = []
     responses = iter(
         (
-            {"totalCount": 583, "studies": []},
             {
                 "totalCount": 3,
                 "studies": [
@@ -159,11 +154,8 @@ def test_b_client_audits_status_filter_and_records_relevance_exclusions() -> Non
     )
 
     assert "filter.overallStatus" not in seen[0]["params"]
-    assert seen[0]["params"]["pageSize"] == 1
-    assert seen[1]["params"]["filter.overallStatus"] == "|".join(
-        DEFAULT_ACTIVE_CLINICAL_STATUSES
-    )
-    assert result.total_unfiltered == 583
+    assert seen[0]["params"]["pageSize"] == 100
+    assert result.total_unfiltered == 3
     assert result.total_reported == 3
     assert result.records_received == 3
     assert result.records_unique == 3
@@ -306,19 +298,21 @@ def test_c_portfolio_renders_one_deterministic_table_capped_at_ten() -> None:
     nodes, _required = render_clinical(evidence, single=False)
     record_node = next(node for node in nodes if node.block_id == "clinical:records")
 
-    assert [node.block_id for node in nodes] == ["clinical:coverage", "clinical:records"]
-    assert len(record_node.record_ids) == 10
+    assert [node.block_id for node in nodes] == [
+        "clinical:coverage",
+        "clinical:records",
+        "clinical:record-details",
+    ]
+    assert len(record_node.record_ids) == 11
     assert record_node.record_ids[0] == "ct:NCT00000011"
     assert "NCT00000011" in record_node.text
-    assert "외 1건" in record_node.text
-    assert "제네릭·생동성 관련 시험 우선" in record_node.text
-    assert "진행 중·모집 중 시험 기준" in nodes[0].text
-    assert "완료·종료 시험 제외" in nodes[0].text
+    assert "외 1건" not in record_node.text
+    assert "제네릭·생동성 관련 시험 우선" not in record_node.text
     assert "원천 검색 583건" in nodes[0].text
     assert "활성 상태 기준 11건" in nodes[0].text
-    assert "상세 표시 10건" in nodes[0].text
+    assert "상세 표시 11건" in nodes[0].text
     assert "### NCT" not in record_node.text
-    assert record_node.text.count("\n|") == 12
+    assert record_node.text.count("\n|") == 13
 
 
 def test_c_single_record_detail_is_not_truncated() -> None:
@@ -662,15 +656,15 @@ def test_e_patent_render_prioritizes_registered_and_caps_domestic_table() -> Non
     coverage = next(node.text for node in nodes if node.block_id == "patent:coverage")
     kr_node = next(node for node in nodes if node.block_id == "patent:kr-primary")
 
-    assert len(kr_node.record_ids) == 10
+    assert len(kr_node.record_ids) == 12
     assert kr_node.record_ids[:2] == ("patent:kr:12", "patent:kr:2")
     assert "특허구분" in kr_node.text
     assert "등록 상태 2건" in kr_node.text
-    assert "외 2건" in kr_node.text
+    assert "외 2건" not in kr_node.text
     assert "등록 우선" in kr_node.text
     assert (
         "국내 정본: 원천 수신 274건 → 제품특허 12건 → "
-        "고유 특허번호 12건 → 상세 표시 10건"
+        "고유 특허번호 12건 → 상세 표시 12건"
     ) in coverage
     assert "기타특허 262건은 등재특허가 아니어서 정본 표에서 제외" in coverage
     assert "모두 소멸" not in "\n".join(node.text for node in nodes)

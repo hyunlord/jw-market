@@ -3151,12 +3151,12 @@ def test_v4_source_progress_query_hides_internal_identifiers() -> None:
     assert "slot id 17" not in detail
 
 
-def test_query_plan_progress_limits_expanded_intents_to_five() -> None:
+def test_query_plan_progress_lists_every_expanded_intent() -> None:
     detail = __import__(
         "jw_chat_agent_poc.service.v4.runtime", fromlist=["_expanded_intents_detail"]
     )._expanded_intents_detail(("시장", "허가", "임상", "환자수", "특허", "급여", "안전성"))
 
-    assert detail == "- 시장\n- 허가\n- 임상\n- 환자수\n- 특허\n- 외 2개"
+    assert detail == "- 시장\n- 허가\n- 임상\n- 환자수\n- 특허\n- 급여\n- 안전성"
 
 
 def test_runtime_runs_one_web_gap_fill_for_missing_hira_periods() -> None:
@@ -3615,7 +3615,7 @@ def test_v4_sources_render_one_decoded_title_link_per_public_url() -> None:
     assert all(line.count("](") == 1 for line in url_lines)
 
 
-def test_v4_tavily_retries_transport_once_but_not_empty_or_parse_failure(
+def test_v4_tavily_does_not_retry_read_timeout_empty_or_parse_failure(
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("WEB_SEARCH_PROVIDER", "tavily_mcp")
@@ -3648,9 +3648,9 @@ def test_v4_tavily_retries_transport_once_but_not_empty_or_parse_failure(
         search_depth="advanced",
     )
 
-    assert result.status == "live"
-    assert len(calls) == 2
-    assert result.render_data["v4_tavily_policy"]["attempts"] == 2
+    assert result.status == "error"
+    assert len(calls) == 1
+    assert result.render_data["v4_tavily_policy"]["attempts"] == 1
 
     for response in (
         ExternalCall(

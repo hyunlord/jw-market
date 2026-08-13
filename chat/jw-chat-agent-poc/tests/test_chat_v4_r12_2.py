@@ -1135,7 +1135,7 @@ def test_e_source_tiers_preserve_primary_then_auxiliary_order() -> None:
 
     assert source_tier(plan, "hira") == 0
     assert source_tier(plan, "openfda") == 1
-    assert source_tier(plan, "web") == 2
+    assert source_tier(plan, "web") == 1
 
     funnel = tier_funnel(
         plan,
@@ -1614,11 +1614,7 @@ def test_h_planner_supplement_requires_token_grounding_and_explicit_filters() ->
 
     assert len(parameters) == 1
     assert all("query.locn" not in item for item in parameters)
-    assert all(
-        item["filter.overallStatus"]
-        == "NOT_YET_RECRUITING|RECRUITING|ACTIVE_NOT_RECRUITING"
-        for item in parameters
-    )
+    assert all("filter.overallStatus" not in item for item in parameters)
 
 
 def test_h_question_explicit_non_korean_scope_is_preserved() -> None:

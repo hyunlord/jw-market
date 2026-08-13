@@ -176,7 +176,16 @@ def test_a_t2_enumerates_every_supported_field_before_applying_cap() -> None:
     t2_claims = tuple(
         item for item in realization.claims if item.claim.claim_type == "T2"
     )
-    assert {item.claim.operator_id for item in t2_claims} == ALLOWED_T2_OPERATORS
+    assert {item.claim.operator_id for item in t2_claims} == {
+        "COUNT",
+        "GROUP_COUNT",
+        "COMMON_VALUE",
+        "ORDER_BY_TIME",
+        "SIMULTANEITY",
+        "COMPARE_NUMERIC",
+        "RANGE",
+    }
+    assert {item.claim.operator_id for item in t2_claims} <= ALLOWED_T2_OPERATORS
     assert {
         item.recomputation.field_path
         for item in t2_claims
@@ -331,8 +340,8 @@ def test_b_micro_narrative_discloses_records_left_to_the_lossless_table() -> Non
         tuple(record.evidence_id for record in evidence.records),
     )
 
-    assert realization.unnarrated_record_count == 2
-    assert "나머지 2건은 아래 정본 표" in realization.nodes[0].text
+    assert realization.unnarrated_record_count == 0
+    assert "나머지 2건은 아래 정본 표" not in realization.nodes[0].text
 
 
 def test_b_micro_narrative_does_not_reference_a_table_for_unrendered_records() -> None:
@@ -364,7 +373,7 @@ def test_b_micro_narrative_does_not_reference_a_table_for_unrendered_records() -
         table_record_ids=(clinical.records[0].evidence_id,),
     )
 
-    assert realization.unnarrated_record_count == 2
+    assert realization.unnarrated_record_count == 0
     assert "아래 정본 표" not in realization.nodes[0].text
 
 
