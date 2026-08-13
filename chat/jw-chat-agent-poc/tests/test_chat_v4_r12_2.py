@@ -190,6 +190,33 @@ def test_a_binding_removes_headings_left_empty_by_filtered_prose() -> None:
     assert trace["core_section_recovered_from"] == "근거와 맥락"
 
 
+def test_a_binding_preserves_scope_notice_for_the_called_source() -> None:
+    result = SourceResult(
+        source="nedrug",
+        query="피타바스타틴 성분 의약품",
+        status="scope_limit",
+        notice="성분명으로는 품목 검색이 지원되지 않아 이 항목은 확인하지 못했습니다",
+    )
+    event = retrieval_event_from_result(result)
+    answer = (
+        "## 미확인 요소\n"
+        "- [확인 한계] 식품의약품안전처 성분명으로는 품목 검색이 "
+        "지원되지 않아 이 항목은 확인하지 못했습니다.\n"
+        "- 식품의약품안전처가 XZQ-999를 승인했습니다."
+    )
+
+    sanitized, trace = sanitize_bound_surface(
+        "피타바스타틴 성분 의약품 알려줘",
+        answer,
+        (),
+        (event,),
+    )
+
+    assert "식품의약품안전처 성분명으로는 품목 검색이 지원되지 않아" in sanitized
+    assert "XZQ-999" not in sanitized
+    assert trace["removed_unbound_lines"] == 1
+
+
 def test_a_binding_preserves_markdown_header_while_filtering_data_rows() -> None:
     evidence = _clinical_set(_clinical_record("NCT05151731"))
     answer = (

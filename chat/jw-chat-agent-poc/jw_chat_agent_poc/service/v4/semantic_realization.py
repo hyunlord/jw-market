@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from jw_chat_agent_poc.service.v4.lossless_contracts import EvidenceSet
+from jw_chat_agent_poc.service.v4.surface_binding import prune_empty_surface_sections
 
 
 DowngradeAction = Literal["retain", "delete"]
@@ -29,6 +30,7 @@ class SemanticSurfaceResult(BaseModel):
     transformations: tuple[dict[str, str], ...] = ()
     downgrade_count: int = 0
     deletion_count: int = 0
+    removed_empty_headings: int = 0
 
 
 class SemanticEvidenceContext(BaseModel):
@@ -198,11 +200,15 @@ def realize_semantic_surface(
             )
             downgrade_count += 1
         output.append(updated)
+    surface_text, removed_empty_headings = prune_empty_surface_sections(
+        "\n".join(output)
+    )
     return SemanticSurfaceResult(
-        text="\n".join(output),
+        text=surface_text,
         transformations=tuple(transformations),
         downgrade_count=downgrade_count,
         deletion_count=deletion_count,
+        removed_empty_headings=removed_empty_headings,
     )
 
 

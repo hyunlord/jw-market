@@ -116,6 +116,29 @@ def test_c_surface_realization_transforms_predicate_instead_of_hedging() -> None
     assert realized.deletion_count == 1
 
 
+def test_c_surface_realization_prunes_heading_emptied_by_semantic_deletion() -> None:
+    answer = (
+        "## 핵심 답\n확인된 사실입니다.\n\n"
+        "## 종합 인사이트\n내년에도 점유율이 증가할 것으로 전망됩니다.\n\n"
+        "## 미확인 요소\n- 조회 범위 밖 정보는 확인하지 못했습니다."
+    )
+
+    realized = semantic_realization.realize_semantic_surface(
+        answer,
+        SemanticEvidenceContext(
+            has_temporal_support=False,
+            supported_text="확인된 사실",
+            observed_count=1,
+            requested_count=1,
+        ),
+    )
+
+    assert "## 종합 인사이트" not in realized.text
+    assert "## 미확인 요소" in realized.text
+    assert "조회 범위 밖 정보" in realized.text
+    assert realized.deletion_count == 1
+
+
 def test_c_unbound_causal_terms_are_deleted_even_with_temporal_records() -> None:
     realized = semantic_realization.realize_semantic_surface(
         "알파 물질이 베타 처방을 일으켰습니다.",

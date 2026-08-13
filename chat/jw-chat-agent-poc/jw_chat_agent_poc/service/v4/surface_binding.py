@@ -14,7 +14,11 @@ from jw_chat_agent_poc.service.v4.markdown_fences import (
     FenceState,
     advance_fence_state,
 )
-from jw_chat_agent_poc.service.v4.retrieval_events import RetrievalEvent
+from jw_chat_agent_poc.service.v4.retrieval_events import (
+    RetrievalEvent,
+    public_retrieval_notice,
+)
+from jw_chat_agent_poc.service.v4.source_labels import SOURCE_LABELS
 
 
 _ENTITY_PATTERNS = (
@@ -72,6 +76,10 @@ def sanitize_bound_surface(
             *(event.entity_id or "" for event in retrieval_events),
         )
     ).casefold()
+    bound_notice_lines = frozenset(
+        f"- [확인 한계] {public_retrieval_notice(event, label=SOURCE_LABELS.get(event.tool))}"
+        for event in retrieval_events
+    )
     allowed_urls = _allowed_evidence_urls(evidence_sets)
     output: list[str] = []
     removed_hashes: list[str] = []
@@ -84,6 +92,9 @@ def sanitize_bound_surface(
             output.append(line)
             continue
         if fence_state is not None:
+            output.append(line)
+            continue
+        if line.strip() in bound_notice_lines:
             output.append(line)
             continue
         if _contains_unbound_url(line, allowed_urls):
@@ -294,6 +305,10 @@ def _prune_empty_sections(value: str) -> tuple[str, int]:
             continue
         output.append(line)
     return "\n".join(output).strip(), len(removed)
+
+
+def prune_empty_surface_sections(value: str) -> tuple[str, int]:
+    return _prune_empty_sections(value)
 
 
 def _recover_core_section(
