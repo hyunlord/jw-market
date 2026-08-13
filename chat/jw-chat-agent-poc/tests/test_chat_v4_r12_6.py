@@ -20,6 +20,7 @@ from jw_chat_agent_poc.service.v4.inspection import build_inspection_detail
 from jw_chat_agent_poc.service.v4.deterministic_render import _auxiliary_node
 from jw_chat_agent_poc.service.v4.narrative_realization import (
     build_narrative_realization,
+    measure_final_narrative_surface,
 )
 from jw_chat_agent_poc.service.v4.render_clinical import render_clinical
 from jw_chat_agent_poc.service.v4.synthesizer import (
@@ -1053,6 +1054,60 @@ def test_b_web_items_survive_as_records_with_publication_fields() -> None:
     assert record.payload["publisher"] == "dailypharm.com"
     assert record.payload["published_at"] == "2026-08-13"
     assert record.payload["summary"] == "제네릭 경쟁 현황을 정리한 기사입니다."
+
+
+def test_a_final_surface_metrics_ignore_identifiers_that_only_survive_in_tables() -> None:
+    records = (
+        EvidenceRecord(
+            evidence_id="patent:10-0186853",
+            source="patent",
+            result_kind="structured_patent_record",
+            payload={
+                "patent_no": "10-0186853",
+                "invention_title": "피타바스타틴 복합 조성물",
+                "patent_type": "조성물",
+                "status": "소멸",
+            },
+        ),
+        EvidenceRecord(
+            evidence_id="patent:10-1244508",
+            source="patent",
+            result_kind="structured_patent_record",
+            payload={
+                "patent_no": "10-1244508",
+                "invention_title": "고지혈증 치료제",
+                "patent_type": "용도",
+                "status": "소멸(무효)",
+            },
+        ),
+    )
+    evidence_sets = (_evidence("patent", *records),)
+    realized = build_narrative_realization(
+        evidence_sets,
+        tuple(record.evidence_id for record in records),
+    )
+    first_line = realized.nodes[0].text.splitlines()[0]
+    final_answer = (
+        f"{first_line}\n\n"
+        "| 특허번호 | 발명명 |\n"
+        "| --- | --- |\n"
+        "| 10-0186853 | 피타바스타틴 복합 조성물 |\n"
+        "| 10-1244508 | 고지혈증 치료제 |"
+    )
+
+    metrics = measure_final_narrative_surface(
+        final_answer,
+        evidence_sets,
+        realized.record_field_usage,
+    )
+
+    assert metrics["narrated_record_count"] == 1
+    assert metrics["narrated_record_ids"] == ["patent:10-0186853"]
+    assert metrics["unnarrated_record_count"] == 1
+    assert metrics["narrative_identifier_parity"] is False
+    assert metrics["average_narrated_field_count"] == 3.0
+    assert metrics["loaded_field_narrative_use_rate"] == 0.5
+    assert metrics["identifier_only_sentence_count"] == 0
 
 
 def test_b_openfda_results_survive_with_public_alias_fields() -> None:

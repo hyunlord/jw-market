@@ -49,6 +49,9 @@ from jw_chat_agent_poc.service.v4.lossless_spine import (
     configured_request_satisfaction_mode,
     deterministic_fact_text,
 )
+from jw_chat_agent_poc.service.v4.narrative_realization import (
+    measure_final_narrative_surface,
+)
 from jw_chat_agent_poc.service.v4.inspection import build_inspection_detail
 from jw_chat_agent_poc.service.v4.planner import V4Planner
 from jw_chat_agent_poc.service.v4.clinical_query_policy import clinical_scope_suffix
@@ -590,6 +593,11 @@ class V4Runtime:
             ),
         )
         final_text = semantic_surface.text
+        final_narrative_metrics = measure_final_narrative_surface(
+            final_text,
+            evidence_sets,
+            deterministic_render.record_field_usage,
+        )
         claim_ir_input_sha256 = sha256(final_text.encode("utf-8")).hexdigest()
         claim_ir_enabled = _claim_ir_shadow_enabled()
         if claim_ir_enabled:
@@ -751,6 +759,7 @@ class V4Runtime:
             "gates": gated.trace,
             "lossless_spine": {
                 **composition.trace,
+                **final_narrative_metrics,
                 "build_error_type": lossless_error_type,
                 "evidence_sets": [
                     {
@@ -806,28 +815,20 @@ class V4Runtime:
                     deterministic_render.structured_claims_truncated
                 ),
                 "unnarrated_record_count": (
-                    deterministic_render.unnarrated_record_count
+                    final_narrative_metrics["unnarrated_record_count"]
                 ),
-                "narrated_record_count": len(
-                    deterministic_render.narrated_record_ids
-                ),
-                "narrated_record_ids": list(
-                    deterministic_render.narrated_record_ids
-                ),
-                "unnarrated_records": list(
-                    deterministic_render.unnarrated_records
-                ),
-                "record_field_usage": list(
-                    deterministic_render.record_field_usage
-                ),
+                "narrated_record_count": final_narrative_metrics["narrated_record_count"],
+                "narrated_record_ids": final_narrative_metrics["narrated_record_ids"],
+                "unnarrated_records": final_narrative_metrics["unnarrated_records"],
+                "record_field_usage": final_narrative_metrics["record_field_usage"],
                 "average_narrated_field_count": (
-                    deterministic_render.average_narrated_field_count
+                    final_narrative_metrics["average_narrated_field_count"]
                 ),
                 "loaded_field_narrative_use_rate": (
-                    deterministic_render.loaded_field_narrative_use_rate
+                    final_narrative_metrics["loaded_field_narrative_use_rate"]
                 ),
                 "identifier_only_sentence_count": (
-                    deterministic_render.identifier_only_sentence_count
+                    final_narrative_metrics["identifier_only_sentence_count"]
                 ),
                 "answer_mutation": composition.answer_mutated,
             },

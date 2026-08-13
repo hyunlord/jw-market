@@ -23,7 +23,7 @@ from jw_chat_agent_poc.service.v4.source_labels import SOURCE_LABELS
 
 _ENTITY_PATTERNS = (
     re.compile(r"\bNCT\d{8}\b", re.IGNORECASE),
-    re.compile(r"\b[A-Z]{2,}[A-Z0-9]*-\d+[A-Za-z]?\b"),
+    re.compile(r"(?<![A-Za-z0-9])[A-Z]{2,}[A-Z0-9]*-\d+[A-Za-z]?(?![A-Za-z0-9])"),
     re.compile(r"\b[A-Z][A-Za-z]+(?:\s+[A-Za-z][A-Za-z0-9-]+)+\b"),
     re.compile(r"[가-힣A-Za-z0-9]{2,}(?:제약|바이오|약품|헬스케어)"),
 )
@@ -61,6 +61,7 @@ def sanitize_bound_surface(
     corpus = " ".join(
         (
             question,
+            *(label for label in SOURCE_LABELS.values()),
             *(_payload_text(record.payload) for item in evidence_sets for record in item.records),
             *(
                 f"{ref.title or ''} {ref.url}"

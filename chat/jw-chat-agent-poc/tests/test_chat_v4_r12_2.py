@@ -217,6 +217,47 @@ def test_a_binding_preserves_scope_notice_for_the_called_source() -> None:
     assert trace["removed_unbound_lines"] == 1
 
 
+def test_a_binding_preserves_shared_public_source_labels_in_grounded_prose() -> None:
+    evidence = EvidenceSet(
+        source="patent",
+        retrieved_at="2026-08-14T00:00:00Z",
+        coverage=CoverageLedger(
+            records_received=1,
+            records_unique=1,
+            records_relevant=1,
+        ),
+        records=(
+            EvidenceRecord(
+                evidence_id="patent:10-0186853",
+                source="patent",
+                result_kind="structured_patent_record",
+                payload={
+                    "patent_no": "10-0186853",
+                    "invention_title": "저콜레스테롤혈증제 조성물",
+                    "patent_type": "물질",
+                },
+            ),
+        ),
+    )
+    grounded = (
+        "- 식품의약품안전처 의약품 특허목록의 10-0186853은(는) "
+        "발명명 저콜레스테롤혈증제 조성물, 특허구분 물질로 확인됩니다. "
+        "[출처: 식품의약품안전처 의약품 특허목록]"
+    )
+    hallucinated = "- 식품의약품안전처의 XZQ-999는 승인된 품목입니다."
+
+    sanitized, trace = sanitize_bound_surface(
+        "리바로젯 특허현황",
+        f"{grounded}\n{hallucinated}",
+        (evidence,),
+        (),
+    )
+
+    assert grounded in sanitized
+    assert "XZQ-999" not in sanitized
+    assert trace["removed_unbound_lines"] == 1
+
+
 def test_a_binding_preserves_markdown_header_while_filtering_data_rows() -> None:
     evidence = _clinical_set(_clinical_record("NCT05151731"))
     answer = (

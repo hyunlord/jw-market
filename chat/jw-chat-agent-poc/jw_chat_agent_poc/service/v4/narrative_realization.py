@@ -149,6 +149,134 @@ def build_narrative_realization(
     )
 
 
+def measure_final_narrative_surface(
+    answer: str,
+    evidence_sets: Sequence[EvidenceSet],
+    record_field_usage: Sequence[dict[str, Any]],
+) -> dict[str, Any]:
+    """Measure record narration on the final user-visible prose surface."""
+
+    records_by_id = {
+        record.evidence_id: record
+        for evidence_set in evidence_sets
+        for record in evidence_set.records
+    }
+    prose_blocks = _final_surface_prose_blocks(answer)
+    narrated_ids: list[str] = []
+    unnarrated: list[dict[str, str]] = []
+    surfaced_used_fields = 0
+    available_fields = 0
+    identifier_only = 0
+    per_record: list[dict[str, Any]] = []
+    for index, usage in enumerate(record_field_usage, start=1):
+        record_id = str(usage.get("record_id") or "")
+        available_count = int(usage.get("available_field_count") or 0)
+        available_fields += available_count
+        record = records_by_id.get(record_id)
+        identity = record_identity(record, index) if record is not None else None
+        matching_blocks = tuple(
+            block for block in prose_blocks if identity and identity in block
+        )
+        used_fields = tuple(str(field) for field in usage.get("used_fields") or ())
+        matched_fields: tuple[str, ...] = ()
+        if record is not None and matching_blocks:
+            matched_fields = max(
+                (
+                    tuple(
+                        field
+                        for field in used_fields
+                        if (
+                            value := narrative_field_value(record, field)
+                        ) is not None
+                        and _normalized_surface_text(value)
+                        in _normalized_surface_text(block)
+                    )
+                    for block in matching_blocks
+                ),
+                key=len,
+                default=(),
+            )
+        matched_count = len(matched_fields)
+        if matching_blocks:
+            narrated_ids.append(record_id)
+            surfaced_used_fields += matched_count
+            identifier_only += int(matched_count == 0)
+            reason_code = None
+        else:
+            reason_code = "public_identifier_missing_from_final_prose"
+            unnarrated.append({"record_id": record_id, "reason_code": reason_code})
+        per_record.append(
+            {
+                **usage,
+                "public_identifier": identity,
+                "final_surface_used_field_count": matched_count,
+                "final_surface_used_fields": matched_fields,
+                "final_surface_reason_code": reason_code,
+            }
+        )
+    rendered_count = len(record_field_usage)
+    return {
+        "narrated_record_count": len(narrated_ids),
+        "narrated_record_ids": narrated_ids,
+        "unnarrated_record_count": len(unnarrated),
+        "unnarrated_records": unnarrated,
+        "narrative_identifier_parity": len(narrated_ids) == rendered_count,
+        "narrative_record_accounting_complete": (
+            len(narrated_ids) + len(unnarrated) == rendered_count
+        ),
+        "record_field_usage": per_record,
+        "average_narrated_field_count": round(
+            surfaced_used_fields / len(narrated_ids), 6
+        ) if narrated_ids else 0.0,
+        "loaded_field_narrative_use_rate": round(
+            surfaced_used_fields / available_fields, 6
+        ) if available_fields else 0.0,
+        "identifier_only_sentence_count": identifier_only,
+    }
+
+
+def _final_surface_prose_blocks(answer: str) -> tuple[str, ...]:
+    blocks: list[str] = []
+    current: list[str] = []
+    in_sources = False
+    in_table = False
+    for raw_line in answer.splitlines():
+        line = raw_line.strip()
+        if line.startswith("## "):
+            if current:
+                blocks.append(" ".join(current))
+                current = []
+            in_sources = line == "## 출처"
+            in_table = False
+            continue
+        if in_sources:
+            continue
+        if line.startswith("|"):
+            if current:
+                blocks.append(" ".join(current))
+                current = []
+            in_table = True
+            continue
+        if in_table and line:
+            in_table = False
+        if not line or line.startswith(("#", "```")):
+            if current:
+                blocks.append(" ".join(current))
+                current = []
+            continue
+        if line.startswith("- ") and current:
+            blocks.append(" ".join(current))
+            current = []
+        current.append(line)
+    if current:
+        blocks.append(" ".join(current))
+    return tuple(blocks)
+
+
+def _normalized_surface_text(value: str) -> str:
+    return " ".join(value.split())
+
+
 def _micro_narratives(
     records: Sequence[EvidenceRecord],
 ) -> tuple[
@@ -392,5 +520,6 @@ __all__ = [
     "ALLOWED_T2_OPERATORS",
     "NarrativeRealization",
     "build_narrative_realization",
+    "measure_final_narrative_surface",
     "verify_recomputation",
 ]
