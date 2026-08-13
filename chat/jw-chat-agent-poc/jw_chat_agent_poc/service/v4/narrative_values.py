@@ -121,6 +121,11 @@ _PUBLIC_ENUMS: Final = {
     "EARLY_PHASE1": "초기 1상",
     "PHASE_NA": "해당 없음",
     "NA": "해당 없음",
+    "ACTUAL": "실제",
+    "ESTIMATED": "예상",
+    "ALL": "전체",
+    "MALE": "남성",
+    "FEMALE": "여성",
 }
 _NUMBER_RE: Final = re.compile(r"[-+]?\d[\d,]*(?:\.\d+)?%?")
 

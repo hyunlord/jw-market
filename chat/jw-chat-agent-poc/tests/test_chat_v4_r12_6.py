@@ -635,6 +635,29 @@ def test_b_clinical_table_localizes_phase_na() -> None:
     assert "PHASE_NA" not in surface
 
 
+def test_b_clinical_detail_localizes_enrollment_type_and_sex_enums() -> None:
+    record = EvidenceRecord(
+        evidence_id="ct:NCT00000003",
+        source="clinicaltrials",
+        result_kind="structured_clinical_record",
+        payload={
+            "nct_id": "NCT00000003",
+            "brief_title": "시험",
+            "overall_status": "COMPLETED",
+            "enrollment": {"count": 120, "type": "ACTUAL"},
+            "sex": "ALL",
+        },
+    )
+
+    nodes, _required = render_clinical(_evidence("clinicaltrials", record), single=True)
+    surface = "\n".join(node.text for node in nodes)
+
+    assert "대상자수: 120명 (실제)" in surface
+    assert "대상 성별: 전체" in surface
+    assert "ACTUAL" not in surface
+    assert "ALL" not in surface
+
+
 @pytest.mark.parametrize(
     ("question", "requested_axis"),
     (

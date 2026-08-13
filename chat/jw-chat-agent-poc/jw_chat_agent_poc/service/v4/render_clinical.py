@@ -233,7 +233,7 @@ def _record_detail_node(records: Sequence[EvidenceRecord]) -> RenderNode | None:
             ("2차 평가변수", "secondary_outcomes", _outcome_text(payload.get("secondary_outcomes"))),
             ("간략 요약", "brief_summary", _bounded_text(payload.get("brief_summary"))),
             ("선정·제외 기준", "eligibility_criteria", _bounded_text(payload.get("eligibility_criteria"))),
-            ("대상 성별", "sex", text(payload.get("sex"))),
+            ("대상 성별", "sex", public_enum_value(payload.get("sex"))),
             ("연령", "minimum_age", _age_range(payload)),
             ("결과 게시", "has_results", _result_text(payload.get("has_results"))),
         )
@@ -262,8 +262,10 @@ def _record_detail_node(records: Sequence[EvidenceRecord]) -> RenderNode | None:
 def _enrollment(value: object) -> str:
     if isinstance(value, Mapping):
         count = value.get("count")
-        kind = text(value.get("type"))
-        return " ".join(part for part in (text(count), kind) if part)
+        count_text = f"{text(count)}명" if count not in (None, "") else ""
+        kind = public_enum_value(value.get("type")) if value.get("type") else ""
+        kind_text = f"({kind})" if kind else ""
+        return " ".join(part for part in (count_text, kind_text) if part)
     return text(value)
 
 
