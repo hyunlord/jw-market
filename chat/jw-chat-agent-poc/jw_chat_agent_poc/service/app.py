@@ -433,7 +433,17 @@ def _run_v4_final_answer(
     question: str,
     conversation_id: str | None,
     progress_callback: Callable[[dict[str, str]], None] | None = None,
+    file_context: str | None = None,
 ) -> FinalAnswer:
+    file_answer = _v4_file_scope_answer(question, conversation_id, file_context)
+    if file_answer is not None:
+        if file_answer.conversation_id:
+            store.conversations.record_exchange(
+                file_answer.conversation_id,
+                question,
+                file_answer.text,
+            )
+        return file_answer
     answer = _get_v4_runtime().answer(
         question,
         conversation_id=conversation_id,
@@ -454,6 +464,70 @@ def _run_v4_final_answer(
         sources=answer.sources,
         conversation_id=answer.conversation_id,
     )
+
+
+def _v4_file_scope_answer(
+    question: str,
+    conversation_id: str | None,
+    file_context: str | None,
+) -> FinalAnswer | None:
+    delegated_context, source_items, has_active_file, deterministic_answer, sql_trace = (
+        _delegated_file_context(question, conversation_id, file_context)
+    )
+    if has_active_file or delegated_context:
+        file_result = _attach_file_context(
+            _file_scoped_result(question),
+            delegated_context,
+            source_items,
+        )
+        if deterministic_answer:
+            file_result["deterministic_file_answer"] = deterministic_answer
+        file_answer = _deterministic_mixed_file_answer(file_result, conversation_id)
+        public_sources = _project_public_file_sources(file_answer.file_sources)
+        records = tuple(
+            {
+                "record_id": "FILE-"
+                + hashlib.sha256(
+                    "|".join(
+                        str(source.get(field) or "")
+                        for field in ("file_name", "i_page", "sheet_name")
+                    ).encode("utf-8")
+                ).hexdigest()[:16],
+                **source,
+                "narrative_used": True,
+            }
+            for source in public_sources
+        )
+        trace = {
+            **file_answer.trace,
+            "file_scope": {
+                "status": "ACTIVE_FILE" if has_active_file else "DIRECT_FILE_CONTEXT",
+                "records": records,
+                "search_context_received": bool(delegated_context),
+                "sql_trace_count": len(sql_trace),
+                "session_isolation": "chat_id+app_session_id",
+            },
+        }
+        return replace(file_answer, trace=trace)
+    if has_file_reference(question):
+        text = "이 세션에서 조회 가능한 업로드 문서를 확인하지 못했습니다. 파일을 업로드한 뒤 다시 질문해 주세요."
+        return FinalAnswer(
+            text=text,
+            charts=[],
+            timing={"deterministic_file_render": True, "synthesis_llm_calls": 0},
+            trace={
+                "file_scope": {
+                    "status": "NO_ACTIVE_FILE",
+                    "records": (),
+                    "search_context_received": False,
+                    "sql_trace_count": len(sql_trace),
+                    "session_isolation": "chat_id+app_session_id",
+                }
+            },
+            sources=(),
+            conversation_id=conversation_id,
+        )
+    return None
 
 
 SESSION_STORE_MAX_ENV = "SESSION_STORE_MAX"
@@ -903,6 +977,7 @@ def create_app(
                         history,
                         request.question,
                         request.conversation_id,
+                        file_context=request.file_context,
                     )
                     result = {
                         "question": request.question,
@@ -962,6 +1037,7 @@ def create_app(
                         history,
                         request.question,
                         request.conversation_id,
+                        file_context=request.file_context,
                     )
                     item = {"question": request.question}
                 else:

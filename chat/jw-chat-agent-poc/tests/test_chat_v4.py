@@ -4767,6 +4767,71 @@ def test_flag_on_chat_answer_bypasses_legacy_answer_and_finalizer(monkeypatch) -
     assert runtime.calls == [("리바로 요즘 어때", None, 0)]
 
 
+def test_flag_on_chat_answer_enters_file_scope_for_active_upload(monkeypatch) -> None:
+    class RuntimeThatMustNotRun:
+        def answer(self, *_args, **_kwargs):
+            raise AssertionError("market V4 runtime ran for an active uploaded file")
+
+    monkeypatch.setenv("V4_PLANNER", "on")
+    monkeypatch.setattr(service_app, "_get_v4_runtime", RuntimeThatMustNotRun)
+    monkeypatch.setattr(
+        service_app,
+        "_delegated_file_context",
+        lambda *_args, **_kwargs: (
+            "[1] cohort.xlsx (sheet=환자)\n문서 전용 값: 386,933,825,518",
+            ({"file_name": "cohort.xlsx", "sheet_name": "환자", "document_id": 91},),
+            True,
+            "문서 전용 값은 386,933,825,518입니다.",
+            (),
+        ),
+    )
+    client = TestClient(service_app.create_app())
+
+    response = client.post(
+        "/chat/answer",
+        json={"question": "업로드 문서의 전용 값을 알려줘", "conversation_id": "file-session"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "386,933,825,518" in payload["text"]
+    assert payload["sources"] == ["document"]
+    assert payload["file_sources"] == [{"file_name": "cohort.xlsx", "sheet_name": "환자"}]
+    assert payload["trace"]["file_scope"]["status"] == "ACTIVE_FILE"
+    records = payload["trace"]["file_scope"]["records"]
+    assert len(records) == 1
+    assert records[0]["record_id"].startswith("FILE-")
+    assert records[0]["narrative_used"] is True
+    assert "document_id" not in records[0]
+
+
+def test_flag_on_file_question_reports_missing_document_without_market_fallback(monkeypatch) -> None:
+    class RuntimeThatMustNotRun:
+        def answer(self, *_args, **_kwargs):
+            raise AssertionError("market V4 runtime ran for a file-directed question")
+
+    monkeypatch.setenv("V4_PLANNER", "on")
+    monkeypatch.setattr(service_app, "_get_v4_runtime", RuntimeThatMustNotRun)
+    monkeypatch.setattr(
+        service_app,
+        "_delegated_file_context",
+        lambda *_args, **_kwargs: (None, (), False, "", ()),
+    )
+    client = TestClient(service_app.create_app())
+
+    response = client.post(
+        "/chat/answer",
+        json={"question": "업로드 문서의 결론을 알려줘", "conversation_id": "empty-file-session"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "조회 가능한 업로드 문서를 확인하지 못했습니다" in payload["text"]
+    assert payload["sources"] == []
+    assert payload["file_sources"] == []
+    assert payload["trace"]["file_scope"]["status"] == "NO_ACTIVE_FILE"
+
+
 def test_flag_off_chat_answer_is_identical_to_legacy_route(monkeypatch) -> None:
     monkeypatch.setenv("V4_PLANNER", "off")
     monkeypatch.setattr(
