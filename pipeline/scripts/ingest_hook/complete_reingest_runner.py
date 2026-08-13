@@ -42,7 +42,6 @@ STAGE_SEQUENCES = {
         "mart_publish",
         "refresh",
         "dashboard",
-        "signal",
     ),
     "iqvia_nsa": (
         "g3",
@@ -54,7 +53,6 @@ STAGE_SEQUENCES = {
         "mart_publish",
         "refresh",
         "dashboard",
-        "signal",
     ),
     "iqvia_csd_channel": (
         "g3",
@@ -63,7 +61,6 @@ STAGE_SEQUENCES = {
         "mart_publish",
         "context_bridge",
         "dashboard",
-        "signal",
     ),
     "iqvia_csd_keyword": (
         "g3",
@@ -73,7 +70,6 @@ STAGE_SEQUENCES = {
         "mart_publish",
         "topic_extraction",
         "dashboard",
-        "signal",
     ),
 }
 ACTOR = "complete_reingest_runner"
@@ -955,10 +951,8 @@ def _complete_terminal(
         status="complete",
         reason=reason,
     )
-    _record_stage(ledger, context, "signal", "running")
     _record_terminal(ledger, context, outcome)
     _emit_reingest_terminal_callback(context, outcome)
-    _record_stage(ledger, context, "signal", reason="complete reingest terminal signal emitted")
     return outcome
 
 

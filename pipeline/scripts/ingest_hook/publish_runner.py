@@ -11,8 +11,6 @@ from pipeline.scripts.ingest_hook.category_map import ActivationKind, resolve_ca
 from pipeline.scripts.ingest_hook.job_launcher import publish_job_name
 from pipeline.scripts.ingest_hook.job_runner import (
     _StageTracker,
-    _drain_completion_queue,
-    _emit_completion_signal,
     _ledger_for_run,
     _mark_complete_after_required_stages,
     _measure_publish_source_set,
@@ -273,28 +271,6 @@ def run(
             str(key): int(value)
             for key, value in dict(payload.get("row_counts") or {}).items()
         }
-        completion_signal = _emit_completion_signal(
-            ledger=ledger,
-            tracker=tracker,
-            identity=identity,
-            run_id=publish_run_id,
-            event="complete",
-            mode=mode,
-            rows_before=int(payload.get("rows_before") or 0),
-            rows_after=int(payload.get("rows_after") or 0),
-            rows_loaded=int(payload.get("rows_loaded") or 0),
-            periods={str(period) for period in payload.get("periods") or []},
-            started_at=candidate.prepared_at,
-            failure_reason=None,
-            target_schema=activation.target_db,
-            published_at=published_at,
-            affected_scope=(
-                dict(payload["affected_scope"])
-                if isinstance(payload.get("affected_scope"), dict)
-                else None
-            ),
-            drain_queue=False,
-        )
         _mark_complete_after_required_stages(
             ledger=ledger,
             identity=identity,
@@ -303,9 +279,6 @@ def run(
         )
         ledger_completed = True
         update_activation_journal(activation_journal, "ledger_complete")
-        if completion_signal is not None:
-            _drain_completion_queue(completion_signal)
-        update_activation_journal(activation_journal, "signal_complete")
         update_activation_journal(activation_journal, "complete")
         return 0
     except Exception as exc:  # fail closed across DB, filesystem, and refresh boundaries
@@ -344,34 +317,6 @@ def run(
                     f"; recovery_failed={type(recovery_exc).__name__}: {recovery_exc}"
                 )
         ledger.mark_failed(*identity, reason=primary_failure_reason)
-        try:
-            _emit_completion_signal(
-                ledger=ledger,
-                tracker=tracker,
-                identity=identity,
-                run_id=publish_run_id,
-                event="failed",
-                mode=mode,
-                rows_before=int(payload.get("rows_before") or 0),
-                rows_after=int(payload.get("rows_after") or 0),
-                rows_loaded=int(payload.get("rows_loaded") or 0),
-                periods={str(period) for period in payload.get("periods") or []},
-                started_at=candidate.prepared_at,
-                failure_reason=primary_failure_reason,
-                target_schema=activation.target_db,
-                published_at=published_at,
-                affected_scope=(
-                    dict(payload["affected_scope"])
-                    if isinstance(payload.get("affected_scope"), dict)
-                    else None
-                ),
-            )
-        except Exception as signal_exc:
-            print(
-                "completion_signal_error="
-                f"{type(signal_exc).__name__}: {signal_exc}",
-                file=sys.stderr,
-            )
         print(f"result=failed reason={primary_failure_reason}", file=sys.stderr)
         return 1
     finally:

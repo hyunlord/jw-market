@@ -251,7 +251,6 @@ class _StageTracker:
         "mart_publish",
         "refresh",
         "dashboard",
-        "signal",
     )
 
     def __init__(self, ledger: Ledger, identity: tuple[str, str, str], run_id: str):
@@ -371,7 +370,6 @@ _SOURCE_STAGE_CONTRACTS: dict[str, tuple[str, ...]] = {
         "mart_publish",
         "refresh",
         "dashboard",
-        "signal",
     ),
     "iqvia_nsa": (
         "job_submit",
@@ -384,7 +382,6 @@ _SOURCE_STAGE_CONTRACTS: dict[str, tuple[str, ...]] = {
         "mart_publish",
         "refresh",
         "dashboard",
-        "signal",
     ),
     "iqvia_csd_channel": (
         "job_submit",
@@ -394,7 +391,6 @@ _SOURCE_STAGE_CONTRACTS: dict[str, tuple[str, ...]] = {
         "mart_publish",
         "context_bridge",
         "dashboard",
-        "signal",
     ),
     "iqvia_csd_keyword": (
         "job_submit",
@@ -405,7 +401,6 @@ _SOURCE_STAGE_CONTRACTS: dict[str, tuple[str, ...]] = {
         "mart_publish",
         "topic_extraction",
         "dashboard",
-        "signal",
     ),
 }
 
@@ -547,7 +542,6 @@ def expected_stages(spec: CategorySpec) -> list[dict[str, str | int | bool]]:
         "mart_publish": supports_mart or supports_source_activation,
         "refresh": bool(spec.refresh_argv) and spec.production_load_supported,
         "dashboard": bool(spec.refresh_argv) and spec.production_load_supported,
-        "signal": True,
     }
     return [
         {
@@ -1075,154 +1069,6 @@ def _request_automatic_publish(
     return status
 
 
-def _emit_completion_signal(
-    *, ledger: Ledger, tracker: _StageTracker, identity: tuple[str, str, str],
-    run_id: str, event: str, mode: str, rows_before: int, rows_after: int,
-    rows_loaded: int,
-    periods: set[str], started_at: str, failure_reason: str | None,
-    target_schema: str | None = None,
-    published_at: str | None = None,
-    affected_scope: dict[str, object] | None = None,
-    drain_queue: bool = True,
-):
-    """Deliver and durably record a stage result for the completion contract."""
-    from urllib.parse import urlencode
-
-    from pipeline.scripts.ingest_hook.completion_signal import CompletionSignal, PublishResult, publish
-
-    epoch, category, manifest_sha = identity
-    # A retry of the same event may observe already-materialized staging rows and
-    # otherwise emit zero. Freeze counts for that event only: an earlier failure
-    # before load must not erase a later successful run's actual count.
-    try:
-        prior_signals = ledger.signal_events(*identity)
-    except Exception:  # signal observation is best-effort
-        prior_signals = []
-    prior_for_event = next((signal for signal in prior_signals if signal.event == event), None)
-    if prior_for_event is not None:
-        try:
-            prior_payload = prior_for_event.payload
-            rows_before = int(prior_payload["rows_before"])
-            rows_after = int(prior_payload["rows_after"])
-            rows_loaded = int(prior_payload["rows_loaded"])
-        except (KeyError, TypeError, ValueError) as exc:
-            print(f"[signal] prior payload invalid (ignored): {type(exc).__name__}: {exc}", file=sys.stderr)
-    query = urlencode({"epoch": epoch, "category": category, "manifest_sha": manifest_sha})
-    occurred_at = _stamp()
-    try:
-        signal = CompletionSignal(
-            event=event, mode=mode, source=category, epoch=epoch,
-            manifest_sha=manifest_sha, run_id=run_id,
-            target_schema=(
-                target_schema
-                or os.environ.get("MARIADB_DATABASE")
-                or os.environ.get("DB_NAME")
-            ),
-            published_at=published_at,
-            occurred_at=occurred_at,
-            rows_before=rows_before, rows_after=rows_after,
-            rows_loaded=rows_loaded, period_from=min(periods) if periods else None,
-            period_to=max(periods) if periods else None, started_at=started_at,
-            finished_at=occurred_at, failure_reason=failure_reason,
-            log_ref=f"/ingest/status?{query}",
-            affected_scope=affected_scope,
-        )
-    except ValueError as exc:
-        reason = f"completion contract rejected: {exc}"
-        ledger.record_signal(
-            *identity, run_id=run_id, event=event, mode=mode,
-            rows_loaded=rows_loaded, delivery_status="failed", attempts=0,
-            reason=reason,
-            payload={
-                "event": event,
-                "run_id": run_id,
-                "source": category,
-                "period": epoch,
-                "outbound": False,
-            },
-        )
-        tracker.record_failure("signal", reason)
-        print(f"[signal] {reason}; outbound delivery suppressed", file=sys.stderr)
-        return None
-    payload = signal.as_dict()
-    try:
-        ledger.record_signal(
-            *identity, run_id=run_id, event=event, mode=mode,
-            rows_loaded=rows_loaded, delivery_status="pending",
-            attempts=0, reason=None, payload=payload,
-        )
-    except Exception as exc:
-        reason = f"ledger pending record failed: {type(exc).__name__}: {exc}"
-        tracker.record_failure("signal", reason)
-        print(f"[signal] {reason}; outbound delivery suppressed", file=sys.stderr)
-        return None
-    try:
-        endpoint, attempts = config.completion_webhook()
-        result = publish(signal, endpoint=endpoint, attempts=attempts)
-    except Exception as exc:  # malformed delivery config is also non-fatal
-        result = PublishResult("failed", 0, f"{type(exc).__name__}: {exc}")
-    try:
-        ledger.record_signal(
-            *identity, run_id=run_id, event=event, mode=mode,
-            rows_loaded=rows_loaded, delivery_status=result.status,
-            attempts=result.attempts, reason=result.reason, payload=payload,
-        )
-    except Exception as exc:
-        result = PublishResult(
-            "failed",
-            result.attempts,
-            f"ledger terminal record failed: {type(exc).__name__}: {exc}",
-        )
-        print(f"[signal] {result.reason}", file=sys.stderr)
-    drain_result = (
-        _drain_completion_queue(signal)
-        if drain_queue
-        else PublishResult("deferred", 0, "queue drain waits for ledger completion")
-    )
-    stage_reason = (
-        f"delivery={result.status}; attempts={result.attempts}; "
-        f"queue_drain={drain_result.status}; "
-        f"queue_drain_attempts={drain_result.attempts}"
-    )
-    if result.status in {"published", "disabled"}:
-        tracker.complete("signal", reason=stage_reason)
-    else:
-        tracker.record_failure("signal", stage_reason)
-    print(
-        f"signal event={event} mode={mode} delivery={result.status} "
-        f"attempts={result.attempts} queue_drain={drain_result.status} "
-        f"queue_drain_attempts={drain_result.attempts}"
-    )
-    return signal
-
-
-def _drain_completion_queue(signal):
-    from pipeline.scripts.ingest_hook.completion_signal import PublishResult, publish
-
-    result = PublishResult("disabled", 0, "queue drain endpoint is not configured")
-    try:
-        endpoint, attempts = config.queue_drain_webhook()
-        if endpoint:
-            result = publish(signal, endpoint=endpoint, attempts=attempts)
-    except Exception as exc:
-        result = PublishResult("failed", 0, f"{type(exc).__name__}: {exc}")
-    print(
-        f"queue_drain event={signal.event} delivery={result.status} "
-        f"attempts={result.attempts}"
-    )
-    return result
-
-
-def _completion_affected_scope(category: str) -> dict[str, object] | None:
-    if category == "iqvia_nsa":
-        return {
-            "dimension": "source",
-            "count": 1,
-            "values": [category],
-        }
-    return None
-
-
 def run(
     manifest_path: Path,
     *,
@@ -1289,7 +1135,6 @@ def run(
     activation_succeeded = False
     awaiting_approval_prepared = False
     ledger_completed = False
-    completion_signal_emitted = False
     baseline_live_snapshot = None
     baseline_manifest_sha = None
     scan_outcome = None
@@ -1688,18 +1533,6 @@ def run(
                     "CSD channel API reads the activated stage table directly",
                 )
                 awaiting_approval_prepared = True
-                ledger.record_signal(
-                    *identity,
-                    run_id=run_id,
-                    event="prepared",
-                    mode=configured_mode,
-                    rows_loaded=rows_loaded,
-                    delivery_status="suppressed",
-                    attempts=0,
-                    reason="prepared event is internal-only",
-                    payload={"event": "prepared", "outbound": False},
-                )
-                completion_signal_emitted = True
                 print(
                     "result=awaiting_approval "
                     f"epoch={manifest.epoch} category={manifest.category} run_id={run_id}"
@@ -1759,18 +1592,6 @@ def run(
                 )
                 tracker.skip("mart_publish", "automatic keyword publish requested")
                 awaiting_approval_prepared = True
-                ledger.record_signal(
-                    *identity,
-                    run_id=run_id,
-                    event="prepared",
-                    mode=configured_mode,
-                    rows_loaded=rows_loaded,
-                    delivery_status="suppressed",
-                    attempts=0,
-                    reason="prepared event is internal-only",
-                    payload={"event": "prepared", "outbound": False},
-                )
-                tracker.skip("signal", "prepared event is not outbound")
                 status = _request_automatic_publish(
                     identity,
                     run_id=run_id,
@@ -2033,24 +1854,6 @@ def run(
                     tracker.skip("mart_publish", "awaiting explicit publish approval")
                     tracker.skip("refresh", "awaiting explicit publish approval")
                     awaiting_approval_prepared = True
-                    ledger.record_signal(
-                        *identity,
-                        run_id=run_id,
-                        event="prepared",
-                        mode=mode,
-                        rows_loaded=rows_loaded,
-                        delivery_status="suppressed",
-                        attempts=0,
-                        reason="prepared event is internal-only",
-                        payload={
-                            "event": "prepared",
-                            "run_id": run_id,
-                            "source": manifest.category,
-                            "period": manifest.epoch,
-                            "outbound": False,
-                        },
-                    )
-                    tracker.skip("signal", "prepared event is not outbound")
                     print(
                         "result=awaiting_approval "
                         f"epoch={manifest.epoch} category={manifest.category} run_id={run_id}"
@@ -2174,17 +1977,6 @@ def run(
                         target_db=published_target_schema,
                     )
                 if activation_journal is not None:
-                    activation_signal = _emit_completion_signal(
-                        ledger=ledger, tracker=tracker, identity=identity, run_id=run_id,
-                        event="complete", mode=mode, rows_before=rows_before,
-                        rows_after=rows_after, rows_loaded=rows_loaded,
-                        periods=periods, started_at=started_at, failure_reason=None,
-                        target_schema=published_target_schema,
-                        published_at=published_at,
-                        affected_scope=_completion_affected_scope(manifest.category),
-                        drain_queue=False,
-                    )
-                    completion_signal_emitted = True
                     _mark_complete_after_required_stages(
                         ledger=ledger,
                         identity=identity,
@@ -2196,11 +1988,6 @@ def run(
                     ubist_mart_activation.update_activation_journal(
                         activation_journal, "ledger_complete"
                     )
-                    if activation_signal is not None:
-                        _drain_completion_queue(activation_signal)
-                    ubist_mart_activation.update_activation_journal(
-                        activation_journal, "signal_complete"
-                    )
                     ubist_mart_activation.update_activation_journal(
                         activation_journal, "complete"
                     )
@@ -2210,19 +1997,6 @@ def run(
         ):
             report.file_rows[f"epoch:{manifest.epoch}"] = load_result["epoch_rows"]
 
-        completion_signal = None
-        if not completion_signal_emitted:
-            completion_signal = _emit_completion_signal(
-                ledger=ledger, tracker=tracker, identity=identity, run_id=run_id,
-                event="complete", mode=mode, rows_before=rows_before, rows_after=rows_after,
-                rows_loaded=rows_loaded,
-                periods=periods, started_at=started_at, failure_reason=None,
-                target_schema=published_target_schema,
-                published_at=published_at,
-                affected_scope=_completion_affected_scope(manifest.category),
-                drain_queue=mode != "production",
-            )
-            completion_signal_emitted = True
         if not ledger_completed:
             if mode == "production":
                 _mark_complete_after_required_stages(
@@ -2234,34 +2008,18 @@ def run(
             else:
                 ledger.mark_complete(*identity, row_counts=report.file_rows)
             ledger_completed = True
-        if mode == "production" and completion_signal is not None:
-            _drain_completion_queue(completion_signal)
         print(f"result=complete epoch={manifest.epoch} category={manifest.category} run_id={run_id}")
         return 0
     except PostGateError as exc:
         primary_failure_reason = f"{type(exc).__name__}: {exc}"
         tracker.fail(f"{type(exc).__name__}: {exc}")
         ledger.mark_gate_failed(*identity, reason=f"{type(exc).__name__}: {exc}")
-        _emit_completion_signal(
-            ledger=ledger, tracker=tracker, identity=identity, run_id=run_id,
-            event="gate_failed", mode=mode, rows_before=rows_before, rows_after=rows_after,
-            rows_loaded=rows_loaded,
-            periods=periods, started_at=started_at,
-            failure_reason=f"{type(exc).__name__}: {exc}",
-        )
         print(f"result=gate_failed reason={exc}", file=sys.stderr)
         return 1
     except (G3Error, SigmaGateError) as exc:
         primary_failure_reason = f"{type(exc).__name__}: {exc}"
         tracker.fail(f"{type(exc).__name__}: {exc}")
         ledger.mark_gate_failed(*identity, reason=f"{type(exc).__name__}: {exc}")
-        _emit_completion_signal(
-            ledger=ledger, tracker=tracker, identity=identity, run_id=run_id,
-            event="gate_failed", mode=mode, rows_before=rows_before, rows_after=rows_after,
-            rows_loaded=rows_loaded,
-            periods=periods, started_at=started_at,
-            failure_reason=f"{type(exc).__name__}: {exc}",
-        )
         print(f"result=gate_failed reason={type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
     except (UnknownCategoryError, RuntimeError) as exc:
@@ -2274,16 +2032,9 @@ def run(
             return 1
         tracker.fail(f"{type(exc).__name__}: {exc}")
         ledger.mark_failed(*identity, reason=f"{type(exc).__name__}: {exc}")
-        _emit_completion_signal(
-            ledger=ledger, tracker=tracker, identity=identity, run_id=run_id,
-            event="failed", mode=mode, rows_before=rows_before, rows_after=rows_after,
-            rows_loaded=rows_loaded,
-            periods=periods, started_at=started_at,
-            failure_reason=f"{type(exc).__name__}: {exc}",
-        )
         print(f"result=failed reason={type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
-    except Exception as exc:  # fail loud while preserving ledger/signal evidence
+    except Exception as exc:  # fail loud while preserving ledger evidence
         primary_failure_reason = f"{type(exc).__name__}: {exc}"
         if ledger_completed:
             print(
@@ -2293,13 +2044,6 @@ def run(
             return 1
         tracker.fail(f"{type(exc).__name__}: {exc}")
         ledger.mark_failed(*identity, reason=f"{type(exc).__name__}: {exc}")
-        _emit_completion_signal(
-            ledger=ledger, tracker=tracker, identity=identity, run_id=run_id,
-            event="failed", mode=mode, rows_before=rows_before, rows_after=rows_after,
-            rows_loaded=rows_loaded,
-            periods=periods, started_at=started_at,
-            failure_reason=f"{type(exc).__name__}: {exc}",
-        )
         print(f"result=failed reason={type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
     finally:
