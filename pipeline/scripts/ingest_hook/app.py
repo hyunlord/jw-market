@@ -670,6 +670,111 @@ class IngestService:
         actions: list[dict] = []
         reconciled = 0
         inspection_failures = 0
+        reingest_attempts = [
+            attempt
+            for attempt in self.ledger.complete_reingest_attempts(category=category)
+            if attempt.status == STATUS_RUNNING
+        ]
+        for attempt in reingest_attempts:
+            job_name = attempt.job_name or job_launcher.complete_reingest_job_name(
+                attempt.category,
+                attempt.manifest_sha,
+                attempt.run_id,
+            )
+            try:
+                observation = job_launcher.inspect_job(
+                    job_name,
+                    transport=self.inspect_transport,
+                )
+            except Exception as exc:  # noqa: BLE001 - Kubernetes is an external boundary
+                inspection_failures += 1
+                actions.append(
+                    {
+                        "epoch": attempt.epoch,
+                        "category": attempt.category,
+                        "manifest_sha": attempt.manifest_sha,
+                        "job_name": job_name,
+                        "action": "inspection-failed",
+                        "error": type(exc).__name__,
+                        "attempt_kind": "complete_reingest",
+                    }
+                )
+                continue
+
+            if observation.status in {"Pending", "Running"}:
+                actions.append(
+                    {
+                        "epoch": attempt.epoch,
+                        "category": attempt.category,
+                        "manifest_sha": attempt.manifest_sha,
+                        "job_name": job_name,
+                        "action": "untouched",
+                        "job_status": observation.status,
+                        "attempt_kind": "complete_reingest",
+                    }
+                )
+                continue
+            if observation.status == "Complete":
+                terminal_status = STATUS_COMPLETE
+                reason = (
+                    "terminal-present: complete-reingest Kubernetes Job Complete; "
+                    "runner callback did not finalize the attempt"
+                )
+            elif observation.status == "Failed":
+                terminal_status = STATUS_FAILED
+                detail = observation.reason or "condition reason unavailable"
+                reason = (
+                    "terminal-present: complete-reingest Kubernetes Job Failed: "
+                    f"{detail}"
+                )
+            elif observation.status == "Absent":
+                terminal_status = STATUS_FAILED
+                reason = (
+                    "job-absent: complete-reingest Kubernetes Job not found for a "
+                    "running attempt; it may have expired or been deleted"
+                )
+            else:
+                inspection_failures += 1
+                actions.append(
+                    {
+                        "epoch": attempt.epoch,
+                        "category": attempt.category,
+                        "manifest_sha": attempt.manifest_sha,
+                        "job_name": job_name,
+                        "action": "inspection-failed",
+                        "error": f"unsupported status {observation.status}",
+                        "attempt_kind": "complete_reingest",
+                    }
+                )
+                continue
+
+            self.ledger.record_complete_reingest_terminal(
+                attempt.epoch,
+                attempt.category,
+                attempt.manifest_sha,
+                request_id=attempt.request_id,
+                run_id=attempt.run_id,
+                status=terminal_status,
+                reason=reason,
+                actor="terminal_job_reconciler",
+                job_name=job_name,
+                affected_scope=attempt.affected_scope,
+            )
+            reconciled += 1
+            promoted = self.promote() if promote_after else None
+            actions.append(
+                {
+                    "epoch": attempt.epoch,
+                    "category": attempt.category,
+                    "manifest_sha": attempt.manifest_sha,
+                    "job_name": job_name,
+                    "action": "reconciled",
+                    "job_status": observation.status,
+                    "ledger_status": terminal_status,
+                    "promoted_job_name": promoted,
+                    "attempt_kind": "complete_reingest",
+                }
+            )
         entries = [
             *self.ledger.running_entries(category),
             *self.ledger.publish_running_entries(category),
