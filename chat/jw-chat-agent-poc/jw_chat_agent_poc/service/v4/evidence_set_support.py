@@ -98,6 +98,22 @@ def normalize_generic_record(source: str, raw_record: Mapping[str, Any]) -> dict
     record = dict(raw_record)
     if source == "mart":
         record.update(_mart_public_fields(record))
+    elif source == "nedrug":
+        record.update(
+            {
+                key: value
+                for key, value in {
+                    "item_name": text(record.get("ITEM_NAME")) or None,
+                    "company": text(record.get("ENTP_NAME")) or None,
+                    "approval_date": text(record.get("ITEM_PERMIT_DATE")) or None,
+                    "active_ingredient": text(
+                        record.get("ITEM_INGR_NAME") or record.get("MAIN_INGR_ENG")
+                    ) or None,
+                    "status": text(record.get("CANCEL_NAME")) or None,
+                }.items()
+                if value not in (None, "")
+            }
+        )
     elif source == "web":
         summary = text(record.get("summary") or record.get("snippet") or record.get("content"))
         bounded_summary, summary_truncated = _bounded_text(summary, limit=800)

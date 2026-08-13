@@ -1231,3 +1231,55 @@ def test_a_mart_wrappers_promote_public_identity_and_metrics(
     assert record.payload["period"] == "2026-06"
     assert record.payload["sales_krw"] == expected_sales
     assert record.payload["market_share"] == 5.3951
+
+
+def test_a_nedrug_uppercase_records_are_narratable_with_public_fields() -> None:
+    result = SourceResult(
+        source="nedrug",
+        query="리바로젯정",
+        status="ok",
+        payload={
+            "calls": [
+                {
+                    "tool": "mfds_permission_search",
+                    "status": "live",
+                    "render_data": {
+                        "items": [
+                            {
+                                "ITEM_SEQ": "202105578",
+                                "ITEM_NAME": "리바로젯정2/10밀리그램",
+                                "ENTP_NAME": "제이더블유중외제약(주)",
+                                "ITEM_PERMIT_DATE": "20210728",
+                                "ITEM_INGR_NAME": (
+                                    "Ezetimibe/Pitavastatin Calcium Hydrate"
+                                ),
+                                "CANCEL_NAME": "정상",
+                            }
+                        ]
+                    },
+                }
+            ]
+        },
+    )
+
+    (evidence_set,) = build_evidence_sets(
+        _plan("리바로젯 특허현황"),
+        (result,),
+        observed_on=date(2026, 8, 14),
+    )
+    record = evidence_set.records[0]
+    realized = build_narrative_realization(
+        (evidence_set,),
+        (record.evidence_id,),
+    )
+
+    assert record.payload["item_name"] == "리바로젯정2/10밀리그램"
+    assert record.payload["company"] == "제이더블유중외제약(주)"
+    assert record.payload["approval_date"] == "20210728"
+    assert record.payload["active_ingredient"] == (
+        "Ezetimibe/Pitavastatin Calcium Hydrate"
+    )
+    assert record.payload["status"] == "정상"
+    assert realized.unnarrated_record_count == 0
+    assert realized.average_narrated_field_count == 4.0
+    assert realized.identifier_only_sentence_count == 0
