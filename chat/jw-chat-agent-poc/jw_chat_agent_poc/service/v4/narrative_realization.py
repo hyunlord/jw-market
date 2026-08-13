@@ -13,6 +13,12 @@ from jw_chat_agent_poc.service.v4.lossless_contracts import (
     EvidenceSet,
     RenderNode,
 )
+from jw_chat_agent_poc.service.v4.narrative_compaction import (
+    CompactionPlan,
+    build_compaction_plan,
+    relation_node,
+    source_heading,
+)
 from jw_chat_agent_poc.service.v4.narrative_relations import (
     ALLOWED_T2_OPERATORS,
     MAX_T2_CLAIMS,
@@ -84,11 +90,8 @@ def build_narrative_realization(
     narrated = records
     unnarrated_count = 0
     table_ids = frozenset(rendered_ids if table_record_ids is None else table_record_ids)
-    micro_node, t1_claims, table_references = _micro_narratives(
-        narrated,
-        records,
-        table_ids,
-    )
+    plan = build_compaction_plan(records, table_ids)
+    micro_node, t1_claims = _micro_narratives(narrated, plan)
     t2_candidates = tuple(
         sorted(
             build_relation_claims(
@@ -104,24 +107,30 @@ def build_narrative_realization(
         )
     )
     t2_claims = t2_candidates
-    nodes = tuple(node for node in (micro_node, _relation_node(t2_claims)) if node)
+    nodes = tuple(
+        node
+        for node in (
+            micro_node,
+            relation_node(t2_claims, records_by_id, plan),
+        )
+        if node
+    )
     return NarrativeRealization(
         nodes=nodes,
         claims=(*t1_claims, *t2_claims),
         recomputations=tuple(item.recomputation for item in t2_claims),
         truncated_t2_count=0,
         unnarrated_record_count=unnarrated_count,
-        table_reference_record_ids=table_references,
+        table_reference_record_ids=(),
     )
 
 
 def _micro_narratives(
     records: Sequence[EvidenceRecord],
-    all_records: Sequence[EvidenceRecord],
-    table_record_ids: frozenset[str],
-) -> tuple[RenderNode | None, tuple[RealizedClaim, ...], tuple[str, ...]]:
+    plan: CompactionPlan,
+) -> tuple[RenderNode | None, tuple[RealizedClaim, ...]]:
     claims: list[RealizedClaim] = []
-    lines: list[str] = []
+    lines_by_source: dict[str, list[str]] = {}
     surface_fields: list[str] = []
     for index, record in enumerate(records, start=1):
         fields = tuple(
@@ -138,35 +147,32 @@ def _micro_narratives(
             f"{public_source_label(record.source)}의 {record_identity(record, index)}은(는) "
             f"{details}로 확인됩니다."
         )
-        lines.append(f"- [직접 확인] {sentence}")
-        surface_fields.extend(fields)
+        if record.evidence_id not in plan.record_ids:
+            lines_by_source.setdefault(record.source, []).append(f"- {sentence}")
+            surface_fields.extend(fields)
         claims.append(_field_claim(record, fields, values, sentence))
-    if not lines:
-        return None, (), ()
-    narrated_ids = frozenset(record.evidence_id for record in records)
-    table_references: list[str] = []
-    for source in dict.fromkeys(record.source for record in records):
-        omitted = tuple(
-            record
-            for record in all_records
-            if record.source == source and record.evidence_id not in narrated_ids
-        )
-        if omitted and all(record.evidence_id in table_record_ids for record in omitted):
-            table_references.extend(record.evidence_id for record in omitted)
-            lines.append(
-                f"- {public_source_label(source)}의 나머지 {len(omitted)}건은 "
-                "아래 정본 표에서 확인할 수 있습니다."
-            )
-    return (
+    if not claims:
+        return None, ()
+    sections = tuple(
+        f"## {source_heading(source)}\n" + "\n".join(lines)
+        for source, lines in lines_by_source.items()
+        if lines
+    )
+    node = (
         RenderNode(
             block_id="narrative:field-restatement",
-            record_ids=tuple(record.evidence_id for record in records),
+            record_ids=tuple(
+                record.evidence_id
+                for record in records
+                if record.evidence_id not in plan.record_ids
+            ),
             surface_fields=tuple(dict.fromkeys(surface_fields)),
-            text="\n".join(lines),
-        ),
-        tuple(claims),
-        tuple(table_references),
+            text="\n\n".join(sections),
+        )
+        if sections
+        else None
     )
+    return node, tuple(claims)
 
 
 def _field_claim(
@@ -206,23 +212,6 @@ def _field_claim(
         ),
         text=sentence,
         recomputation=proof,
-    )
-
-
-def _relation_node(claims: Sequence[RealizedClaim]) -> RenderNode | None:
-    if not claims:
-        return None
-    record_ids = tuple(
-        dict.fromkeys(
-            record_id
-            for item in claims
-            for record_id in item.recomputation.record_ids
-        )
-    )
-    return RenderNode(
-        block_id="narrative:cross-record-relations",
-        record_ids=record_ids,
-        text="\n".join(f"- [직접 확인] {item.text}" for item in claims),
     )
 
 

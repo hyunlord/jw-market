@@ -705,8 +705,247 @@ def test_d_direct_confirmation_is_inline_and_keeps_source_scoped_relations() -> 
     surface = "\n".join(node.text for node in realization.nodes)
 
     assert "## [직접 확인]" not in surface
-    assert "- [직접 확인]" in surface
+    assert "[직접 확인]" not in surface
     assert "식품의약품안전처 의약품 특허목록" in surface
+
+
+def test_d_repeated_clinical_predicates_use_table_and_three_relation_lines() -> None:
+    records = tuple(
+        EvidenceRecord(
+            evidence_id=f"ct:NCT0000000{index}",
+            source="clinicaltrials",
+            result_kind="clinical",
+            payload={
+                "nct_id": f"NCT0000000{index}",
+                "brief_title": f"임상시험 {index}",
+                "overall_status": "RECRUITING" if index < 3 else "COMPLETED",
+                "phases": ("PHASE3",) if index % 2 else ("PHASE4",),
+                "sponsor": "JW Pharmaceutical" if index < 3 else "Other Sponsor",
+            },
+        )
+        for index in range(1, 5)
+    )
+    evidence = EvidenceSet(
+        source="clinicaltrials",
+        retrieved_at="2026-08-13T00:00:00Z",
+        coverage=CoverageLedger(records_received=4, records_unique=4),
+        records=records,
+    )
+
+    rendered = render_deterministic_facts(
+        _plan("리바로젯 제네릭 임상현황", answer_sources=("clinicaltrials",)),
+        (evidence,),
+        observed_on=date(2026, 8, 13),
+    )
+    surface = "\n".join(node.text for node in rendered.nodes)
+    summary = next(
+        node.text
+        for node in rendered.nodes
+        if node.block_id == "narrative:cross-record-relations"
+    )
+
+    assert surface.count("## 임상시험 상세") == 1
+    assert "| NCT ID | 간략 시험명 | 상태 | 단계 | 스폰서 |" in surface
+    assert "은(는) 상태" not in surface
+    assert "[직접 확인]" not in surface
+    assert summary.startswith("## 임상시험 요약\n")
+    assert len(summary.splitlines()) == 4
+    assert "확인된 레코드는 4건" in summary
+    assert "상태별로" in summary
+    assert "단계별로" in summary
+
+
+def test_d_distinct_clinical_predicates_remain_as_record_sentences() -> None:
+    payloads = (
+        {
+            "nct_id": "NCT00000021",
+            "overall_status": "RECRUITING",
+            "phases": ("PHASE3",),
+            "sponsor": "Sponsor A",
+        },
+        {
+            "nct_id": "NCT00000022",
+            "overall_status": "COMPLETED",
+            "phases": ("PHASE4",),
+            "sponsor": "Sponsor B",
+        },
+        {
+            "nct_id": "NCT00000023",
+            "overall_status": "UNKNOWN",
+            "phases": ("PHASE2",),
+            "company": "Company C",
+        },
+    )
+    records = tuple(
+        EvidenceRecord(
+            evidence_id=f"ct:{payload['nct_id']}",
+            source="clinicaltrials",
+            result_kind="clinical",
+            payload=payload,
+        )
+        for payload in payloads
+    )
+    evidence = EvidenceSet(
+        source="clinicaltrials",
+        retrieved_at="2026-08-13T00:00:00Z",
+        coverage=CoverageLedger(records_received=3, records_unique=3),
+        records=records,
+    )
+
+    rendered = render_deterministic_facts(
+        _plan("서로 다른 임상 필드 확인", answer_sources=("clinicaltrials",)),
+        (evidence,),
+        observed_on=date(2026, 8, 13),
+    )
+    restatement = next(
+        node.text
+        for node in rendered.nodes
+        if node.block_id == "narrative:field-restatement"
+    )
+
+    assert restatement.count("은(는) 상태") == 3
+
+
+def test_d_three_repeated_predicates_compact_when_a_distinct_record_is_present() -> None:
+    records = tuple(
+        EvidenceRecord(
+            evidence_id=f"ct:NCT0000003{index}",
+            source="clinicaltrials",
+            result_kind="clinical",
+            payload={
+                "nct_id": f"NCT0000003{index}",
+                "overall_status": "RECRUITING",
+                "phases": ("PHASE3",),
+                **(
+                    {"sponsor": f"Sponsor {index}"}
+                    if index < 4
+                    else {"company": "Distinct Company"}
+                ),
+            },
+        )
+        for index in range(1, 5)
+    )
+    evidence = EvidenceSet(
+        source="clinicaltrials",
+        retrieved_at="2026-08-13T00:00:00Z",
+        coverage=CoverageLedger(records_received=4, records_unique=4),
+        records=records,
+    )
+
+    rendered = render_deterministic_facts(
+        _plan("혼합 임상 필드 확인", answer_sources=("clinicaltrials",)),
+        (evidence,),
+        observed_on=date(2026, 8, 13),
+    )
+    restatement = next(
+        node.text
+        for node in rendered.nodes
+        if node.block_id == "narrative:field-restatement"
+    )
+
+    assert restatement.count("은(는) 상태") == 1
+    assert "NCT00000034" in restatement
+    assert all(f"NCT0000003{index}" not in restatement for index in range(1, 4))
+
+
+def test_d_compacted_summary_surfaces_only_approved_relation_operators() -> None:
+    records = tuple(
+        EvidenceRecord(
+            evidence_id=f"ct:NCT0000004{index}",
+            source="clinicaltrials",
+            result_kind="clinical",
+            payload={
+                "nct_id": f"NCT0000004{index}",
+                "start_date": f"202{index}-01-01",
+                "completion_date": f"202{index + 1}-01-01",
+                "enrollment": index * 100,
+            },
+        )
+        for index in range(1, 4)
+    )
+    evidence = EvidenceSet(
+        source="clinicaltrials",
+        retrieved_at="2026-08-13T00:00:00Z",
+        coverage=CoverageLedger(records_received=3, records_unique=3),
+        records=records,
+    )
+
+    rendered = render_deterministic_facts(
+        _plan("임상 일정 확인", answer_sources=("clinicaltrials",)),
+        (evidence,),
+        observed_on=date(2026, 8, 13),
+    )
+    summary = next(
+        node.text
+        for node in rendered.nodes
+        if node.block_id == "narrative:cross-record-relations"
+    )
+
+    assert summary.splitlines() == [
+        "## 임상시험 요약",
+        "ClinicalTrials.gov에서 확인된 레코드는 3건입니다.",
+    ]
+
+
+def test_d_clinical_summary_does_not_inherit_domestic_patent_heading() -> None:
+    patent = EvidenceSet(
+        source="patent",
+        retrieved_at="2026-08-13T00:00:00Z",
+        coverage=CoverageLedger(records_received=1, records_unique=1),
+        records=(
+            EvidenceRecord(
+                evidence_id="patent:10-1",
+                source="patent",
+                result_kind="patent",
+                payload={
+                    "lane": "kr_primary",
+                    "product": "리바로젯",
+                    "patent_no": "10-1",
+                    "status": "등록",
+                },
+            ),
+        ),
+        query_manifest=(
+            {
+                "lane": "kr_primary",
+                "records_received": 1,
+                "records_unique": 1,
+                "product_patent_rows": 1,
+            },
+        ),
+    )
+    clinical_records = tuple(
+        EvidenceRecord(
+            evidence_id=f"ct:NCT0000001{index}",
+            source="clinicaltrials",
+            result_kind="clinical",
+            payload={
+                "nct_id": f"NCT0000001{index}",
+                "overall_status": "RECRUITING",
+                "phases": ("PHASE3",),
+                "sponsor": "JW Pharmaceutical",
+            },
+        )
+        for index in range(1, 4)
+    )
+    clinical = EvidenceSet(
+        source="clinicaltrials",
+        retrieved_at="2026-08-13T00:00:00Z",
+        coverage=CoverageLedger(records_received=3, records_unique=3),
+        records=clinical_records,
+    )
+
+    rendered = render_deterministic_facts(
+        _plan("리바로젯 특허현황", answer_sources=("patent",)),
+        (patent, clinical),
+        observed_on=date(2026, 8, 13),
+    )
+    surface = "\n".join(node.text for node in rendered.nodes)
+    patent_scope = surface.index("## 국내 특허 조회 범위")
+    clinical_summary = surface.index("## 임상시험 요약")
+    first_clinical_fact = surface.index("ClinicalTrials.gov에서 확인된 레코드는")
+
+    assert patent_scope < clinical_summary < first_clinical_fact
 
 
 def test_d_missing_source_fields_are_not_rendered_as_internal_raw_field_names() -> None:

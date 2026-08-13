@@ -40,6 +40,7 @@ GROUP_FIELDS: Final = (
     "overall_status",
     "status",
     "phase",
+    "phases",
     "sponsor",
     "company",
     "patent_type",

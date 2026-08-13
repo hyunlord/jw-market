@@ -315,7 +315,7 @@ def test_b_deterministic_render_adds_bound_micro_narrative_without_losing_record
     assert narrative_nodes
     assert all(node.record_ids for node in narrative_nodes)
     assert rendered.coverage.records_rendered == 2
-    assert "[직접 확인]" in rendered.text
+    assert "[직접 확인]" not in rendered.text
     assert any(
         item["claim_type"] == "T2" for item in rendered.structured_claims
     )
