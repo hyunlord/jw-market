@@ -808,6 +808,27 @@ class V4Runtime:
                 "unnarrated_record_count": (
                     deterministic_render.unnarrated_record_count
                 ),
+                "narrated_record_count": len(
+                    deterministic_render.narrated_record_ids
+                ),
+                "narrated_record_ids": list(
+                    deterministic_render.narrated_record_ids
+                ),
+                "unnarrated_records": list(
+                    deterministic_render.unnarrated_records
+                ),
+                "record_field_usage": list(
+                    deterministic_render.record_field_usage
+                ),
+                "average_narrated_field_count": (
+                    deterministic_render.average_narrated_field_count
+                ),
+                "loaded_field_narrative_use_rate": (
+                    deterministic_render.loaded_field_narrative_use_rate
+                ),
+                "identifier_only_sentence_count": (
+                    deterministic_render.identifier_only_sentence_count
+                ),
                 "answer_mutation": composition.answer_mutated,
             },
             "typed_grounding_shadow": grounding_shadow,

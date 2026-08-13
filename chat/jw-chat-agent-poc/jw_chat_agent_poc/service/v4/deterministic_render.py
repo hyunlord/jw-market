@@ -188,6 +188,12 @@ def render_deterministic_facts(
         ),
         structured_claims_truncated=realization.truncated_t2_count,
         unnarrated_record_count=realization.unnarrated_record_count,
+        narrated_record_ids=realization.narrated_record_ids,
+        unnarrated_records=realization.unnarrated_records,
+        record_field_usage=realization.record_field_usage,
+        average_narrated_field_count=realization.average_narrated_field_count,
+        loaded_field_narrative_use_rate=realization.loaded_field_narrative_use_rate,
+        identifier_only_sentence_count=realization.identifier_only_sentence_count,
     )
 
 

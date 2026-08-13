@@ -130,7 +130,7 @@ def test_a_narrative_uses_no_source_axis_heading_or_internal_record_index() -> N
     assert "확인 레코드" not in surface
 
 
-def test_a_record_sentence_requires_three_fields_and_localizes_enums() -> None:
+def test_a_record_sentence_keeps_sparse_records_and_localizes_enums() -> None:
     sparse = EvidenceRecord(
         evidence_id="ct:sparse",
         source="clinicaltrials",
@@ -155,11 +155,13 @@ def test_a_record_sentence_requires_three_fields_and_localizes_enums() -> None:
     )
     t1 = tuple(item for item in realized.claims if item.claim.claim_type == "T1")
 
-    assert len(t1) == 1
-    assert "NCT00000002" in t1[0].text
+    assert len(t1) == 2
+    assert "NCT00000001" in t1[0].text
     assert "모집 중" in t1[0].text
-    assert "RECRUITING" not in t1[0].text
-    assert "PHASE2" not in t1[0].text
+    assert "NCT00000002" in t1[1].text
+    assert "모집 중" in t1[1].text
+    assert "RECRUITING" not in t1[1].text
+    assert "PHASE2" not in t1[1].text
 
 
 def test_a_web_record_uses_exact_inline_citation() -> None:
@@ -826,6 +828,196 @@ def test_a_short_narrative_for_five_records_records_explicit_reason() -> None:
     assert composed.trace["narrative_minimum_required"] is True
     assert composed.trace["narrative_character_count"] < 1500
     assert composed.trace["narrative_shortfall_reason"] == "validated prose below 1500 characters"
+
+
+def test_a_every_compacted_patent_record_remains_in_narrative() -> None:
+    records = tuple(
+        EvidenceRecord(
+            evidence_id=f"patent:KR:{patent_number}",
+            source="patent",
+            result_kind="structured_patent_record",
+            payload={
+                "patent_number": patent_number,
+                "status": "소멸",
+                "patent_type": "제품특허",
+                "extinction_reason": reason,
+            },
+        )
+        for patent_number, reason in (
+            ("10-0186853", "존속기간만료"),
+            ("10-0596257", "등록료불납"),
+            ("10-1244508", "무효"),
+            ("10-1198822", "존속기간만료"),
+        )
+    )
+    realized = build_narrative_realization(
+        (_evidence("patent", *records),),
+        tuple(record.evidence_id for record in records),
+        table_record_ids=tuple(record.evidence_id for record in records),
+    )
+
+    micro = next(node for node in realized.nodes if node.block_id == "narrative:field-restatement")
+
+    assert set(micro.record_ids) == {record.evidence_id for record in records}
+    assert all(record.payload["patent_number"] in micro.text for record in records)
+    assert realized.unnarrated_record_count == 0
+    assert any(
+        claim.claim.claim_type == "T2" and claim.claim.operator_id == "GROUP_COUNT"
+        for claim in realized.claims
+    )
+
+
+def test_a_sparse_record_with_public_identifier_is_narrated() -> None:
+    record = EvidenceRecord(
+        evidence_id="web:1",
+        source="web",
+        result_kind="web_record",
+        payload={
+            "title": "리바로젯 제네릭 도전",
+            "publisher": "데일리팜",
+        },
+    )
+
+    realized = build_narrative_realization(
+        (_evidence("web", record),),
+        (record.evidence_id,),
+    )
+
+    micro = next(node for node in realized.nodes if node.block_id == "narrative:field-restatement")
+    assert micro.record_ids == (record.evidence_id,)
+    assert "리바로젯 제네릭 도전" in micro.text
+    assert realized.unnarrated_record_count == 0
+
+
+def test_a_narrative_character_floor_scales_with_every_rendered_record() -> None:
+    records = tuple(
+        EvidenceRecord(
+            evidence_id=f"ct:NCT{index:08d}",
+            source="clinicaltrials",
+            result_kind="structured_clinical_record",
+            payload={
+                "nct_id": f"NCT{index:08d}",
+                "overall_status": "RECRUITING",
+                "phases": ("PHASE3",),
+                "sponsor": f"Sponsor {index}",
+                "start_date": f"2026-01-{index:02d}",
+            },
+        )
+        for index in range(1, 21)
+    )
+    realized = build_narrative_realization(
+        (_evidence("clinicaltrials", *records),),
+        tuple(record.evidence_id for record in records),
+        table_record_ids=tuple(record.evidence_id for record in records),
+    )
+
+    micro = next(node for node in realized.nodes if node.block_id == "narrative:field-restatement")
+    prose_count = len("".join(line.strip() for line in micro.text.splitlines()))
+
+    assert len(micro.record_ids) == len(records)
+    assert all(record.payload["nct_id"] in micro.text for record in records)
+    assert prose_count >= max(1500, len(records) * 80)
+
+
+def test_a_narrative_uses_loaded_source_fields_and_reports_usage_metrics() -> None:
+    records = (
+        EvidenceRecord(
+            evidence_id="ct:NCT05151731",
+            source="clinicaltrials",
+            result_kind="structured_clinical_record",
+            payload={
+                "nct_id": "NCT05151731",
+                "brief_title": "진행성 고형암 시험",
+                "conditions": ["고형암"],
+                "interventions": ["시험약 A"],
+                "phases": ["PHASE2"],
+                "overall_status": "RECRUITING",
+                "sponsor": "JW중외제약",
+                "enrollment": {"count": 120, "type": "ACTUAL"},
+                "start_date": "2025-06-25",
+                "completion_date": "2027-03-31",
+                "primary_outcomes": [
+                    {"measure": "객관적 반응률", "time_frame": "24개월"}
+                ],
+                "facilities": ["서울대병원", "세브란스병원"],
+                "countries": ["대한민국"],
+                "collaborators": ["국립암센터"],
+                "eligibility_criteria": "만 19세 이상이며 측정 가능한 병변이 있는 환자",
+                "brief_summary": "시험 목적과 설계를 설명하는 요약입니다.",
+            },
+        ),
+        EvidenceRecord(
+            evidence_id="patent:KR:10-0186853",
+            source="patent",
+            result_kind="structured_patent_record",
+            payload={
+                "patent_no": "10-0186853",
+                "invention_title": "피타바스타틴 복합 조성물",
+                "patent_type": "조성물",
+                "status": "소멸",
+                "extinction_reason": "존속기간만료",
+                "expiration_date": "2026-01-09",
+                "owner": "JW중외제약",
+                "pms_end_date": "2024-08-01",
+            },
+        ),
+        EvidenceRecord(
+            evidence_id="hira:notice:2026-101",
+            source="hira",
+            result_kind="policy_document",
+            payload={
+                "notice_number": "고시 제2026-101호",
+                "title": "리바로젯 급여기준",
+                "effective_date": "2026-08-01",
+                "target_product": "리바로젯정",
+                "active_ingredient": "피타바스타틴·에제티미브",
+            },
+        ),
+        EvidenceRecord(
+            evidence_id="mart:리바로젯:2026",
+            source="mart",
+            result_kind="mart",
+            payload={
+                "brand": "리바로젯",
+                "period": "2026",
+                "sales": 124.54,
+                "unit": "억원",
+                "delta_krw": 24.54,
+                "market_share": 12.3,
+            },
+        ),
+    )
+
+    realized = build_narrative_realization(
+        (
+            _evidence("clinicaltrials", records[0]),
+            _evidence("patent", records[1]),
+            _evidence("hira", records[2]),
+            _evidence("mart", records[3]),
+        ),
+        tuple(record.evidence_id for record in records),
+    )
+    surface = "\n".join(node.text for node in realized.nodes)
+
+    for expected in (
+        "진행성 고형암 시험",
+        "객관적 반응률",
+        "120명",
+        "서울대병원; 세브란스병원",
+        "국립암센터",
+        "만 19세 이상",
+        "피타바스타틴 복합 조성물",
+        "고시 제2026-101호",
+        "2026-08-01",
+        "124.54",
+        "24.54",
+        "12.3",
+    ):
+        assert expected in surface
+    assert realized.identifier_only_sentence_count == 0
+    assert realized.average_narrated_field_count >= 3
+    assert realized.loaded_field_narrative_use_rate == 1.0
+    assert all(item["used_field_count"] >= 3 for item in realized.record_field_usage)
 
 
 def test_b_web_items_survive_as_records_with_publication_fields() -> None:

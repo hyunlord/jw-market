@@ -374,7 +374,10 @@ def test_b_micro_narrative_does_not_reference_a_table_for_unrendered_records() -
         table_record_ids=(clinical.records[0].evidence_id,),
     )
 
-    assert realization.unnarrated_record_count == 0
+    assert realization.unnarrated_record_count == 9
+    assert {
+        item["reason_code"] for item in realization.unnarrated_records
+    } == {"public_identifier_missing"}
     assert "아래 정본 표" not in realization.nodes[0].text
 
 

@@ -16,6 +16,7 @@ IDENTITY_FIELDS: Final = (
     "item_name",
     "product_name",
     "brand",
+    "notice_number",
     "title",
 )
 NARRATIVE_FIELDS: Final = (
@@ -23,18 +24,32 @@ NARRATIVE_FIELDS: Final = (
     "status",
     "phase",
     "phases",
+    "brief_title",
+    "official_title",
+    "study_type",
     "sponsor",
     "company",
     "start_date",
     "completion_date",
+    "primary_completion_date",
     "expiration_date",
+    "extinction_date",
+    "invention_title",
     "patent_type",
     "extinction_reason",
     "owner",
     "pms_end_date",
     "enrollment",
+    "primary_outcomes",
+    "secondary_outcomes",
     "sales_krw",
+    "sales",
+    "unit",
+    "period",
+    "delta_krw",
+    "sales_delta",
     "market_share",
+    "share_pct",
     "publisher",
     "published_at",
     "summary",
@@ -43,7 +58,24 @@ NARRATIVE_FIELDS: Final = (
     "label_section",
     "conditions",
     "interventions",
+    "intervention_details",
+    "comparators",
+    "collaborators",
+    "countries",
+    "facilities",
     "brief_summary",
+    "detailed_description",
+    "eligibility_criteria",
+    "sex",
+    "minimum_age",
+    "maximum_age",
+    "has_results",
+    "last_update_date",
+    "notice_name",
+    "notice_number",
+    "effective_date",
+    "target_product",
+    "target_ingredient",
 )
 GROUP_FIELDS: Final = (
     "overall_status",
@@ -80,7 +112,13 @@ FIELD_LABELS: Final = {
     "company": "회사",
     "start_date": "시작일",
     "completion_date": "완료일",
+    "primary_completion_date": "1차 완료일",
     "expiration_date": "만료일",
+    "extinction_date": "소멸일",
+    "brief_title": "시험명",
+    "official_title": "공식 시험명",
+    "study_type": "시험 유형",
+    "invention_title": "발명명",
     "patent_type": "특허구분",
     "extinction_reason": "소멸 사유",
     "owner": "권리자",
@@ -88,8 +126,16 @@ FIELD_LABELS: Final = {
     "filing_date": "출원일",
     "publication_date": "공개일",
     "enrollment": "등록 인원",
+    "primary_outcomes": "1차 평가변수",
+    "secondary_outcomes": "2차 평가변수",
     "sales_krw": "매출",
+    "sales": "매출",
+    "unit": "단위",
+    "period": "기간",
+    "delta_krw": "증감",
+    "sales_delta": "증감",
     "market_share": "점유율",
+    "share_pct": "점유율",
     "amount_krw": "금액",
     "patient_count": "환자수",
     "publisher": "게시자",
@@ -100,8 +146,37 @@ FIELD_LABELS: Final = {
     "label_section": "라벨 정보",
     "conditions": "적응증",
     "interventions": "개입약물",
+    "intervention_details": "개입 상세",
+    "comparators": "대조군",
+    "collaborators": "협력기관",
+    "countries": "국가",
+    "facilities": "수행기관",
     "brief_summary": "시험 요약",
+    "detailed_description": "상세 설명",
+    "eligibility_criteria": "선정·제외 기준",
+    "sex": "성별",
+    "minimum_age": "최소 연령",
+    "maximum_age": "최대 연령",
+    "has_results": "결과 공개 여부",
+    "last_update_date": "최종 갱신일",
+    "notice_name": "고시명",
+    "notice_number": "고시번호",
+    "effective_date": "시행일",
+    "target_product": "대상 품명",
+    "target_ingredient": "대상 성분",
 }
+_LONG_NARRATIVE_FIELDS: Final = {
+    "brief_summary",
+    "detailed_description",
+    "eligibility_criteria",
+    "invention_title",
+    "intervention_details",
+    "official_title",
+    "primary_outcomes",
+    "secondary_outcomes",
+    "summary",
+}
+_LONG_NARRATIVE_LIMIT: Final = 320
 _PUBLIC_ENUMS: Final = {
     "RECRUITING": "모집 중",
     "NOT_YET_RECRUITING": "모집 전",
@@ -150,6 +225,64 @@ def display_field_value(record: EvidenceRecord, field: str | None) -> str | None
     if ", " in value:
         return ", ".join(public_enum_value(item) for item in value.split(", "))
     return public_enum_value(value)
+
+
+def narrative_field_value(record: EvidenceRecord, field: str) -> str | None:
+    value = record.payload.get(field)
+    if value in (None, "", "원천 미제공"):
+        return None
+    if field == "enrollment" and isinstance(value, Mapping):
+        count = value.get("count")
+        kind = value.get("type")
+        if count in (None, "") and kind in (None, ""):
+            return None
+        count_text = f"{count}명" if count not in (None, "") else ""
+        kind_text = public_enum_value(kind) if kind not in (None, "") else ""
+        return f"{count_text} ({kind_text})".strip() if kind_text else count_text
+    if isinstance(value, Mapping):
+        text = _mapping_narrative(value)
+    elif isinstance(value, (list, tuple)):
+        parts = tuple(
+            part
+            for item in value
+            if (
+                part := (
+                    _mapping_narrative(item)
+                    if isinstance(item, Mapping)
+                    else str(item).strip()
+                )
+            )
+        )
+        text = "; ".join(dict.fromkeys(parts)) or None
+    else:
+        text = str(value).strip() or None
+    if text is None:
+        return None
+    text = public_enum_value(text)
+    if field in _LONG_NARRATIVE_FIELDS and len(text) > _LONG_NARRATIVE_LIMIT:
+        return f"{text[:_LONG_NARRATIVE_LIMIT].rstrip()}…"
+    return text
+
+
+def _mapping_narrative(value: Mapping[object, object]) -> str | None:
+    preferred = (
+        ("measure", "평가변수"),
+        ("description", "설명"),
+        ("other_names", "다른 명칭"),
+        ("time_frame", "평가기간"),
+        ("timeFrame", "평가기간"),
+        ("name", "기관"),
+        ("city", "도시"),
+        ("country", "국가"),
+        ("count", "수"),
+        ("type", "구분"),
+    )
+    parts = tuple(
+        f"{label} {public_enum_value(item)}"
+        for key, label in preferred
+        if (item := value.get(key)) not in (None, "")
+    )
+    return ", ".join(dict.fromkeys(parts)) or None
 
 
 def public_enum_value(value: object) -> str:

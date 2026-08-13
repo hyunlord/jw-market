@@ -130,6 +130,21 @@ def compose_lossless_answer(
         "records_rendered": rendered.coverage.records_rendered,
         "rendered_table_rows": rendered.coverage.records_rendered,
         "lossless_records_rendered": rendered.coverage.records_rendered,
+        "narrated_record_count": len(rendered.narrated_record_ids),
+        "narrated_record_ids": list(rendered.narrated_record_ids),
+        "unnarrated_record_count": rendered.unnarrated_record_count,
+        "unnarrated_records": list(rendered.unnarrated_records),
+        "narrative_identifier_parity": (
+            len(rendered.narrated_record_ids) == rendered.coverage.records_rendered
+        ),
+        "narrative_record_accounting_complete": (
+            len(rendered.narrated_record_ids) + rendered.unnarrated_record_count
+            == rendered.coverage.records_rendered
+        ),
+        "record_field_usage": list(rendered.record_field_usage),
+        "average_narrated_field_count": rendered.average_narrated_field_count,
+        "loaded_field_narrative_use_rate": rendered.loaded_field_narrative_use_rate,
+        "identifier_only_sentence_count": rendered.identifier_only_sentence_count,
         "render_nodes": [
             {
                 "block_id": node.block_id,
@@ -172,13 +187,19 @@ def compose_lossless_answer(
     trace["answer_mutation"] = True
     trace["public_source_surface"] = {"rewritten": public_source_rewrites}
     narrative_character_count = _narrative_character_count(text)
-    narrative_minimum_required = rendered.coverage.records_rendered >= 5
+    narrative_character_floor = max(1500, rendered.coverage.records_rendered * 80)
+    narrative_minimum_required = rendered.coverage.records_rendered > 0
     trace["duplicate_leading_sentences_removed"] = duplicate_leading_sentences_removed
     trace["narrative_character_count"] = narrative_character_count
+    trace["narrative_character_floor"] = narrative_character_floor
+    trace["narrative_character_floor_met"] = (
+        narrative_character_count >= narrative_character_floor
+    )
     trace["narrative_minimum_required"] = narrative_minimum_required
     trace["narrative_shortfall_reason"] = (
-        "validated prose below 1500 characters"
-        if narrative_minimum_required and narrative_character_count < 1500
+        f"validated prose below {narrative_character_floor} characters"
+        if narrative_minimum_required
+        and narrative_character_count < narrative_character_floor
         else None
     )
     trace["requested_fields_injected"] = bool(

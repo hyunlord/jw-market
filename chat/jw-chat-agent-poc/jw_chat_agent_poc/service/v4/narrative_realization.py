@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from hashlib import sha256
 import json
-from typing import Final
+from typing import Any, Final
 
 from pydantic import BaseModel, ConfigDict
 
@@ -14,7 +14,6 @@ from jw_chat_agent_poc.service.v4.lossless_contracts import (
     RenderNode,
 )
 from jw_chat_agent_poc.service.v4.narrative_compaction import (
-    CompactionPlan,
     build_compaction_plan,
     relation_node,
 )
@@ -33,6 +32,7 @@ from jw_chat_agent_poc.service.v4.narrative_values import (
     NARRATIVE_FIELDS,
     display_field_value,
     field_value,
+    narrative_field_value,
     record_identity,
 )
 from jw_chat_agent_poc.service.v4.source_labels import public_source_label
@@ -68,7 +68,13 @@ class NarrativeRealization(BaseModel):
     recomputations: tuple[RecomputationEvidence, ...]
     truncated_t2_count: int = 0
     unnarrated_record_count: int = 0
+    narrated_record_ids: tuple[str, ...] = ()
+    unnarrated_records: tuple[dict[str, str], ...] = ()
     table_reference_record_ids: tuple[str, ...] = ()
+    record_field_usage: tuple[dict[str, Any], ...] = ()
+    average_narrated_field_count: float = 0.0
+    loaded_field_narrative_use_rate: float = 0.0
+    identifier_only_sentence_count: int = 0
 
 
 def build_narrative_realization(
@@ -87,11 +93,12 @@ def build_narrative_realization(
         for record_id in dict.fromkeys(rendered_ids)
         if record_id in records_by_id
     )
-    narrated = records
-    unnarrated_count = 0
     table_ids = frozenset(rendered_ids if table_record_ids is None else table_record_ids)
     plan = build_compaction_plan(records, table_ids)
-    micro_node, t1_claims = _micro_narratives(narrated, plan)
+    micro_node, t1_claims, unnarrated_records, field_usage = _micro_narratives(records)
+    narrated_record_ids = micro_node.record_ids if micro_node is not None else ()
+    available_field_count = sum(item["available_field_count"] for item in field_usage)
+    used_field_count = sum(item["used_field_count"] for item in field_usage)
     t2_candidates = tuple(
         sorted(
             build_relation_claims(
@@ -124,59 +131,118 @@ def build_narrative_realization(
         claims=(*t1_claims, *t2_claims),
         recomputations=tuple(item.recomputation for item in t2_claims),
         truncated_t2_count=0,
-        unnarrated_record_count=unnarrated_count,
+        unnarrated_record_count=len(unnarrated_records),
+        narrated_record_ids=narrated_record_ids,
+        unnarrated_records=unnarrated_records,
         table_reference_record_ids=(),
+        record_field_usage=field_usage,
+        average_narrated_field_count=round(
+            used_field_count / len(narrated_record_ids), 6
+        ) if narrated_record_ids else 0.0,
+        loaded_field_narrative_use_rate=round(
+            used_field_count / available_field_count, 6
+        ) if available_field_count else 0.0,
+        identifier_only_sentence_count=sum(
+            item["used_field_count"] == 0 and item["reason_code"] is None
+            for item in field_usage
+        ),
     )
 
 
 def _micro_narratives(
     records: Sequence[EvidenceRecord],
-    plan: CompactionPlan,
-) -> tuple[RenderNode | None, tuple[RealizedClaim, ...]]:
+) -> tuple[
+    RenderNode | None,
+    tuple[RealizedClaim, ...],
+    tuple[dict[str, str], ...],
+    tuple[dict[str, Any], ...],
+]:
     claims: list[RealizedClaim] = []
     lines: list[str] = []
     surface_fields: list[str] = []
+    narrated_record_ids: list[str] = []
+    unnarrated_records: list[dict[str, str]] = []
+    field_usage: list[dict[str, Any]] = []
     for index, record in enumerate(records, start=1):
         fields = tuple(
-            field for field in NARRATIVE_FIELDS if field_value(record, field) is not None
-        )[:3]
-        identity = record_identity(record, index)
-        if len(fields) < 3 or identity is None:
-            continue
-        values = tuple(field_value(record, field) or "" for field in fields)
-        display_values = tuple(
-            display_field_value(record, field) or "" for field in fields
+            field
+            for field in NARRATIVE_FIELDS
+            if narrative_field_value(record, field) is not None
         )
+        identity = record_identity(record, index)
+        if identity is None:
+            unnarrated_records.append(
+                {
+                    "record_id": record.evidence_id,
+                    "reason_code": "public_identifier_missing",
+                }
+            )
+            field_usage.append(
+                {
+                    "record_id": record.evidence_id,
+                    "source": record.source,
+                    "available_field_count": len(fields),
+                    "used_field_count": 0,
+                    "used_fields": (),
+                    "reason_code": "public_identifier_missing",
+                }
+            )
+            continue
+        if not fields:
+            unnarrated_records.append(
+                {
+                    "record_id": record.evidence_id,
+                    "reason_code": "public_narrative_fields_missing",
+                }
+            )
+            field_usage.append(
+                {
+                    "record_id": record.evidence_id,
+                    "source": record.source,
+                    "available_field_count": 0,
+                    "used_field_count": 0,
+                    "used_fields": (),
+                    "reason_code": "public_narrative_fields_missing",
+                }
+            )
+            continue
+        values = tuple(narrative_field_value(record, field) or "" for field in fields)
         details = ", ".join(
             f"{FIELD_LABELS.get(field, field)} {value}"
-            for field, value in zip(fields, display_values, strict=True)
+            for field, value in zip(fields, values, strict=True)
         )
         citation = _inline_citation(record)
         sentence = (
             f"{public_source_label(record.source)}의 {identity}은(는) "
             f"{details}로 확인됩니다. {citation}"
         )
-        if record.evidence_id not in plan.record_ids:
-            lines.append(f"- {sentence}")
-            surface_fields.extend(fields)
+        lines.append(f"- {sentence}")
+        narrated_record_ids.append(record.evidence_id)
+        surface_fields.extend(fields)
         claims.append(_field_claim(record, fields, values, sentence))
+        field_usage.append(
+            {
+                "record_id": record.evidence_id,
+                "source": record.source,
+                "available_field_count": len(fields),
+                "used_field_count": len(fields),
+                "used_fields": fields,
+                "reason_code": None,
+            }
+        )
     if not claims:
-        return None, ()
+        return None, (), tuple(unnarrated_records), tuple(field_usage)
     node = (
         RenderNode(
             block_id="narrative:field-restatement",
-            record_ids=tuple(
-                record.evidence_id
-                for record in records
-                if record.evidence_id not in plan.record_ids
-            ),
+            record_ids=tuple(narrated_record_ids),
             surface_fields=tuple(dict.fromkeys(surface_fields)),
             text="\n".join(lines),
         )
         if lines
         else None
     )
-    return node, tuple(claims)
+    return node, tuple(claims), tuple(unnarrated_records), tuple(field_usage)
 
 
 def _inline_citation(record: EvidenceRecord) -> str:
