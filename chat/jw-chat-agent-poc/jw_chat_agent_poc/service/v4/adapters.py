@@ -1388,7 +1388,11 @@ def build_source_adapters() -> dict[SourceName, Any]:
 
     setattr(clinicaltrials, "prepare_requests", prepare_clinical_requests)
 
-    def patent(query: str) -> SourceResult:
+    def patent(
+        query: str,
+        *,
+        transport_event_callback: Callable[[Mapping[str, Any]], None] | None = None,
+    ) -> SourceResult:
         base = _base_query(query)
         resolution = resolved(query)
         molecules = (
@@ -1413,6 +1417,7 @@ def build_source_adapters() -> dict[SourceName, Any]:
                 f"{base} 특허 만료 최근 뉴스",
                 search_depth="basic",
                 topic="news",
+                transport_event_callback=transport_event_callback,
             )
         ]
         result = external_calls(
@@ -1442,17 +1447,34 @@ def build_source_adapters() -> dict[SourceName, Any]:
             update={"payload": {**result.payload, "patent_lanes": lanes}}
         )
 
+    def web(
+        query: str,
+        *,
+        transport_event_callback: Callable[[Mapping[str, Any]], None] | None = None,
+    ) -> SourceResult:
+        return external_calls(
+            "web",
+            query,
+            [
+                _v4_web_search(
+                    external,
+                    _base_query(query),
+                    search_depth="advanced",
+                    transport_event_callback=transport_event_callback,
+                )
+            ],
+        )
+
+    setattr(patent, "supports_transport_event_callback", True)
+    setattr(web, "supports_transport_event_callback", True)
+
     return {
         "mart": mart,
         "nedrug": nedrug,
         "hira": hira,
         "openfda": openfda,
         "clinicaltrials": clinicaltrials,
-        "web": lambda query: external_calls(
-            "web",
-            query,
-            [_v4_web_search(external, _base_query(query), search_depth="advanced")],
-        ),
+        "web": web,
         "patent": patent,
     }
 
@@ -1885,6 +1907,7 @@ def _v4_web_search(
     *,
     search_depth: str,
     topic: str = "general",
+    transport_event_callback: Callable[[Mapping[str, Any]], None] | None = None,
 ):
     provider = os.environ.get("WEB_SEARCH_PROVIDER", "tavily").strip().casefold()
     if provider != "tavily_mcp":
@@ -1900,6 +1923,20 @@ def _v4_web_search(
             cached = _V4_GATE_WEB_CACHE.get(cache_key)
         if cached is not None:
             cached_policy = cached.render_data.get("v4_tavily_policy", {})
+            _emit_v4_transport_event(
+                transport_event_callback,
+                {
+                    "attempt": 0,
+                    "phase": "cache_hit",
+                    "request_issued": False,
+                    "response_received": False,
+                    "status": "cache_hit",
+                    "error_type": None,
+                    "elapsed_ms": 0.0,
+                    "search_depth": search_depth,
+                    "topic": topic,
+                },
+            )
             return replace(
                 cached,
                 render_data={
@@ -1918,21 +1955,42 @@ def _v4_web_search(
                 },
             )
 
-    call = _v4_tavily_mcp_request(
-        external,
-        query,
-        search_depth=search_depth,
-        topic=topic,
-    )
-    attempt_trace = [_v4_web_attempt_trace(call, attempt=1)]
-    if _v4_transport_retryable(call):
-        call = _v4_tavily_mcp_request(
-            external,
-            query,
-            search_depth=search_depth,
-            topic=topic,
+    request_kwargs: dict[str, Any] = {
+        "search_depth": search_depth,
+        "topic": topic,
+    }
+    if transport_event_callback is not None:
+        request_kwargs.update(
+            attempt=1,
+            transport_event_callback=transport_event_callback,
         )
-        attempt_trace.append(_v4_web_attempt_trace(call, attempt=2))
+    call = _v4_tavily_mcp_request(external, query, **request_kwargs)
+    first_attempt = _v4_web_attempt_trace(call, attempt=1)
+    _emit_v4_transport_event(
+        transport_event_callback,
+        {
+            **first_attempt,
+            "phase": "attempt_completed",
+            "search_depth": search_depth,
+            "topic": topic,
+        },
+    )
+    attempt_trace = [first_attempt]
+    if _v4_transport_retryable(call):
+        if transport_event_callback is not None:
+            request_kwargs["attempt"] = 2
+        call = _v4_tavily_mcp_request(external, query, **request_kwargs)
+        retry_attempt = _v4_web_attempt_trace(call, attempt=2)
+        _emit_v4_transport_event(
+            transport_event_callback,
+            {
+                **retry_attempt,
+                "phase": "attempt_completed",
+                "search_depth": search_depth,
+                "topic": topic,
+            },
+        )
+        attempt_trace.append(retry_attempt)
     connect_timeout_s, read_timeout_s = _v4_web_timeouts()
     requests_issued = sum(bool(item["request_issued"]) for item in attempt_trace)
     responses_received = sum(bool(item["response_received"]) for item in attempt_trace)
@@ -2115,6 +2173,8 @@ def _v4_tavily_mcp_request(
     *,
     search_depth: str,
     topic: str,
+    attempt: int = 1,
+    transport_event_callback: Callable[[Mapping[str, Any]], None] | None = None,
 ):
     from jw_chat_agent_poc.tools.external.client import (
         TAVILY_MCP_SOURCE,
@@ -2159,6 +2219,23 @@ def _v4_tavily_mcp_request(
             },
         )
     try:
+        _emit_v4_transport_event(
+            transport_event_callback,
+            {
+                "attempt": attempt,
+                "phase": "request_issued",
+                "request_issued": True,
+                "response_received": False,
+                "status": "in_flight",
+                "error_type": None,
+                "elapsed_ms": queue_wait_ms,
+                "search_depth": search_depth,
+                "topic": topic,
+                "connect_timeout_seconds": connect_timeout_s,
+                "read_timeout_seconds": read_timeout_s,
+                "max_concurrency": concurrency_limit,
+            },
+        )
         try:
             with mcp_attempt_limit(1):
                 result = McpJsonClient(
@@ -2198,6 +2275,21 @@ def _v4_tavily_mcp_request(
             "queue_wait_ms": queue_wait_ms,
         },
     )
+
+
+def _emit_v4_transport_event(
+    callback: Callable[[Mapping[str, Any]], None] | None,
+    event: Mapping[str, Any],
+) -> None:
+    if callback is None:
+        return
+    try:
+        callback(dict(event))
+    except Exception as exc:  # noqa: BLE001 - telemetry must not break retrieval
+        LOGGER.warning(
+            "v4 Tavily transport event callback failed error_type=%s",
+            type(exc).__name__,
+        )
 
 
 def _mart_payload_ok(payload: dict[str, Any]) -> bool:
