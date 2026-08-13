@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, date, datetime
 from typing import Any
+from urllib.parse import urlparse
 
 from jw_chat_agent_poc.service.v4.clinical import normalize_clinical_detail
 from jw_chat_agent_poc.service.v4.contracts import SourceResult
@@ -12,6 +13,7 @@ from jw_chat_agent_poc.service.v4.lossless_contracts import (
     EvidenceSet,
     SourceReference,
 )
+from jw_chat_agent_poc.service.v4.retrieval_events import failure_status_from_value
 
 
 def generic_evidence_set(
@@ -28,18 +30,22 @@ def generic_evidence_set(
         if not source_calls and result.status == "ok" and isinstance(result.payload, Mapping):
             source_calls = [dict(result.payload)]
         for call_index, call in enumerate(source_calls, start=1):
-            if call.get("status") in {"error", "no_data", "unsupported"}:
+            if _call_failure_status(call) is not None:
                 failures.append(call_failure(call))
-            evidence_id = f"{source}:{result_index}:{call_index}"
-            records.append(
-                EvidenceRecord(
-                    evidence_id=evidence_id,
-                    source=source,
-                    result_kind="external_record",
-                    payload={**call, "evidence_id": evidence_id},
-                    source_refs=record_refs(call),
+                continue
+            call_records = generic_call_records(source, call)
+            for record_index, raw_record in enumerate(call_records, start=1):
+                evidence_id = f"{source}:{result_index}:{call_index}:{record_index}"
+                record = normalize_generic_record(source, raw_record)
+                records.append(
+                    EvidenceRecord(
+                        evidence_id=evidence_id,
+                        source=source,
+                        result_kind=f"{source}_record",
+                        payload={**record, "evidence_id": evidence_id},
+                        source_refs=record_refs(record),
+                    )
                 )
-            )
     refs = dedupe_refs(
         [*(result_refs(result) for result in results), *(record.source_refs for record in records)]
     )
@@ -56,6 +62,101 @@ def generic_evidence_set(
         item_failures=tuple(failures),
         source_refs=refs,
     )
+
+
+def _call_failure_status(call: Mapping[str, Any]) -> str | None:
+    render_data = mapping(call.get("render_data"))
+    for value in (call.get("status"), render_data.get("status")):
+        classified = failure_status_from_value(value)
+        if classified is not None:
+            return classified
+    return None
+
+
+def generic_call_records(source: str, call: Mapping[str, Any]) -> list[dict[str, Any]]:
+    render_data = mapping(call.get("render_data"))
+    payload = mapping(render_data.get("payload"))
+    candidates = (
+        render_data.get("items"),
+        payload.get("results"),
+        payload.get("items"),
+        payload.get("rows"),
+        call.get("records"),
+        call.get("rows"),
+        call.get("items"),
+    )
+    for candidate in candidates:
+        records = mapping_list(candidate)
+        if records:
+            return [dict(record) for record in records]
+    if source == "mart" and render_data:
+        return [dict(render_data)]
+    return [dict(call)]
+
+
+def normalize_generic_record(source: str, raw_record: Mapping[str, Any]) -> dict[str, Any]:
+    record = dict(raw_record)
+    if source == "web":
+        summary = text(record.get("summary") or record.get("snippet") or record.get("content"))
+        bounded_summary, summary_truncated = _bounded_text(summary, limit=800)
+        url = text(record.get("url"))
+        record.update(
+            {
+                "publisher": text(record.get("publisher")) or _publisher_from_url(url),
+                "published_at": text(
+                    record.get("published_at") or record.get("published_date")
+                ) or None,
+                "summary": bounded_summary or None,
+                "summary_truncated": summary_truncated,
+            }
+        )
+    elif source == "openfda":
+        openfda = mapping(record.get("openfda"))
+        label_text = _first_text(
+            record.get("label_section")
+            or record.get("indications_and_usage")
+            or record.get("purpose")
+        )
+        bounded_label, label_truncated = _bounded_text(label_text, limit=800)
+        record.update(
+            {
+                "product_name": _first_text(
+                    record.get("product_name")
+                    or record.get("brand_name")
+                    or openfda.get("brand_name")
+                ) or None,
+                "active_ingredient": _first_text(
+                    record.get("active_ingredient")
+                    or record.get("substance_name")
+                    or openfda.get("substance_name")
+                    or openfda.get("generic_name")
+                ) or None,
+                "approval_date": text(
+                    record.get("approval_date") or record.get("effective_time")
+                ) or None,
+                "label_section": bounded_label or None,
+                "label_section_truncated": label_truncated,
+            }
+        )
+    return record
+
+
+def _publisher_from_url(url: str) -> str | None:
+    host = (urlparse(url).hostname or "").casefold()
+    return host.removeprefix("www.") or None
+
+
+def _first_text(value: object) -> str:
+    if isinstance(value, (list, tuple)):
+        return text(next((item for item in value if text(item)), ""))
+    return text(value)
+
+
+def _bounded_text(value: str, *, limit: int) -> tuple[str, bool]:
+    normalized = " ".join(value.split())
+    if len(normalized) <= limit:
+        return normalized, False
+    return normalized[:limit].rstrip() + "...", True
 
 
 def has_reimbursement(results: Sequence[SourceResult]) -> bool:

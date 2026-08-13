@@ -21,6 +21,7 @@ from jw_chat_agent_poc.service.v4.narrative_values import (
     FIELD_LABELS,
     GROUP_FIELDS,
     NUMERIC_FIELDS,
+    display_field_value,
     display_number,
     field_value,
     numeric_value,
@@ -132,25 +133,25 @@ def _field_relations(
         )
         if len(field_records) < 2:
             continue
-        values = tuple(field_value(record, field) for record in field_records)
+        values = tuple(display_field_value(record, field) for record in field_records)
         counts = Counter(value for value in values if value is not None)
         label = FIELD_LABELS.get(field, field)
         partial = len(field_records) < len(records)
         if len(counts) > 1:
-            groups = ", ".join(
-                f"{value} {count}건" for value, count in sorted(counts.items())
-            )
-            prefix = (
-                f"{source_label}에서 {label}가 제공된 레코드 기준으로"
-                if partial
-                else f"{source_label} 레코드는 {label}별로"
+            sentence = _group_count_sentence(
+                field,
+                field_records,
+                counts,
+                source_label,
+                label,
+                partial=partial,
             )
             output.append(
                 _relation(
                     "GROUP_COUNT",
                     field_records,
                     field,
-                    f"{prefix} {groups}입니다.",
+                    sentence,
                 )
             )
         elif counts:
@@ -188,6 +189,54 @@ def _field_relations(
                 )
             )
     return tuple(output)
+
+
+def _group_count_sentence(
+    field: str,
+    records: Sequence[EvidenceRecord],
+    counts: Counter[str],
+    source_label: str,
+    label: str,
+    *,
+    partial: bool,
+) -> str:
+    total = len(records)
+    maximum = max(counts.values())
+    leaders = tuple(sorted(value for value, count in counts.items() if count == maximum))
+    supplied = f"{label}가 제공된 " if partial else ""
+    if field in {"overall_status", "status"}:
+        if len(leaders) == 1:
+            subject = f"{leaders[0]}{_subject_particle(leaders[0])} {maximum}건으로 가장 많습니다"
+        else:
+            subject = f"{'·'.join(leaders)}가 각각 {maximum}건으로 공동 최다입니다"
+        return (
+            f"{source_label}의 {supplied}총 {total}건 중 {subject}."
+        )
+    if field in {"phase", "phases"}:
+        late_count = sum(
+            1
+            for record in records
+            if any(
+                token in (field_value(record, field) or "").upper()
+                for token in ("PHASE3", "PHASE4")
+            )
+        )
+        share = "절반" if late_count * 2 == total else f"{late_count / total:.0%}"
+        return (
+            f"{source_label}의 {supplied}총 {total}건 중 후기 단계(3상 이상)는 "
+            f"{late_count}건으로 {share}입니다."
+        )
+    groups = ", ".join(
+        f"{value} {count}건" for value, count in sorted(counts.items())
+    )
+    return f"{source_label}의 {supplied}{label} 분포는 {groups}입니다."
+
+
+def _subject_particle(value: str) -> str:
+    last = value[-1]
+    if "가" <= last <= "힣":
+        return "이" if (ord(last) - ord("가")) % 28 else "가"
+    return "이"
 
 
 def _date_relations(

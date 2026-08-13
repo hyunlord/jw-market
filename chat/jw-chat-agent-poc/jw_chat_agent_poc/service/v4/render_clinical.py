@@ -218,13 +218,17 @@ def _record_detail_node(records: Sequence[EvidenceRecord]) -> RenderNode | None:
             ("기관", "facilities", list_display(payload.get("facilities"), na="")),
             ("1차 평가변수", "primary_outcomes", _outcome_text(payload.get("primary_outcomes"))),
             ("2차 평가변수", "secondary_outcomes", _outcome_text(payload.get("secondary_outcomes"))),
-            ("간략 요약", "brief_summary", text(payload.get("brief_summary"))),
+            ("간략 요약", "brief_summary", _bounded_text(payload.get("brief_summary"))),
             ("선정·제외 기준", "eligibility_criteria", _bounded_text(payload.get("eligibility_criteria"))),
             ("대상 성별", "sex", text(payload.get("sex"))),
             ("연령", "minimum_age", _age_range(payload)),
             ("결과 게시", "has_results", _result_text(payload.get("has_results"))),
         )
-        visible = [(label, field, value) for label, field, value in details if value]
+        visible = [
+            (label, field, value)
+            for label, field, value in details
+            if value and _detail_field_present(payload, field)
+        ]
         if not visible:
             continue
         nct_id = display(payload.get("nct_id"))
@@ -267,6 +271,14 @@ def _outcome_text(value: object) -> str:
 def _bounded_text(value: object, limit: int = 1200) -> str:
     raw = text(value)
     return raw if len(raw) <= limit else raw[:limit] + "… [원문 있음]"
+
+
+def _detail_field_present(payload: Mapping[str, object], field: str) -> bool:
+    if field == "minimum_age":
+        return _has_value(payload.get("minimum_age")) or _has_value(
+            payload.get("maximum_age")
+        )
+    return _has_value(payload.get(field))
 
 
 def _age_range(payload: Mapping[str, object]) -> str:

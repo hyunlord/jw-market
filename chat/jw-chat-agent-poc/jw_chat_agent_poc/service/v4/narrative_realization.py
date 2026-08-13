@@ -17,7 +17,6 @@ from jw_chat_agent_poc.service.v4.narrative_compaction import (
     CompactionPlan,
     build_compaction_plan,
     relation_node,
-    source_heading,
 )
 from jw_chat_agent_poc.service.v4.narrative_relations import (
     ALLOWED_T2_OPERATORS,
@@ -32,6 +31,7 @@ from jw_chat_agent_poc.service.v4.narrative_recomputation import (
 from jw_chat_agent_poc.service.v4.narrative_values import (
     FIELD_LABELS,
     NARRATIVE_FIELDS,
+    display_field_value,
     field_value,
     record_identity,
 )
@@ -112,6 +112,10 @@ def build_narrative_realization(
         for node in (
             micro_node,
             relation_node(t2_claims, records_by_id, plan),
+            _cross_source_fusion_node(
+                evidence_sets,
+                frozenset(record.evidence_id for record in records),
+            ),
         )
         if node
     )
@@ -130,34 +134,34 @@ def _micro_narratives(
     plan: CompactionPlan,
 ) -> tuple[RenderNode | None, tuple[RealizedClaim, ...]]:
     claims: list[RealizedClaim] = []
-    lines_by_source: dict[str, list[str]] = {}
+    lines: list[str] = []
     surface_fields: list[str] = []
     for index, record in enumerate(records, start=1):
         fields = tuple(
             field for field in NARRATIVE_FIELDS if field_value(record, field) is not None
         )[:3]
-        if not fields:
+        identity = record_identity(record, index)
+        if len(fields) < 3 or identity is None:
             continue
         values = tuple(field_value(record, field) or "" for field in fields)
+        display_values = tuple(
+            display_field_value(record, field) or "" for field in fields
+        )
         details = ", ".join(
             f"{FIELD_LABELS.get(field, field)} {value}"
-            for field, value in zip(fields, values, strict=True)
+            for field, value in zip(fields, display_values, strict=True)
         )
+        citation = _inline_citation(record)
         sentence = (
-            f"{public_source_label(record.source)}의 {record_identity(record, index)}은(는) "
-            f"{details}로 확인됩니다."
+            f"{public_source_label(record.source)}의 {identity}은(는) "
+            f"{details}로 확인됩니다. {citation}"
         )
         if record.evidence_id not in plan.record_ids:
-            lines_by_source.setdefault(record.source, []).append(f"- {sentence}")
+            lines.append(f"- {sentence}")
             surface_fields.extend(fields)
         claims.append(_field_claim(record, fields, values, sentence))
     if not claims:
         return None, ()
-    sections = tuple(
-        f"## {source_heading(source)}\n" + "\n".join(lines)
-        for source, lines in lines_by_source.items()
-        if lines
-    )
     node = (
         RenderNode(
             block_id="narrative:field-restatement",
@@ -167,12 +171,74 @@ def _micro_narratives(
                 if record.evidence_id not in plan.record_ids
             ),
             surface_fields=tuple(dict.fromkeys(surface_fields)),
-            text="\n\n".join(sections),
+            text="\n".join(lines),
         )
-        if sections
+        if lines
         else None
     )
     return node, tuple(claims)
+
+
+def _inline_citation(record: EvidenceRecord) -> str:
+    if record.source == "web":
+        publisher = field_value(record, "publisher")
+        published_at = field_value(record, "published_at")
+        title = field_value(record, "title")
+        if publisher and published_at and title:
+            return f"[출처: {publisher} · {published_at} · 「{title}」]"
+    return f"[출처: {public_source_label(record.source)}]"
+
+
+def _cross_source_fusion_node(
+    evidence_sets: Sequence[EvidenceSet],
+    rendered_ids: frozenset[str],
+) -> RenderNode | None:
+    available = tuple(
+        (
+            evidence_set,
+            tuple(
+                record
+                for record in evidence_set.records
+                if record.evidence_id in rendered_ids
+            ),
+        )
+        for evidence_set in evidence_sets
+        if any(record.evidence_id in rendered_ids for record in evidence_set.records)
+    )
+    if len(available) < 2:
+        return None
+    anchor_set, anchor_records = available[0]
+    lines: list[str] = []
+    bound_ids: list[str] = []
+    for other_set, other_records in available[1:4]:
+        citations = "; ".join(
+            (
+                _citation_label(anchor_set, anchor_records[0]),
+                _citation_label(other_set, other_records[0]),
+            )
+        )
+        lines.append(
+            f"{public_source_label(anchor_set.source)} {len(anchor_records)}건과 "
+            f"{public_source_label(other_set.source)} {len(other_records)}건이 같은 "
+            f"질문 범위에서 함께 확인됐습니다. [출처: {citations}]"
+        )
+        bound_ids.extend(record.evidence_id for record in anchor_records)
+        bound_ids.extend(record.evidence_id for record in other_records)
+    return RenderNode(
+        block_id="narrative:cross-source-fusion",
+        record_ids=tuple(dict.fromkeys(bound_ids)),
+        text="\n".join(lines),
+    )
+
+
+def _citation_label(evidence_set: EvidenceSet, record: EvidenceRecord) -> str:
+    if evidence_set.source == "web":
+        publisher = field_value(record, "publisher")
+        published_at = field_value(record, "published_at")
+        title = field_value(record, "title")
+        if publisher and published_at and title:
+            return f"{publisher} · {published_at} · 「{title}」"
+    return public_source_label(evidence_set.source)
 
 
 def _field_claim(

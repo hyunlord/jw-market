@@ -35,6 +35,15 @@ NARRATIVE_FIELDS: Final = (
     "enrollment",
     "sales_krw",
     "market_share",
+    "publisher",
+    "published_at",
+    "summary",
+    "active_ingredient",
+    "approval_date",
+    "label_section",
+    "conditions",
+    "interventions",
+    "brief_summary",
 )
 GROUP_FIELDS: Final = (
     "overall_status",
@@ -83,6 +92,34 @@ FIELD_LABELS: Final = {
     "market_share": "점유율",
     "amount_krw": "금액",
     "patient_count": "환자수",
+    "publisher": "게시자",
+    "published_at": "게시일",
+    "summary": "요약",
+    "active_ingredient": "성분",
+    "approval_date": "승인일",
+    "label_section": "라벨 정보",
+    "conditions": "적응증",
+    "interventions": "개입약물",
+    "brief_summary": "시험 요약",
+}
+_PUBLIC_ENUMS: Final = {
+    "RECRUITING": "모집 중",
+    "NOT_YET_RECRUITING": "모집 전",
+    "ACTIVE_NOT_RECRUITING": "진행 중(모집 종료)",
+    "COMPLETED": "완료",
+    "ENROLLING_BY_INVITATION": "초청 모집",
+    "SUSPENDED": "일시 중단",
+    "TERMINATED": "중단",
+    "WITHDRAWN": "철회",
+    "UNKNOWN": "미확인",
+    "NO_DATA": "자료 없음",
+    "LIVE": "조회됨",
+    "PHASE1": "1상",
+    "PHASE2": "2상",
+    "PHASE3": "3상",
+    "PHASE4": "4상",
+    "EARLY_PHASE1": "초기 1상",
+    "NA": "해당 없음",
 }
 _NUMBER_RE: Final = re.compile(r"[-+]?\d[\d,]*(?:\.\d+)?%?")
 
@@ -100,12 +137,21 @@ def field_value(record: EvidenceRecord, field: str | None) -> str | None:
     return str(value)
 
 
-def record_identity(record: EvidenceRecord, index: int) -> str:
+def display_field_value(record: EvidenceRecord, field: str | None) -> str | None:
+    value = field_value(record, field)
+    if value is None:
+        return None
+    if ", " in value:
+        return ", ".join(_PUBLIC_ENUMS.get(item.upper(), item) for item in value.split(", "))
+    return _PUBLIC_ENUMS.get(value.upper(), value)
+
+
+def record_identity(record: EvidenceRecord, index: int) -> str | None:
     for field in IDENTITY_FIELDS:
         value = field_value(record, field)
         if value:
             return value
-    return f"확인 레코드 {index}"
+    return None
 
 
 def numeric_value(value: str | None) -> float | None:

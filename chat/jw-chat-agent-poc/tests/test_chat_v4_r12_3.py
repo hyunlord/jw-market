@@ -249,7 +249,8 @@ def test_a_t2_groups_partial_fields_over_only_the_bound_records() -> None:
         "COMPLETED": 1,
         "RECRUITING": 1,
     }
-    assert "상태가 제공된 레코드 기준" in status_group.text
+    assert "상태가 제공된 총 2건" in status_group.text
+    assert "공동 최다" in status_group.text
     assert verify_recomputation(status_group.recomputation, (evidence,)).matched
 
 

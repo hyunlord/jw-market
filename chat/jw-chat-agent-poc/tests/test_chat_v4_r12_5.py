@@ -748,11 +748,12 @@ def test_d_repeated_clinical_predicates_use_table_and_three_relation_lines() -> 
     assert "| NCT ID | 간략 시험명 | 상태 | 단계 | 스폰서 |" in surface
     assert "은(는) 상태" not in surface
     assert "[직접 확인]" not in surface
-    assert summary.startswith("## 임상시험 요약\n")
-    assert len(summary.splitlines()) == 4
+    assert not summary.startswith("## ")
+    assert len(summary.splitlines()) == 1
+    assert summary.count("입니다.") == 3
     assert "확인된 레코드는 4건" in summary
-    assert "상태별로" in summary
-    assert "단계별로" in summary
+    assert "공동 최다" in summary
+    assert "후기 단계(3상 이상)" in summary
 
 
 def test_d_distinct_clinical_predicates_remain_as_record_sentences() -> None:
@@ -882,7 +883,6 @@ def test_d_compacted_summary_surfaces_only_approved_relation_operators() -> None
     )
 
     assert summary.splitlines() == [
-        "## 임상시험 요약",
         "ClinicalTrials.gov에서 확인된 레코드는 3건입니다.",
     ]
 
@@ -942,10 +942,10 @@ def test_d_clinical_summary_does_not_inherit_domestic_patent_heading() -> None:
     )
     surface = "\n".join(node.text for node in rendered.nodes)
     patent_scope = surface.index("## 국내 특허 조회 범위")
-    clinical_summary = surface.index("## 임상시험 요약")
     first_clinical_fact = surface.index("ClinicalTrials.gov에서 확인된 레코드는")
 
-    assert patent_scope < clinical_summary < first_clinical_fact
+    assert patent_scope < first_clinical_fact
+    assert "## 임상시험 요약" not in surface
 
 
 def test_d_missing_source_fields_are_not_rendered_as_internal_raw_field_names() -> None:

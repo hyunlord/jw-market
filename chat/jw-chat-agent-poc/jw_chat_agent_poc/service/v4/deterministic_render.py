@@ -20,6 +20,7 @@ from jw_chat_agent_poc.service.v4.narrative_realization import (
     build_narrative_realization,
     verify_recomputation,
 )
+from jw_chat_agent_poc.service.v4.narrative_values import record_identity
 from jw_chat_agent_poc.service.v4.render_clinical import (
     ACTIVE_CLINICAL_STATUSES,
     render_clinical,
@@ -262,7 +263,8 @@ def _auxiliary_node(
     )
     rows = tuple(
         (
-            f"근거 {index}",
+            label,
+            record_identity(record, index) or "식별자 미제공",
             _record_status(record.payload),
             _record_summary(record.payload),
         )
@@ -271,9 +273,8 @@ def _auxiliary_node(
     return RenderNode(
         block_id=f"aux:{source}:{'news' if news else 'records'}",
         record_ids=tuple(record.evidence_id for record in records),
-        surface_fields=("status", "summary"),
-        text=f"## {label} 보조 자료\n"
-        + table(("근거", "상태", "요약"), rows),
+        surface_fields=("source", "identity", "status", "summary"),
+        text=table(("출처", "식별자", "상태", "요약"), rows),
     )
 
 

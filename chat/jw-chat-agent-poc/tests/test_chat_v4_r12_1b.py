@@ -125,8 +125,8 @@ def test_lossless_surface_reorders_commentary_and_facts_with_one_source_block() 
         "## 뉴스 맥락",
         "## 근거와 맥락",
         "## 종합 인사이트",
-        "## 해석 상한",
         "## 미확인 요소",
+        "## 해석 상한",
         "## 출처",
     )
     positions = tuple(composed.text.index(heading) for heading in expected_order)
@@ -174,8 +174,9 @@ def test_lossless_surface_does_not_duplicate_commentary_when_core_headings_are_e
         mode="inject",
     )
 
-    assert composed.text.count("## 핵심 답") == 1
-    assert composed.text.count("## 근거와 맥락") == 0
+    assert composed.text.count("## 핵심 답") == 0
+    assert composed.text.startswith("## 근거와 맥락")
+    assert composed.text.count("## 근거와 맥락") == 1
     assert composed.text.count("## 종합 인사이트") == 1
     assert composed.text.count("## 출처") == 1
     assert composed.text.count("공식 목록에서 확인된 상태를 설명합니다.") == 1

@@ -7,13 +7,6 @@ from typing import Final
 from jw_chat_agent_poc.service.v4.lossless_contracts import EvidenceRecord, RenderNode
 from jw_chat_agent_poc.service.v4.narrative_relations import RealizedClaim
 from jw_chat_agent_poc.service.v4.narrative_values import NARRATIVE_FIELDS, field_value
-from jw_chat_agent_poc.service.v4.source_labels import public_source_label
-
-
-_SUMMARY_HEADINGS: Final = {
-    "clinicaltrials": "임상시험 요약",
-    "patent": "국내 특허 요약",
-}
 _SUMMARY_FIELDS: Final = {
     "overall_status": 1,
     "status": 1,
@@ -59,7 +52,8 @@ def build_compaction_plan(
 
 
 def source_heading(source: str) -> str:
-    return _SUMMARY_HEADINGS.get(source, f"{public_source_label(source)} 요약")
+    """Compatibility helper for callers outside narrative realization."""
+    return source
 
 
 def relation_node(
@@ -99,9 +93,8 @@ def relation_node(
                 for record_id in item.recomputation.record_ids
             )
         ),
-        text="\n\n".join(
-            f"## {source_heading(source)}\n" + "\n".join(item.text for item in items)
-            for source, items in visible.items()
+        text=" ".join(
+            item.text for items in visible.values() for item in items
         ),
     )
 

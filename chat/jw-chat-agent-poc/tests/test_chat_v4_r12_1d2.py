@@ -265,10 +265,12 @@ def test_policy_profile_keeps_primary_and_all_nonempty_auxiliary_sources_bound()
     assert rendered.coverage.records_unique == len(evidence_ids)
     assert composed.trace["rendered_table_rows"] == composed.trace["lossless_records_rendered"]
     assert composed.trace["lossless_records_rendered"] == len(evidence_ids)
-    assert "## FDA 보조 자료" in composed.text
-    assert "## 웹 뉴스 보조 자료" in composed.text
-    assert composed.text.index("## 고시 정보") < composed.text.index("## FDA 보조 자료")
-    assert composed.text.index("## FDA 보조 자료") < composed.text.index("## 웹 뉴스 보조 자료")
+    assert "## FDA 보조 자료" not in composed.text
+    assert "## 웹 뉴스 보조 자료" not in composed.text
+    assert "| FDA |" in composed.text
+    assert "| 웹 뉴스 |" in composed.text
+    assert composed.text.index("## 고시 정보") < composed.text.index("| FDA |")
+    assert composed.text.index("| FDA |") < composed.text.index("| 웹 뉴스 |")
     assert re.search(
         r"(?i)(?:openfda_label_search|search_drug_labels|web_search|mcp_[a-z0-9_]+)",
         composed.text,

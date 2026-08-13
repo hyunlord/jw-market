@@ -1,0 +1,534 @@
+from __future__ import annotations
+
+from datetime import date
+
+import pytest
+
+from jw_chat_agent_poc.service.v4.lossless_contracts import (
+    DeterministicRender,
+    CoverageLedger,
+    EvidenceRecord,
+    EvidenceSet,
+    RenderNode,
+)
+from jw_chat_agent_poc.service.v4.lossless_spine import compose_lossless_answer
+from jw_chat_agent_poc.service.v4.contracts import PlannerOutput, SourceResult, ToolQueries
+from jw_chat_agent_poc.service.v4.evidence_sets import build_evidence_sets
+from jw_chat_agent_poc.service.v4.deterministic_render import _auxiliary_node
+from jw_chat_agent_poc.service.v4.narrative_realization import (
+    build_narrative_realization,
+)
+from jw_chat_agent_poc.service.v4.render_clinical import render_clinical
+from jw_chat_agent_poc.service.v4.synthesizer import _SYNTHESIS_SYSTEM_PROMPT
+
+
+def _evidence(source: str, *records: EvidenceRecord) -> EvidenceSet:
+    return EvidenceSet(
+        source=source,
+        retrieved_at="2026-08-14T00:00:00Z",
+        coverage=CoverageLedger(
+            records_received=len(records),
+            records_unique=len(records),
+            records_relevant=len(records),
+        ),
+        records=records,
+    )
+
+
+def _plan(question: str = "q") -> PlannerOutput:
+    return PlannerOutput(
+        resolved_question=question,
+        expanded_intents=(question,),
+        tool_queries=ToolQueries(
+            mart=(question,),
+            nedrug=(question,),
+            hira=(question,),
+            openfda=(question,),
+            clinicaltrials=(question,),
+            web=(question,),
+            patent=(question,),
+        ),
+        linking_plan="deterministic",
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "summary"),
+    (
+        ("no_data", "조회 결과 없음"),
+        ("error", "HTTP 503 upstream failure"),
+        ("timeout", "read timed out"),
+        ("quota", "usage limit exceeded"),
+        ("parse_error", "response schema parse failure"),
+    ),
+)
+def test_b_failed_generic_call_is_failure_only_not_evidence_record(
+    status: str,
+    summary: str,
+) -> None:
+    result = SourceResult(
+        source="openfda",
+        query="리바로젯",
+        status="ok",
+        payload={
+            "calls": [
+                {
+                    "tool": "openfda_search",
+                    "status": status,
+                    "summary_text": summary,
+                    "render_data": {
+                        "status": status,
+                        "message": summary,
+                    },
+                }
+            ]
+        },
+    )
+
+    (evidence_set,) = build_evidence_sets(
+        _plan("리바로젯"),
+        (result,),
+        observed_on=date(2026, 8, 14),
+    )
+
+    assert evidence_set.records == ()
+    assert len(evidence_set.item_failures) == 1
+    assert evidence_set.item_failures[0]["status"] == status
+
+
+def test_a_narrative_uses_no_source_axis_heading_or_internal_record_index() -> None:
+    records = tuple(
+        EvidenceRecord(
+            evidence_id=f"hira:{index}",
+            source="hira",
+            result_kind="policy",
+            payload={
+                "status": "no_data",
+                "phase": "UNKNOWN",
+                "sponsor": "JW",
+            },
+        )
+        for index in range(1, 3)
+    )
+
+    realized = build_narrative_realization(
+        (_evidence("hira", *records),),
+        tuple(record.evidence_id for record in records),
+    )
+    surface = "\n".join(node.text for node in realized.nodes)
+
+    assert "## 건강보험심사평가원 요약" not in surface
+    assert "확인 레코드" not in surface
+
+
+def test_a_record_sentence_requires_three_fields_and_localizes_enums() -> None:
+    sparse = EvidenceRecord(
+        evidence_id="ct:sparse",
+        source="clinicaltrials",
+        result_kind="clinical",
+        payload={"nct_id": "NCT00000001", "overall_status": "RECRUITING"},
+    )
+    complete = EvidenceRecord(
+        evidence_id="ct:complete",
+        source="clinicaltrials",
+        result_kind="clinical",
+        payload={
+            "nct_id": "NCT00000002",
+            "overall_status": "RECRUITING",
+            "phase": "PHASE2",
+            "sponsor": "JW중외제약",
+        },
+    )
+
+    realized = build_narrative_realization(
+        (_evidence("clinicaltrials", sparse, complete),),
+        (sparse.evidence_id, complete.evidence_id),
+    )
+    t1 = tuple(item for item in realized.claims if item.claim.claim_type == "T1")
+
+    assert len(t1) == 1
+    assert "NCT00000002" in t1[0].text
+    assert "모집 중" in t1[0].text
+    assert "RECRUITING" not in t1[0].text
+    assert "PHASE2" not in t1[0].text
+
+
+def test_a_web_record_uses_exact_inline_citation() -> None:
+    record = EvidenceRecord(
+        evidence_id="web:1",
+        source="web",
+        result_kind="web",
+        payload={
+            "title": "리바로젯 제네릭 경쟁 확대",
+            "publisher": "데일리팜",
+            "published_at": "2026-08-13",
+            "summary": "국내 제네릭 도전 현황을 정리했습니다.",
+        },
+    )
+
+    realized = build_narrative_realization(
+        (_evidence("web", record),),
+        (record.evidence_id,),
+    )
+    surface = "\n".join(node.text for node in realized.nodes)
+
+    assert "[출처: 데일리팜 · 2026-08-13 · 「리바로젯 제네릭 경쟁 확대」]" in surface
+    assert "[출처: 웹 뉴스]" not in surface
+
+
+def test_a_synthesis_contract_does_not_require_fixed_four_sections() -> None:
+    assert "반드시 `## 핵심 답`" not in _SYNTHESIS_SYSTEM_PROMPT
+    assert "질문에 대한 답을 첫 문장" in _SYNTHESIS_SYSTEM_PROMPT
+    assert "출처별 소제목" in _SYNTHESIS_SYSTEM_PROMPT
+    assert "명시적인 확인 한계" in _SYNTHESIS_SYSTEM_PROMPT
+
+
+def test_a_composition_preserves_question_driven_sections_and_deduplicates() -> None:
+    rendered = DeterministicRender(
+        profile="clinical_portfolio",
+        nodes=(
+            RenderNode(
+                block_id="narrative:field-restatement",
+                record_ids=("ct:1",),
+                text="NCT00000001은 모집 중입니다. [출처: ClinicalTrials.gov]",
+            ),
+        ),
+    )
+    commentary = (
+        "리바로젯 관련 임상시험이 확인됐습니다.\n\n"
+        "## 경쟁 구도\n첫 번째 관찰입니다.\n\n"
+        "## FDA 요약\nFDA 근거도 확인했습니다.\n\n"
+        "## 경쟁 구도\n두 번째 관찰입니다."
+    )
+
+    composed = compose_lossless_answer(
+        rendered,
+        commentary,
+        synthesis_trace={},
+        mode="inject",
+    )
+
+    assert composed.text.startswith("리바로젯 관련 임상시험이 확인됐습니다.")
+    assert "## 핵심 답" not in composed.text
+    assert "## 근거와 맥락" not in composed.text
+    assert "## FDA 요약" not in composed.text
+    assert "FDA 근거도 확인했습니다." in composed.text
+    assert composed.text.count("## 경쟁 구도") == 1
+    assert "첫 번째 관찰입니다." in composed.text
+    assert "두 번째 관찰입니다." in composed.text
+
+
+def test_a_auxiliary_table_has_no_source_heading_or_internal_sequence() -> None:
+    record = EvidenceRecord(
+        evidence_id="fda:opaque-internal-id",
+        source="openfda",
+        result_kind="openfda",
+        payload={"status": "no_data"},
+    )
+
+    node = _auxiliary_node("openfda", (record,), news=False)
+
+    assert "## FDA 보조 자료" not in node.text
+    assert "근거 1" not in node.text
+    assert "opaque-internal-id" not in node.text
+    assert "| 출처 | 식별자 | 상태 | 요약 |" in node.text
+    assert "FDA" in node.text
+    assert "식별자 미제공" in node.text
+
+
+def test_a_t2_status_and_phase_aggregation_explains_the_distribution() -> None:
+    statuses = (
+        "RECRUITING",
+        "RECRUITING",
+        "RECRUITING",
+        "RECRUITING",
+        "COMPLETED",
+        "TERMINATED",
+    )
+    phases = ("PHASE3", "PHASE3", "PHASE4", "PHASE2", "PHASE2", "PHASE1")
+    records = tuple(
+        EvidenceRecord(
+            evidence_id=f"ct:{index}",
+            source="clinicaltrials",
+            result_kind="clinical",
+            payload={
+                "nct_id": f"NCT{index:08d}",
+                "overall_status": status,
+                "phase": phase,
+                "sponsor": "JW중외제약",
+            },
+        )
+        for index, (status, phase) in enumerate(zip(statuses, phases, strict=True), start=1)
+    )
+
+    realized = build_narrative_realization(
+        (_evidence("clinicaltrials", *records),),
+        tuple(record.evidence_id for record in records),
+        table_record_ids=tuple(record.evidence_id for record in records),
+    )
+    surface = " ".join(node.text for node in realized.nodes)
+
+    assert "총 6건 중 모집 중이 4건으로 가장 많" in surface
+    assert "후기 단계(3상 이상)는 3건" in surface
+    assert "RECRUITING" not in surface
+    assert "PHASE3" not in surface
+
+
+def test_a_cross_source_fusion_binds_three_sentences_to_source_records() -> None:
+    evidence_sets = tuple(
+        _evidence(
+            source,
+            EvidenceRecord(
+                evidence_id=f"{source}:1",
+                source=source,
+                result_kind=source,
+                payload={
+                    "title": f"{source} 자료",
+                    "status": "live",
+                    "phase": "PHASE3",
+                    "sponsor": "JW중외제약",
+                    **(
+                        {
+                            "publisher": "데일리팜",
+                            "published_at": "2026-08-13",
+                            "summary": "관련 보도",
+                        }
+                        if source == "web"
+                        else {}
+                    ),
+                },
+            ),
+        )
+        for source in ("patent", "clinicaltrials", "hira", "web")
+    )
+    record_ids = tuple(
+        record.evidence_id for evidence in evidence_sets for record in evidence.records
+    )
+
+    realized = build_narrative_realization(evidence_sets, record_ids)
+    fusion = next(
+        node for node in realized.nodes if node.block_id == "narrative:cross-source-fusion"
+    )
+
+    assert len(fusion.text.splitlines()) == 3
+    assert set(fusion.record_ids) == set(record_ids)
+    assert "데일리팜 · 2026-08-13 · 「web 자료」" in fusion.text
+    assert "원인" not in fusion.text
+    assert "때문" not in fusion.text
+
+
+def test_a_relation_insight_is_one_paragraph_bound_to_union_of_t2_records() -> None:
+    records = tuple(
+        EvidenceRecord(
+            evidence_id=f"ct:{index}",
+            source="clinicaltrials",
+            result_kind="clinical",
+            payload={
+                "nct_id": f"NCT{index:08d}",
+                "overall_status": "RECRUITING" if index < 3 else "COMPLETED",
+                "phase": "PHASE3",
+                "sponsor": "JW중외제약",
+            },
+        )
+        for index in range(1, 4)
+    )
+    realized = build_narrative_realization(
+        (_evidence("clinicaltrials", *records),),
+        tuple(record.evidence_id for record in records),
+        table_record_ids=tuple(record.evidence_id for record in records),
+    )
+    relation = next(
+        node for node in realized.nodes if node.block_id == "narrative:cross-record-relations"
+    )
+    t2_ids = {
+        record_id
+        for claim in realized.claims
+        if claim.claim.claim_type == "T2"
+        for record_id in claim.recomputation.record_ids
+    }
+
+    assert "\n" not in relation.text
+    assert set(relation.record_ids) == t2_ids
+
+
+def test_a_composition_deduplicates_repeated_leading_sentence() -> None:
+    rendered = DeterministicRender(
+        profile="clinical_portfolio",
+        coverage=CoverageLedger(records_received=1, records_unique=1, records_rendered=1),
+        nodes=(RenderNode(block_id="clinical:detail", record_ids=("ct:1",), text="상세 사실"),),
+    )
+    repeated = "리바로젯 관련 임상시험이 확인됐습니다."
+    commentary = (
+        f"{repeated} 이어서 핵심 내용을 설명합니다.\n\n"
+        f"## 경쟁 구도\n{repeated} 경쟁 구도를 설명합니다."
+    )
+
+    composed = compose_lossless_answer(
+        rendered,
+        commentary,
+        synthesis_trace={},
+        mode="inject",
+    )
+
+    assert composed.text.count(repeated) == 1
+
+
+def test_a_short_narrative_for_five_records_records_explicit_reason() -> None:
+    rendered = DeterministicRender(
+        profile="clinical_portfolio",
+        coverage=CoverageLedger(records_received=5, records_unique=5, records_rendered=5),
+        nodes=(
+            RenderNode(
+                block_id="narrative:field-restatement",
+                record_ids=tuple(f"ct:{index}" for index in range(5)),
+                text="짧은 결정론 서술입니다.",
+            ),
+        ),
+    )
+
+    composed = compose_lossless_answer(
+        rendered,
+        "질문에 대한 짧은 답입니다.",
+        synthesis_trace={},
+        mode="inject",
+    )
+
+    assert composed.trace["narrative_minimum_required"] is True
+    assert composed.trace["narrative_character_count"] < 1500
+    assert composed.trace["narrative_shortfall_reason"] == "validated prose below 1500 characters"
+
+
+def test_b_web_items_survive_as_records_with_publication_fields() -> None:
+    result = SourceResult(
+        source="web",
+        query="리바로젯 제네릭",
+        status="ok",
+        payload={
+            "calls": [
+                {
+                    "tool": "web_search",
+                    "status": "live",
+                    "render_data": {
+                        "items": [
+                            {
+                                "title": "리바로젯 제네릭 도전",
+                                "url": "https://www.dailypharm.com/news/1",
+                                "snippet": "제네릭 경쟁 현황을 정리한 기사입니다.",
+                                "published_at": "2026-08-13",
+                            }
+                        ]
+                    },
+                }
+            ]
+        },
+    )
+
+    evidence = build_evidence_sets(_plan(), (result,), observed_on=date(2026, 8, 14))[0]
+    record = evidence.records[0]
+
+    assert evidence.coverage.records_received == 1
+    assert record.payload["title"] == "리바로젯 제네릭 도전"
+    assert record.payload["publisher"] == "dailypharm.com"
+    assert record.payload["published_at"] == "2026-08-13"
+    assert record.payload["summary"] == "제네릭 경쟁 현황을 정리한 기사입니다."
+
+
+def test_b_openfda_results_survive_with_public_alias_fields() -> None:
+    result = SourceResult(
+        source="openfda",
+        query="pitavastatin",
+        status="ok",
+        payload={
+            "calls": [
+                {
+                    "tool": "openfda_label_search",
+                    "status": "live",
+                    "render_data": {
+                        "payload": {
+                            "results": [
+                                {
+                                    "openfda": {
+                                        "brand_name": ["LIVALO"],
+                                        "substance_name": ["PITAVASTATIN CALCIUM"],
+                                    },
+                                    "effective_time": "20260131",
+                                    "indications_and_usage": ["고콜레스테롤혈증 치료"],
+                                }
+                            ]
+                        }
+                    },
+                }
+            ]
+        },
+    )
+
+    evidence = build_evidence_sets(_plan(), (result,), observed_on=date(2026, 8, 14))[0]
+    record = evidence.records[0]
+
+    assert record.payload["product_name"] == "LIVALO"
+    assert record.payload["active_ingredient"] == "PITAVASTATIN CALCIUM"
+    assert record.payload["approval_date"] == "20260131"
+    assert record.payload["label_section"] == "고콜레스테롤혈증 치료"
+
+
+def test_b_openfda_public_fields_are_available_to_narrative() -> None:
+    record = EvidenceRecord(
+        evidence_id="openfda:1",
+        source="openfda",
+        result_kind="openfda_record",
+        payload={
+            "product_name": "LIVALO",
+            "active_ingredient": "PITAVASTATIN CALCIUM",
+            "approval_date": "20260131",
+            "label_section": "고콜레스테롤혈증 치료",
+        },
+    )
+
+    realized = build_narrative_realization(
+        (_evidence("openfda", record),),
+        (record.evidence_id,),
+    )
+
+    assert len(realized.claims) == 1
+    assert "성분 PITAVASTATIN CALCIUM" in realized.claims[0].text
+    assert "승인일 20260131" in realized.claims[0].text
+    assert "라벨 정보 고콜레스테롤혈증 치료" in realized.claims[0].text
+
+
+def test_b_clinical_long_summary_is_bounded_with_source_presence_marker() -> None:
+    record = EvidenceRecord(
+        evidence_id="ct:NCT00000001",
+        source="clinicaltrials",
+        result_kind="structured_clinical_record",
+        payload={
+            "nct_id": "NCT00000001",
+            "brief_title": "시험",
+            "overall_status": "RECRUITING",
+            "phases": ["PHASE3"],
+            "sponsor": "JW중외제약",
+            "last_update_date": "2026-08-14",
+            "brief_summary": "가" * 1600,
+        },
+    )
+
+    nodes, _required = render_clinical(_evidence("clinicaltrials", record), single=True)
+    detail = next(node for node in nodes if node.block_id == "clinical:record-details")
+
+    assert len(detail.text) < 1600
+    assert "[원문 있음]" in detail.text
+    assert "원천 미제공" not in detail.text
+
+
+def test_b_mart_is_available_for_inspection_without_changing_market_surface() -> None:
+    result = SourceResult(
+        source="mart",
+        query="리바로 매출",
+        status="ok",
+        payload={"calls": [{"tool": "market", "rows": [{"brand": "리바로", "value": 1}]}]},
+    )
+
+    evidence_sets = build_evidence_sets(_plan(), (result,), observed_on=date(2026, 8, 14))
+
+    assert len(evidence_sets) == 1
+    assert evidence_sets[0].source == "mart"
+    assert evidence_sets[0].records[0].payload["brand"] == "리바로"
