@@ -8,8 +8,6 @@ from pipeline.scripts.ingest_hook import post_success_cleanup
 from pipeline.scripts.ingest_hook.job_launcher import publish_job_name
 from pipeline.scripts.ingest_hook.job_runner import (
     _StageTracker,
-    _drain_completion_queue,
-    _emit_completion_signal,
     _mark_complete_after_required_stages,
     _measure_publish_source_set,
     _publish_source_set_reason,
@@ -144,32 +142,12 @@ def run(
             run_id=publish_run_id,
             target_db=stage_schema,
         )
-        completion_signal = _emit_completion_signal(
-            ledger=ledger,
-            tracker=tracker,
-            identity=identity,
-            run_id=publish_run_id,
-            event="complete",
-            mode=mode,
-            rows_before=int(payload.get("rows_before") or 0),
-            rows_after=current.raw.row_count,
-            rows_loaded=int(payload.get("rows_loaded") or 0),
-            periods=set(current.periods.complete_quarters),
-            started_at=candidate.prepared_at,
-            failure_reason=None,
-            target_schema=stage_schema,
-            published_at=published_at,
-            affected_scope={"dimension": "atc4", "count": 0, "values": []},
-            drain_queue=False,
-        )
         _mark_complete_after_required_stages(
             ledger=ledger,
             identity=identity,
             run_ids=(build_run_id, publish_run_id),
             row_counts=row_counts,
         )
-        if completion_signal is not None:
-            _drain_completion_queue(completion_signal)
         return 0
     except Exception as exc:
         failure_reason = f"{type(exc).__name__}: {exc}"

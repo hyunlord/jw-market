@@ -810,7 +810,7 @@ def recover_incomplete_activations(
                 continue
         if status is not None:
             if status == "complete":
-                if phase not in {"refresh_succeeded", "ledger_complete", "signal_complete"}:
+                if phase not in {"refresh_succeeded", "ledger_complete"}:
                     raise RuntimeError(
                         f"ledger is complete before activation reached refresh success: {path}"
                     )
@@ -859,7 +859,6 @@ def recover_incomplete_activations(
             "refresh_started",
             "refresh_succeeded",
             "ledger_complete",
-            "signal_complete",
         }:
             raise RuntimeError(f"mart promotion journal has no restorable backups: {path}")
         if corpus.backup_root.exists():
@@ -880,7 +879,6 @@ def recover_incomplete_activations(
             "refresh_started",
             "refresh_succeeded",
             "ledger_complete",
-            "signal_complete",
             "recovery_mart_complete",
         }:
             raise RuntimeError(f"corpus promotion journal has no restorable backup: {path}")

@@ -141,7 +141,6 @@ def recover(
     if actual_inventory_sha256 != evidence.inventory_sha256:
         raise RuntimeError("rolled-back publication inventory SHA256 mismatch")
     row_counts = _inventory_rows(evidence.inventory_json)
-    periods = {evidence.window_start, evidence.window_end}
     if promoted_recovery_run_id is not None:
         _close_interrupted_refresh_stage(
             ledger,
@@ -198,24 +197,6 @@ def recover(
         )
         provenance_recovered = True
         ledger.mark_complete(*identity, row_counts=row_counts)
-        now = datetime.now(timezone.utc).isoformat()
-        job_runner._emit_completion_signal(
-            ledger=ledger,
-            tracker=tracker,
-            identity=identity,
-            run_id=recovery_run_id,
-            event="complete",
-            mode="real",
-            rows_before=0,
-            rows_after=sum(row_counts.values()),
-            rows_loaded=sum(row_counts.values()),
-            periods=periods,
-            started_at=now,
-            failure_reason=None,
-            target_schema=activation_config.target_db,
-            published_at=now,
-            affected_scope=job_runner._completion_affected_scope(identity[1]),
-        )
     except BaseException as exc:
         primary = exc
         if actions:
