@@ -183,7 +183,7 @@ def test_agent_refresh_job_carries_canonical_affected_scope_json():
     ]
 
 
-def test_complete_reingest_job_uses_normal_ingest_runner() -> None:
+def test_complete_reingest_job_explicitly_uses_canonical_ingest_runner() -> None:
     attempt_run_id = "20260809221530123456"
     body = render_complete_reingest_job(
         epoch="2026-06",
@@ -211,6 +211,8 @@ def test_complete_reingest_job_uses_normal_ingest_runner() -> None:
         attempt_run_id,
         "--job-name",
         body["metadata"]["name"],
+        "--runner",
+        "ingest",
     ]
 
 

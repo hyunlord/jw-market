@@ -101,7 +101,7 @@ def _etl(*args: str) -> tuple[str, ...]:
 
 
 def _orchestrator(*args: str) -> tuple[str, ...]:
-    return (PY, "-m", "pipeline.orchestrator", "run", "--mode", "incremental", *args)
+    return (PY, "-m", "pipeline.orchestrator", "run", "--mode", "full", *args)
 
 
 def _category_table_load(category: str) -> tuple[str, ...]:
@@ -111,7 +111,7 @@ def _category_table_load(category: str) -> tuple[str, ...]:
 CATEGORIES: tuple[CategorySpec, ...] = (
     CategorySpec(
         key="ubist",
-        description="UBIST monthly submission (incremental append; dedup in frame loader)",
+        description="UBIST full recursive source-set submission",
         required_columns=("period", "brand", "value"),
         period_column="period",
         # --stage s1 loads the uploaded file's parquet in isolation: it bypasses
@@ -119,10 +119,10 @@ CATEGORIES: tuple[CategorySpec, ...] = (
         # (discover_xlsx adds the exact file). The upstream parquet->mart_general_*
         # propagation (s2..s7 / mounted source tree) is a separate stage-orchestration
         # decision flagged to jw agent for D-3; M-2 here proves the staging landing.
-        load_argv=_etl("--stage", "s1", "--source", "ubist", "--incremental"),
+        load_argv=_etl("--stage", "s1", "--source", "ubist"),
         refresh_argv=_orchestrator("--profile", "numeric", "--force"),
         sigma_source="ubist",
-        load_input_flag="--file",
+        load_input_flag="--source-file",
         load_target_flag="--target-dir",
         load_verify="ubist_parquet_manifest",
         # G4: the real UBIST submission is a wide .xlsx (2-row header, month

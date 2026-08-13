@@ -171,6 +171,15 @@ def test_v1_new_categories_use_the_table_loader_contract(
     assert spec.production_load_supported is (category != "mi_master")
 
 
+def test_ubist_full_rescan_passes_every_selected_workbook_without_incremental_mode() -> None:
+    spec = resolve_category("ubist")
+
+    assert "--incremental" not in spec.load_argv
+    assert spec.load_input_flag == "--source-file"
+    assert spec.load_batch_files is True
+    assert spec.refresh_argv[spec.refresh_argv.index("--mode") + 1] == "full"
+
+
 @pytest.mark.parametrize("category", ["mi_master"])
 def test_staging_artifact_loader_fails_closed_in_production(
     tmp_path, monkeypatch, category

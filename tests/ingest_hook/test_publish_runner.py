@@ -11,7 +11,7 @@ from pipeline.scripts.ingest_hook.ubist_mart_activation import (
     BuildTableFingerprint,
     CorpusCandidate,
     CorpusInventory,
-    NUMERIC_TABLES,
+    PUBLISH_TABLES,
 )
 
 
@@ -27,7 +27,7 @@ def _integrity_payload() -> dict:
         },
         "build_table_integrity": [
             {"table": table, "row_count": 1, "crc_sum": 2, "crc_xor": 3}
-            for table in NUMERIC_TABLES
+            for table in PUBLISH_TABLES
         ],
     }
 
@@ -42,7 +42,7 @@ def test_publish_rejects_changed_candidate_before_promotion(monkeypatch, tmp_pat
     monkeypatch.setattr(
         publish_runner, "fingerprint_build_tables",
         lambda _conn, _schema: tuple(
-            BuildTableFingerprint(table, 1, 2, 3) for table in NUMERIC_TABLES
+            BuildTableFingerprint(table, 1, 2, 3) for table in PUBLISH_TABLES
         ),
     )
 
@@ -61,7 +61,7 @@ def test_publish_rejects_changed_build_tables_before_promotion(monkeypatch, tmp_
         publish_runner, "fingerprint_build_tables",
         lambda _conn, _schema: tuple(
             BuildTableFingerprint(table, 9 if index == 0 else 1, 2, 3)
-            for index, table in enumerate(NUMERIC_TABLES)
+            for index, table in enumerate(PUBLISH_TABLES)
         ),
     )
 
@@ -298,8 +298,9 @@ def test_production_publish_binds_dashboard_to_real_refresh(
             "activation_journal": str(journal),
             "baseline_manifest_sha": "f" * 64,
             "baseline_live_snapshot": [],
-            "row_counts": {"mart_general_brand_metric": 10},
-            "periods": ["2026-07"],
+                "row_counts": {"mart_general_brand_metric": 10},
+                "periods": ["2026-07"],
+                "catalog_root": str(tmp_path / "catalog"),
         },
         prepared_at="2026-08-04T00:00:00+00:00",
         expires_at="2026-08-05T00:00:00+00:00",

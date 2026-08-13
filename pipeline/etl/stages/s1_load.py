@@ -25,6 +25,9 @@ def _run_ubist(params: dict[str, Any]) -> int:
     dry = bool(params.get("dry_run"))
     incremental = bool(params.get("incremental"))
     file_arg = params.get("file")
+    source_files = tuple(
+        Path(str(value)).resolve() for value in params.get("source_files") or ()
+    )
     source_dir = Path(str(params["ubist_source_dir"])) if params.get("ubist_source_dir") else None
     exclude_periods = frozenset(params.get("exclude_ubist_months") or ())
     try:
@@ -55,11 +58,11 @@ def _run_ubist(params: dict[str, Any]) -> int:
             print(f"[{STAGE}] UBIST dry-run 완료 files={len(paths)}")
             return 0
 
-        if not file_arg and source_dir is None:
-            print(f"[{STAGE}] UBIST 실패: non-dry UBIST requires --file to avoid full reload")
+        if not file_arg and not source_files and source_dir is None:
+            print(f"[{STAGE}] UBIST 실패: non-dry UBIST requires explicit source files")
             return 2
 
-        paths = None
+        paths = list(source_files) or None
         if source_dir is not None:
             paths = sorted(
                 path.resolve()
@@ -149,10 +152,11 @@ def run(params: dict[str, Any]) -> int:
         source in {"ubist", "all"}
         and not params.get("dry_run")
         and not params.get("file")
+        and not params.get("source_files")
         and not params.get("ubist_source_dir")
         and not params.get("incremental")
     ):
-        print(f"[{STAGE}] 실패: non-dry UBIST requires --file to avoid full reload")
+        print(f"[{STAGE}] 실패: non-dry UBIST requires explicit source files")
         return 2
 
     if source in {"iqvia", "all"} and not params.get("dry_run") and not params.get("target_db"):

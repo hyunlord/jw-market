@@ -519,6 +519,21 @@ def test_affected_atc4_codes_fails_closed_when_month_is_missing(tmp_path) -> Non
         activation.affected_atc4_codes(tmp_path, periods=("2026-05",))
 
 
+def test_full_period_scope_uses_every_observed_month() -> None:
+    periods = {
+        f"{year:04d}-{month:02d}"
+        for year in range(2021, 2027)
+        for month in range(1, 13)
+    }
+
+    assert activation.full_period_scope(periods) == tuple(sorted(periods))
+
+
+def test_full_period_scope_rejects_non_monthly_values() -> None:
+    with pytest.raises(RuntimeError, match="monthly period"):
+        activation.full_period_scope({"2026-Q2"})
+
+
 def test_publish_shadow_checks_post_gate_and_publishes_numeric_tables(
     monkeypatch, tmp_path
 ) -> None:
@@ -551,9 +566,41 @@ def test_publish_shadow_checks_post_gate_and_publishes_numeric_tables(
     )
 
     assert calls[0] == "gate"
-    assert calls[1]["tables"] == activation.NUMERIC_TABLES
+    assert calls[1]["tables"] == activation.PUBLISH_TABLES
     assert calls[2] == "record"
     assert calls[3] == "provenance"
+
+
+def test_publish_tables_include_numeric_and_catalog_tables() -> None:
+    assert activation.PUBLISH_TABLES == (
+        *activation.NUMERIC_TABLES,
+        "catalog_ml_market",
+        "catalog_cd_market",
+        "catalog_strategic_brand",
+    )
+
+
+def test_prepare_catalog_tables_targets_isolated_build_schema(monkeypatch, tmp_path) -> None:
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        activation,
+        "sync_catalog_tables",
+        lambda *_args, **kwargs: calls.append(kwargs) or (object(), object(), object()),
+    )
+
+    results = activation.prepare_catalog_tables(
+        object(),
+        build_db="jw_mart_ingest_run1",
+        catalog_root=tmp_path,
+    )
+
+    assert len(results) == 3
+    assert calls == [
+        {
+            "target_db": "jw_mart_ingest_run1",
+            "catalog_root": tmp_path,
+        }
+    ]
 
 
 @pytest.mark.parametrize("row", [None, ("failed", "sigma mismatch"), ("running", None)])
@@ -688,7 +735,7 @@ def test_activation_journal_recovers_corpus_and_atomic_mart_group(tmp_path, monk
     assert recovered == (journal,)
     assert (live / "old.txt").read_text(encoding="utf-8") == "old"
     assert restored == [
-        ("jw_mart", "recovery_run1", *activation.NUMERIC_TABLES)
+        ("jw_mart", "recovery_run1", *activation.PUBLISH_TABLES)
     ]
     assert json.loads(journal.read_text(encoding="utf-8"))["phase"] == "rollback_needs_refresh"
 
@@ -845,7 +892,7 @@ def test_numeric_refresh_failure_restores_all_numeric_marts_and_corpus(
 
     assert recovered == (journal,)
     assert restored == [
-        ("jw_mart", "recovery_numeric-failure", *activation.NUMERIC_TABLES)
+        ("jw_mart", "recovery_numeric-failure", *activation.PUBLISH_TABLES)
     ]
     assert (live / "old.txt").read_text(encoding="utf-8") == "old"
     assert not (live / "new.txt").exists()
@@ -867,7 +914,7 @@ def test_activation_journal_rejects_partial_mart_backup(tmp_path, monkeypatch) -
         phase="prepared",
         identity=("2026-07", "ubist", "a" * 64),
     )
-    exists = iter((True, False, *(False for _ in activation.NUMERIC_TABLES[2:])))
+    exists = iter((True, False, *(False for _ in activation.PUBLISH_TABLES[2:])))
     monkeypatch.setattr(activation, "table_exists", lambda *_args: next(exists))
 
     with pytest.raises(RuntimeError, match="ambiguous partial mart backup"):
@@ -963,8 +1010,8 @@ def test_recovery_resumes_after_crash_following_atomic_mart_restore(
     )
     activation.promote_candidate_corpus(corpus)
     existing = {
-        *(f"{table}__old_run1" for table in activation.NUMERIC_TABLES),
-        *activation.NUMERIC_TABLES,
+        *(f"{table}__old_run1" for table in activation.PUBLISH_TABLES),
+        *activation.PUBLISH_TABLES,
     }
     restore_calls: list[str] = []
 

@@ -12,6 +12,7 @@ from typing import Any, Callable
 
 import duckdb
 
+from pipeline.etl.io.catalog.db_sync import sync_catalog_tables
 from pipeline.etl.io.mart.general_utils import extract_atc4
 from pipeline.etl.io.catalog.paths import (
     CATALOG_ROOT_ENV as CATALOG_ROOT_ENV,
@@ -62,6 +63,12 @@ STRATEGIC_TABLES = (
     "mart_strategic_cd_market_metric",
 )
 NUMERIC_TABLES = GENERAL_TABLES + STRATEGIC_TABLES
+CATALOG_TABLES = (
+    "catalog_ml_market",
+    "catalog_cd_market",
+    "catalog_strategic_brand",
+)
+PUBLISH_TABLES = NUMERIC_TABLES + CATALOG_TABLES
 _SCHEMA_RE = re.compile(r"^[A-Za-z0-9_]+$")
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _S4_MUTATED_ENV = (
@@ -139,7 +146,7 @@ def inventory_corpus(root: Path) -> CorpusInventory:
 
 
 def fingerprint_build_tables(conn: Any, schema: str) -> tuple[BuildTableFingerprint, ...]:
-    """Fingerprint the exact six-table build schema before approval."""
+    """Fingerprint the exact numeric and catalog build before approval."""
     with conn.cursor() as cursor:
         cursor.execute(
             "SELECT table_name FROM information_schema.tables "
@@ -147,15 +154,32 @@ def fingerprint_build_tables(conn: Any, schema: str) -> tuple[BuildTableFingerpr
             (schema,),
         )
         table_names = {str(row["table_name"]) for row in cursor.fetchall()}
-    if table_names != set(NUMERIC_TABLES):
-        raise RuntimeError(f"build schema must contain exactly six numeric tables: {schema}")
+    if table_names != set(PUBLISH_TABLES):
+        raise RuntimeError(
+            f"build schema must contain exactly nine publish tables: {schema}"
+        )
     fingerprints = []
-    for table in NUMERIC_TABLES:
+    for table in PUBLISH_TABLES:
         digest = table_digest(conn, schema, table)
         fingerprints.append(
             BuildTableFingerprint(table, digest.row_count, digest.crc_sum, digest.crc_xor)
         )
     return tuple(fingerprints)
+
+
+def prepare_catalog_tables(
+    conn: Any,
+    *,
+    build_db: str,
+    catalog_root: Path,
+):
+    """Materialize catalog tables inside the isolated mart build schema."""
+
+    return sync_catalog_tables(
+        conn,
+        target_db=build_db,
+        catalog_root=catalog_root,
+    )
 
 
 def from_env(*, run_id: str) -> MartActivation:
@@ -594,6 +618,18 @@ def affected_atc4_codes(
     return scope
 
 
+def full_period_scope(periods: set[str] | tuple[str, ...]) -> tuple[str, ...]:
+    """Return the deterministic monthly scope produced by the full source scan."""
+
+    scope = tuple(sorted(set(periods)))
+    if not scope:
+        raise RuntimeError("full UBIST scope requires at least one observed period")
+    invalid = tuple(period for period in scope if re.fullmatch(r"\d{4}-\d{2}", period) is None)
+    if invalid:
+        raise RuntimeError(f"full UBIST scope requires monthly period values: {invalid}")
+    return scope
+
+
 def prepare_candidate_corpus(live_root: Path, *, run_id: str) -> CorpusCandidate:
     """Create an empty candidate so the NFS workbook set is the only source."""
 
@@ -700,7 +736,7 @@ def write_activation_journal(
         "live_root": str(corpus.live_root),
         "candidate_root": str(corpus.candidate_root),
         "backup_root": str(corpus.backup_root),
-        "tables": list(NUMERIC_TABLES),
+        "tables": list(PUBLISH_TABLES),
     }
     _atomic_write_json(path, payload)
     return path
@@ -733,7 +769,7 @@ def recover_incomplete_activations(
         if (
             not run_id
             or not _SCHEMA_RE.fullmatch(target_db)
-            or tables not in {GENERAL_TABLES, NUMERIC_TABLES}
+            or tables not in {GENERAL_TABLES, NUMERIC_TABLES, PUBLISH_TABLES}
         ):
             raise RuntimeError(f"invalid activation recovery journal: {path}")
         if required_target_prefix and not target_db.startswith(required_target_prefix):
@@ -954,7 +990,7 @@ def publish_shadow(
 ) -> tuple[Any, ...]:
     provenance = build_publication_provenance(
         target_db=config.target_db,
-        tables=NUMERIC_TABLES,
+        tables=PUBLISH_TABLES,
     )
     if require_ledger_gate:
         require_completed_post_gate(conn, ingest_run_id=ingest_run_id)
@@ -963,7 +999,7 @@ def publish_shadow(
         build_db=config.build_db,
         target_db=config.target_db,
         run_id=run_id,
-        tables=NUMERIC_TABLES,
+        tables=PUBLISH_TABLES,
     )
     try:
         record_mysql_component(

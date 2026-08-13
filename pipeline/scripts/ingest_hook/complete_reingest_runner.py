@@ -422,6 +422,11 @@ def _recompute_ubist_mart(context: RequestContext, ledger) -> PreparedMart:
             atc4_scope=context.scope_values,
             period_scope=context.period_scope,
         )
+        ubist_mart_activation.prepare_catalog_tables(
+            catalog_conn,
+            build_db=activation.build_db,
+            catalog_root=catalog_root,
+        )
         _record_stage(
             ledger,
             context,
@@ -431,7 +436,7 @@ def _recompute_ubist_mart(context: RequestContext, ledger) -> PreparedMart:
         return PreparedMart(
             target_db=activation.target_db,
             build_db=activation.build_db,
-            tables=ubist_mart_activation.NUMERIC_TABLES,
+            tables=ubist_mart_activation.PUBLISH_TABLES,
         )
     except Exception as exc:
         _record_stage(ledger, context, "mart_build", "failed", _reason(exc))

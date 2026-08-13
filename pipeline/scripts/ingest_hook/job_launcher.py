@@ -519,6 +519,7 @@ def render_complete_reingest_job(
     # Reingest is an append-only scheduling identity, not a separate pipeline.
     # Keep its labels for queue observability while running the canonical Job.
     container["command"][container["command"].index("--job-name") + 1] = name
+    container["command"].extend(["--runner", "ingest"])
     return body
 
 

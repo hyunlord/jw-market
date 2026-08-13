@@ -7,7 +7,7 @@ Order is enforced in code (STOP ③ — no load without G3):
   4. isolated mart build from the candidate corpus
   5. POST-GATE (Σ, manifest row coverage, untouched-source fingerprint)
   6. atomic corpus + serving mart publish
-  7. downstream refresh (real: pipeline.orchestrator --mode incremental)
+  7. downstream refresh (real: pipeline.orchestrator --mode full)
   8. ledger complete
 Any post-gate failure marks the ledger row gate_failed and blocks promotion;
 other failures mark it failed. Both exit non-zero;
@@ -764,6 +764,7 @@ def _real_load(
     target_dir_override: Path | None = None,
     source_files: tuple[Path, ...] | None = None,
     target_db_override: str | None = None,
+    exclude_periods: tuple[str, ...] = (),
 ) -> dict:
     """Wire the materialized upload into the loader, run it, and prove the epoch
     landed (M-2). Returns {target_dir, epoch_rows, staging_verify}.
@@ -838,6 +839,9 @@ def _real_load(
                 argv.extend([spec.load_target_flag, str(target_dir)])
             if spec.load_epoch_flag:
                 argv.extend([spec.load_epoch_flag, manifest.epoch])
+            if manifest.category == "ubist":
+                for period in exclude_periods:
+                    argv.extend(["--exclude-ubist-month", period])
             print(
                 f"phase=load files={len(sources)} target={target_dir} "
                 f"staging_verify={staging_verify}"
@@ -934,6 +938,7 @@ def _load_with_source_inventory(
     target_dir_override: Path | None,
     target_db_override: str | None = None,
     required: bool,
+    observed_periods: set[str] | None = None,
     expected_source_set: SourceSetEvidence | None = None,
 ) -> tuple[dict, ScanOutcome | None]:
     """Run a source-wide scan and publish its immutable anchor after load."""
@@ -950,6 +955,12 @@ def _load_with_source_inventory(
             None,
         )
     previous = latest_successful_snapshot(DEFAULT_INVENTORY_ROOT, manifest.category)
+    rebuild_periods = getattr(policy, "rebuild_periods", None)
+    exclude_periods = (
+        _periods_outside_rebuild_window(observed_periods or set(), rebuild_periods)
+        if manifest.category == "ubist" and rebuild_periods is not None
+        else ()
+    )
     outcome = run_full_scan(
         policy,
         epoch=manifest.epoch,
@@ -968,9 +979,19 @@ def _load_with_source_inventory(
             target_dir_override=target_dir_override,
             source_files=source_files,
             target_db_override=target_db_override,
+            exclude_periods=exclude_periods,
         ),
     )
     return dict(outcome.rebuild_result), outcome
+
+
+def _periods_outside_rebuild_window(
+    periods: set[str], rebuild_periods: int
+) -> tuple[str, ...]:
+    if rebuild_periods < 1:
+        raise RuntimeError("rebuild_periods must be positive")
+    ordered = tuple(sorted(periods))
+    return ordered[:-rebuild_periods] if len(ordered) > rebuild_periods else ()
 
 
 def _automatic_publish_contract(outcome: ScanOutcome) -> dict[str, object]:
@@ -1545,6 +1566,7 @@ def run(
                         else None
                     ),
                 ),
+                observed_periods=periods,
                 expected_source_set=expected_source_set,
             )
             rows_before = int(load_result.get("rows_before") or 0)
@@ -1797,13 +1819,13 @@ def run(
                         f"phase=mart_build status=start build_db={mart_activation.build_db} "
                         f"catalog_root={catalog_root} ubist_dir={load_result['target_dir']}"
                     )
-                    loaded_periods = (manifest.epoch,)
+                    loaded_periods = ubist_mart_activation.full_period_scope(periods)
                     atc4_scope = ubist_mart_activation.affected_atc4_codes(
                         load_result["target_dir"],
                         periods=loaded_periods,
                     )
                     print(
-                        "phase=mart_build mode=incremental "
+                        "phase=mart_build mode=full "
                         f"periods={loaded_periods} "
                         f"atc4_count={len(atc4_scope)} atc4_scope={atc4_scope}"
                     )
@@ -1815,6 +1837,17 @@ def run(
                         period_scope=loaded_periods,
                     )
                     mart_conn = config.open_mart_connection(mart_activation.build_db)
+                    catalog_sync_results = ubist_mart_activation.prepare_catalog_tables(
+                        mart_conn,
+                        build_db=mart_activation.build_db,
+                        catalog_root=catalog_root,
+                    )
+                    print(
+                        "phase=catalog_db_sync status=prepared "
+                        f"build_db={mart_activation.build_db} "
+                        f"tables={len(catalog_sync_results)} "
+                        f"rows={sum(item.rows for item in catalog_sync_results)}"
+                    )
                     print(f"phase=mart_build status=complete build_db={mart_activation.build_db}")
                     tracker.done()
                 elif nsa_activation is not None:

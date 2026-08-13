@@ -213,8 +213,8 @@ def test_real_load_injects_file_and_target(staging_env, bucket, monkeypatch):
     monkeypatch.setattr(job_runner, "_run_commands", fake_run)
     result = job_runner._real_load(manifest, UBIST, bucket)
 
-    assert "--file" in seen["argv"] and "--target-dir" in seen["argv"]
-    assert seen["argv"][seen["argv"].index("--file") + 1].endswith("data.csv")
+    assert "--source-file" in seen["argv"] and "--target-dir" in seen["argv"]
+    assert seen["argv"][seen["argv"].index("--source-file") + 1].endswith("data.csv")
     assert result["epoch_rows"] == 7
     assert result["staging_verify"] is True
 
@@ -233,7 +233,11 @@ def test_real_load_uses_only_content_classified_full_scan_inputs(
 
     def fake_run(_label, argv):
         observed.append(
-            [argv[index + 1] for index, value in enumerate(argv) if value == "--file"]
+            [
+                argv[index + 1]
+                for index, value in enumerate(argv)
+                if value == "--source-file"
+            ]
         )
         target = Path(argv[argv.index("--target-dir") + 1])
         _write_load_manifest(target, "2026-03", 7)
@@ -243,6 +247,45 @@ def test_real_load_uses_only_content_classified_full_scan_inputs(
     job_runner._real_load(manifest, UBIST, bucket, source_files=classified)
 
     assert observed == [[str(classified[0]), str(classified[1])]]
+
+
+def test_real_load_excludes_ubist_periods_outside_full_window(
+    staging_env, bucket, monkeypatch, tmp_path
+):
+    manifest = _manifest(bucket, epoch="2026-06")
+    classified = (tmp_path / "history.xlsx",)
+    classified[0].write_bytes(b"xlsx")
+    observed: list[str] = []
+
+    def fake_run(_label, argv):
+        observed.extend(argv)
+        target = Path(argv[argv.index("--target-dir") + 1])
+        _write_load_manifest(target, "2026-06", 7)
+
+    monkeypatch.setattr(job_runner, "_run_commands", fake_run)
+
+    job_runner._real_load(
+        manifest,
+        resolve_category("ubist"),
+        bucket,
+        source_files=classified,
+        exclude_periods=("2021-01", "2021-02"),
+    )
+
+    assert [
+        observed[index + 1]
+        for index, value in enumerate(observed)
+        if value == "--exclude-ubist-month"
+    ] == ["2021-01", "2021-02"]
+
+
+def test_periods_outside_rebuild_window_uses_internal_period_order() -> None:
+    periods = {"2026-06", "2021-01", "2021-02", "2021-03"}
+
+    assert job_runner._periods_outside_rebuild_window(periods, 2) == (
+        "2021-01",
+        "2021-02",
+    )
 
 
 def test_real_load_rejects_empty_source_inventory_before_loader(
@@ -932,6 +975,11 @@ def test_production_ubist_orders_shadow_gate_publish_then_refresh(
     )
     monkeypatch.setattr(
         ubist_mart_activation,
+        "prepare_catalog_tables",
+        lambda *_args, **_kwargs: (),
+    )
+    monkeypatch.setattr(
+        ubist_mart_activation,
         "fingerprint_build_tables",
         lambda *_args, **_kwargs: (),
     )
@@ -1142,6 +1190,11 @@ def test_shadow_ubist_publishes_only_to_isolated_db_and_skips_live_refresh(
     )
     monkeypatch.setattr(
         ubist_mart_activation, "build_shadow", lambda *_args, **_kwargs: order.append("mart_build")
+    )
+    monkeypatch.setattr(
+        ubist_mart_activation,
+        "prepare_catalog_tables",
+        lambda *_args, **_kwargs: (),
     )
     monkeypatch.setattr(
         ubist_mart_activation,

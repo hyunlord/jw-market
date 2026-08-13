@@ -25,6 +25,30 @@ class RecordingExecutor:
         self.sleeps.append(seconds)
 
 
+class _RecordingConnection:
+    def __init__(self) -> None:
+        self.statements: list[str] = []
+        self.commits = 0
+
+    def cursor(self):
+        connection = self
+
+        class Cursor:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args) -> None:
+                return None
+
+            def execute(self, statement: str) -> None:
+                connection.statements.append(statement)
+
+        return Cursor()
+
+    def commit(self) -> None:
+        self.commits += 1
+
+
 def _ledger() -> PromotionLedger:
     conn = sqlite3.connect(":memory:")
     ledger = PromotionLedger(conn, dialect="sqlite")
@@ -192,6 +216,20 @@ def test_cleanup_blocks_runtime_disk_threshold_after_first_drop(tmp_path) -> Non
             disk_usage_pct=lambda: next(readings),
         )
     assert executor.schemas == ["build_old"]
+
+
+def test_mysql_cleanup_is_idempotent_for_already_absent_targets() -> None:
+    connection = _RecordingConnection()
+    executor = cleanup.MySQLCleanupExecutor(connection)
+
+    executor.drop_schema("build_old")
+    executor.drop_tables("serving", ("metric__old_run_old",))
+
+    assert connection.statements == [
+        "DROP DATABASE IF EXISTS `build_old`",
+        "DROP TABLE IF EXISTS `serving`.`metric__old_run_old`",
+    ]
+    assert connection.commits == 2
 
 
 def test_complete_reingest_failure_path_does_not_run_cleanup(

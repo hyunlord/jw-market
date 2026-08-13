@@ -77,7 +77,7 @@ def ensure_nfs_catalog(
     build: Callable[[Path, Path], int] | None = None,
     anchor: Callable[[Path, Path], None] | None = None,
 ) -> CatalogPreparation:
-    """Reuse a matching snapshot or rebuild and atomically publish after DB parity."""
+    """Reuse a matching snapshot or prepare a changed catalog for gated ingest."""
 
     root = Path(catalog_root).resolve()
     root_was_missing = not root.exists()
@@ -157,7 +157,7 @@ def ensure_nfs_catalog(
             )
             mismatches = tuple(result for result in parity if not result.matches)
             action = "serving-anchored"
-        if mismatches:
+        if mismatches and root_was_missing:
             detail = "; ".join(
                 f"{item.table_name}:candidate={item.candidate_rows},serving={item.serving_rows},"
                 f"missing={len(item.missing_primary_keys)},added={len(item.added_primary_keys)},"

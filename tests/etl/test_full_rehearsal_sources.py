@@ -39,6 +39,36 @@ def test_ubist_full_source_dir_passes_every_workbook_once(
     assert captured["truncate"] is True
 
 
+def test_ubist_explicit_source_files_pass_every_workbook_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = tmp_path / "a.xlsx"
+    second = tmp_path / "nested" / "b.xlsx"
+    second.parent.mkdir()
+    first.write_bytes(b"a")
+    second.write_bytes(b"b")
+    captured: dict[str, object] = {}
+
+    def fake_load(**kwargs):  # type: ignore[no-untyped-def]
+        captured.update(kwargs)
+        return {}
+
+    monkeypatch.setattr(s1_load, "run_ubist_load", fake_load)
+    rc = s1_load.run(
+        {
+            "source": "ubist",
+            "source_files": [str(first), str(second)],
+            "target_dir": str(tmp_path / "parquet"),
+            "ubist_mode": "replace",
+        }
+    )
+
+    assert rc == 0
+    assert captured["paths"] == [first.resolve(), second.resolve()]
+    assert captured["file"] is None
+    assert captured["all_sources"] is False
+
+
 def test_iqvia_full_source_dir_passes_only_pinned_nsa_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

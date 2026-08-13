@@ -115,7 +115,7 @@ def test_changed_mi_master_rebuilds_only_after_serving_parity(
     )
 
 
-def test_catalog_parity_mismatch_keeps_existing_nfs_snapshot(
+def test_changed_mi_catalog_advances_as_approval_candidate_despite_serving_mismatch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     old_master = tmp_path / "old.xlsx"
@@ -124,7 +124,6 @@ def test_catalog_parity_mismatch_keeps_existing_nfs_snapshot(
     master.write_bytes(b"new")
     root = tmp_path / "catalog"
     _publish(root, old_master, b"old")
-    before = (root / "strategic_brand" / "strategic_brand.parquet").read_bytes()
     monkeypatch.setattr(
         catalog_refresh,
         "compare_catalog_to_serving",
@@ -145,13 +144,20 @@ def test_catalog_parity_mismatch_keeps_existing_nfs_snapshot(
         _publish(candidate, master, b"candidate")
         return 0
 
-    with pytest.raises(RuntimeError, match="serving parity mismatch"):
-        catalog_refresh.ensure_nfs_catalog(
-            **_ensure_args(tmp_path, root, master),
-            build=build,
-        )
+    result = catalog_refresh.ensure_nfs_catalog(
+        **_ensure_args(tmp_path, root, master),
+        build=build,
+    )
 
-    assert (root / "strategic_brand" / "strategic_brand.parquet").read_bytes() == before
+    assert result.action == "rebuilt"
+    assert len(result.parity) == 1
+    assert not result.parity[0].matches
+    assert (
+        pq.read_table(root / "strategic_brand" / "strategic_brand.parquet")
+        .column("payload")
+        .to_pylist()[0]
+        .startswith(b"candidate")
+    )
 
 
 def test_missing_snapshot_can_anchor_to_unchanged_serving_catalog(

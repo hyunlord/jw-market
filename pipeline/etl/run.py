@@ -45,6 +45,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Override the parquet target directory for load stages.",
     )
     parser.add_argument("--file", help="Load or dry-run one source file for s1 smoke checks.")
+    parser.add_argument(
+        "--source-file",
+        action="append",
+        default=[],
+        help="Repeatable source file for an atomic full-source s1 load.",
+    )
     parser.add_argument("--input-file", help="Override the stage input file when supported.")
     parser.add_argument("--mi-master", help="Explicit MI Master xlsx path for s2 catalog stages.")
     parser.add_argument("--catalog-path", help="Override the s2 catalog mapping config.")
@@ -191,6 +197,7 @@ def main(argv: list[str] | None = None) -> int:
         "record_baseline": args.record_baseline,
         "target_dir": args.target_dir,
         "file": args.file,
+        "source_files": args.source_file,
         "input_file": args.mi_master or args.input_file,
         "catalog_path": args.catalog_path,
         "cache_dir": args.cache_dir,

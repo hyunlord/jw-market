@@ -267,6 +267,11 @@ def test_numeric_reingest_runs_core_stages_without_weekly_agent_path(
     )
     monkeypatch.setattr(
         runner.ubist_mart_activation,
+        "prepare_catalog_tables",
+        lambda _conn, **kwargs: calls.append(("prepare_catalog_tables", kwargs)) or (),
+    )
+    monkeypatch.setattr(
+        runner.ubist_mart_activation,
         "prepare_candidate_corpus",
         lambda *_args, **_kwargs: pytest.fail("raw corpus upload path must not run"),
     )
@@ -295,6 +300,10 @@ def test_numeric_reingest_runs_core_stages_without_weekly_agent_path(
     assert [stage for stage in _complete_stage_names(ledger) if stage.startswith("agent")] == []
     assert not any(name == "agent_refresh" for name, _ in calls)
     assert ("gates", {"category": "ubist", "build_db": f"build_{RUN_ID}", "sigma_source": "ubist"}) in calls
+    assert (
+        "prepare_catalog_tables",
+        {"build_db": f"build_{RUN_ID}", "catalog_root": tmp_path / "catalog"},
+    ) in calls
     assert any(call[0] == "refresh_argv" for call in calls)
     assert ledger.terminals[-1]["status"] == "complete"
 

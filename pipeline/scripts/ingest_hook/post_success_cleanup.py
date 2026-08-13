@@ -92,7 +92,7 @@ class MySQLCleanupExecutor:
 
     def drop_schema(self, schema: str) -> None:
         with self._connection.cursor() as cursor:
-            cursor.execute(f"DROP DATABASE {quote_id(schema)}")
+            cursor.execute(f"DROP DATABASE IF EXISTS {quote_id(schema)}")
         self._connection.commit()
 
     def drop_tables(self, schema: str, tables: tuple[str, ...]) -> None:
@@ -100,7 +100,7 @@ class MySQLCleanupExecutor:
             return
         rendered = ", ".join(f"{quote_id(schema)}.{quote_id(table)}" for table in tables)
         with self._connection.cursor() as cursor:
-            cursor.execute(f"DROP TABLE {rendered}")
+            cursor.execute(f"DROP TABLE IF EXISTS {rendered}")
         self._connection.commit()
 
     def sleep(self, seconds: float) -> None:
