@@ -38,8 +38,12 @@ class EvidenceRecord(_StrictModel):
 
 class CoverageLedger(_StrictModel):
     total_reported: int | None = None
+    records_after_status_filter: int | None = None
     records_received: int = 0
     records_unique: int = 0
+    records_relevant: int | None = None
+    records_excluded_by_status: int | None = None
+    records_excluded_by_relevance: int = 0
     records_rendered: int = 0
     pagination_complete: bool = True
     partial_reasons: tuple[str, ...] = ()

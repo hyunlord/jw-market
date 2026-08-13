@@ -61,8 +61,14 @@ def _clinical_set(results: Sequence[SourceResult], observed_on: date) -> Evidenc
     manifests: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
     total_reported = 0
+    after_status = 0
     received = 0
+    unique_before_relevance_ids: set[str] = set()
+    excluded_by_status = 0
+    excluded_by_relevance = 0
     all_totals_known = True
+    all_after_status_known = True
+    all_status_exclusions_known = True
     pagination_complete = True
     partial_reasons: list[str] = []
     query_spec: list[str] = []
@@ -83,13 +89,39 @@ def _clinical_set(results: Sequence[SourceResult], observed_on: date) -> Evidenc
             if manifest:
                 manifests.append(manifest)
             searches.append({"query_manifest": manifest, "records": records})
+            unique_before_relevance_ids.update(
+                text(record.get("nct_id")).upper()
+                for record in records
+                if text(record.get("nct_id"))
+            )
+            unique_before_relevance_ids.update(
+                text(exclusion.get("nct_id")).upper()
+                for exclusion in mapping_list(manifest.get("relevance_exclusions"))
+                if text(exclusion.get("nct_id"))
+            )
             call_total = optional_int(coverage.get("total_reported"))
             if call_total is None:
                 all_totals_known = False
             else:
                 total_reported += call_total
+            call_after_status = optional_int(coverage.get("records_after_status_filter"))
+            if call_after_status is None:
+                all_after_status_known = False
+            else:
+                after_status += call_after_status
             call_received = optional_int(coverage.get("records_received"))
             received += call_received if call_received is not None else len(records)
+            call_excluded_status = optional_int(
+                coverage.get("records_excluded_by_status")
+            )
+            if call_excluded_status is None:
+                all_status_exclusions_known = False
+            else:
+                excluded_by_status += call_excluded_status
+            call_excluded_relevance = optional_int(
+                coverage.get("records_excluded_by_relevance")
+            )
+            excluded_by_relevance += call_excluded_relevance or 0
             complete = coverage.get("pagination_complete") is True
             pagination_complete = pagination_complete and complete
             reason = text(coverage.get("partial_reason"))
@@ -119,8 +151,16 @@ def _clinical_set(results: Sequence[SourceResult], observed_on: date) -> Evidenc
     )
     coverage = CoverageLedger(
         total_reported=total_reported if all_totals_known else None,
+        records_after_status_filter=(
+            after_status if all_after_status_known else None
+        ),
         records_received=received,
-        records_unique=len(records),
+        records_unique=len(unique_before_relevance_ids),
+        records_relevant=len(unique_records),
+        records_excluded_by_status=(
+            excluded_by_status if all_status_exclusions_known else None
+        ),
+        records_excluded_by_relevance=excluded_by_relevance,
         pagination_complete=pagination_complete,
         partial_reasons=tuple(dict.fromkeys(partial_reasons)),
     )
@@ -130,7 +170,7 @@ def _clinical_set(results: Sequence[SourceResult], observed_on: date) -> Evidenc
         query_manifest=tuple(manifests),
         retrieved_at=retrieved_at(results, observed_on),
         coverage=coverage,
-        records=records,
+        records=unique_records,
         item_failures=tuple(failures),
         source_refs=refs,
     )
@@ -139,6 +179,9 @@ def _clinical_set(results: Sequence[SourceResult], observed_on: date) -> Evidenc
 def _patent_set(results: Sequence[SourceResult], observed_on: date) -> EvidenceSet:
     records: list[EvidenceRecord] = []
     failures: list[dict[str, Any]] = []
+    manifests: list[dict[str, Any]] = []
+    partial_reasons: list[str] = []
+    pagination_complete = True
     received = 0
     for result in results:
         if result.status != "ok":
@@ -149,6 +192,28 @@ def _patent_set(results: Sequence[SourceResult], observed_on: date) -> EvidenceS
         for lane_name in ("kr_primary", "us_secondary", "news"):
             lane = mapping(lanes.get(lane_name))
             received += optional_int(lane.get("records_received")) or 0
+            source_limit = optional_int(lane.get("source_limit"))
+            source_limit_reached = lane.get("source_limit_reached") is True
+            identifier_exclusions = optional_int(lane.get("identifier_exclusions")) or 0
+            product_patent_rows = optional_int(lane.get("product_patent_rows")) or 0
+            non_product_exclusions = optional_int(lane.get("non_product_exclusions")) or 0
+            manifests.append(
+                {
+                    "lane": lane_name,
+                    "records_received": optional_int(lane.get("records_received")) or 0,
+                    "records_unique": optional_int(lane.get("records_unique")) or 0,
+                    "source_limit": source_limit,
+                    "source_limit_reached": source_limit_reached,
+                    "identifier_exclusions": identifier_exclusions,
+                    "product_patent_rows": product_patent_rows,
+                    "non_product_exclusions": non_product_exclusions,
+                }
+            )
+            if source_limit_reached:
+                pagination_complete = False
+                partial_reasons.append(
+                    f"{lane_name} 조회가 상류 호출 상한 {source_limit or '미상'}건에 도달"
+                )
             for index, raw_record in enumerate(mapping_list(lane.get("records")), start=1):
                 record = {**raw_record, "as_of_date": observed_on.isoformat()}
                 evidence_id = patent_evidence_id(lane_name, record, index)
@@ -172,12 +237,14 @@ def _patent_set(results: Sequence[SourceResult], observed_on: date) -> EvidenceS
     return EvidenceSet(
         source="patent",
         query_spec=tuple(dict.fromkeys(result.query for result in results)),
-        query_manifest=(),
+        query_manifest=tuple(manifests),
         retrieved_at=retrieved_at(results, observed_on),
         coverage=CoverageLedger(
             total_reported=received,
             records_received=received,
             records_unique=len(records),
+            pagination_complete=pagination_complete,
+            partial_reasons=tuple(dict.fromkeys(partial_reasons)),
         ),
         records=tuple(records),
         item_failures=tuple(failures),

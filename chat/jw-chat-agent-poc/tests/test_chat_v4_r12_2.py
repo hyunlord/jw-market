@@ -1293,7 +1293,7 @@ def test_h_resolver_first_query_is_deterministic_and_contains_no_korean() -> Non
     assert first.blocked_reason is None
     assert parameters
     assert all(not any("가" <= char <= "힣" for char in str(item)) for item in parameters)
-    assert parameters[0]["query.intr"] == "ezetimibe OR pitavastatin"
+    assert parameters[0]["query.intr"] == "ezetimibe AND pitavastatin"
 
 
 def test_h_resolver_first_preserves_transport_safe_planner_filters() -> None:
@@ -1476,7 +1476,7 @@ def test_h_question_grounded_planner_concept_is_supplement_only() -> None:
     )
 
     parameters = [compile_clinical_query(item).parameters for _query, item in prepared]
-    assert parameters[0]["query.intr"] == "pitavastatin OR ezetimibe"
+    assert parameters[0]["query.intr"] == "pitavastatin AND ezetimibe"
     assert parameters[1]["query.cond"] == "hyperlipidemia"
 
 
@@ -1587,7 +1587,11 @@ def test_h_planner_supplement_requires_token_grounding_and_explicit_filters() ->
 
     assert len(parameters) == 1
     assert all("query.locn" not in item for item in parameters)
-    assert all("filter.overallStatus" not in item for item in parameters)
+    assert all(
+        item["filter.overallStatus"]
+        == "NOT_YET_RECRUITING|RECRUITING|ACTIVE_NOT_RECRUITING"
+        for item in parameters
+    )
 
 
 def test_h_question_explicit_non_korean_scope_is_preserved() -> None:

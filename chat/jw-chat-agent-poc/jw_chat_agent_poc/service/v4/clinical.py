@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 from typing import Any, Iterable, Mapping, Sequence
+import unicodedata
 
 from jw_chat_agent_poc.service.v4.contracts import ClinicalTrialConcept
 
@@ -24,6 +25,13 @@ class CompiledClinicalQuery:
     expression: str
     parameters: dict[str, str | int]
     concept: ClinicalTrialConcept
+
+
+@dataclass(frozen=True, slots=True)
+class ClinicalRelevanceDecision:
+    keep: bool
+    reason_code: str
+    matched_tokens: tuple[str, ...] = ()
 
 
 def compile_clinical_query(concept: ClinicalTrialConcept) -> CompiledClinicalQuery:
@@ -197,6 +205,49 @@ def normalize_clinical_detail(
     }
 
 
+def assess_clinical_relevance(
+    record: Mapping[str, Any],
+    concept: ClinicalTrialConcept,
+) -> ClinicalRelevanceDecision:
+    searchable = " ".join(
+        (
+            _text(record.get("brief_title")),
+            _text(record.get("official_title")),
+            " ".join(_string_list(record.get("interventions"))),
+            " ".join(_string_list(record.get("conditions"))),
+        )
+    )
+    ingredient_terms = _clean_terms(concept.ingredients)
+    ingredient_matches = tuple(
+        term for term in ingredient_terms if _contains_surface_term(searchable, term)
+    )
+    if concept.match == "both" and len(ingredient_terms) > 1:
+        if len(ingredient_matches) == len(ingredient_terms):
+            return ClinicalRelevanceDecision(
+                keep=True,
+                reason_code="all_required_ingredient_tokens_match",
+                matched_tokens=ingredient_matches,
+            )
+        return ClinicalRelevanceDecision(
+            keep=False,
+            reason_code="missing_required_ingredient_token",
+            matched_tokens=ingredient_matches,
+        )
+
+    terms = _clean_terms((*concept.brands, *concept.ingredients))
+    matched = tuple(term for term in terms if _contains_surface_term(searchable, term))
+    if matched:
+        return ClinicalRelevanceDecision(
+            keep=True,
+            reason_code="brand_or_ingredient_token_match",
+            matched_tokens=matched,
+        )
+    return ClinicalRelevanceDecision(
+        keep=False,
+        reason_code="missing_brand_or_ingredient_token",
+    )
+
+
 def merge_clinical_searches(searches: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     by_nct: dict[str, dict[str, Any]] = {}
     for search in searches:
@@ -224,6 +275,19 @@ def merge_clinical_searches(searches: Iterable[Mapping[str, Any]]) -> list[dict[
 
 def _clean_terms(values: Iterable[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(cleaned for value in values if (cleaned := _clean_text(value))))
+
+
+def _contains_surface_term(value: str, term: str) -> bool:
+    haystack = unicodedata.normalize("NFKC", value).casefold()
+    needle = unicodedata.normalize("NFKC", term).casefold().strip()
+    if not needle:
+        return False
+    if re.search(r"[가-힣]", needle):
+        return needle in haystack
+    pattern = r"(?<![a-z0-9])" + r"\s+".join(
+        re.escape(part) for part in needle.split()
+    ) + r"(?![a-z0-9])"
+    return re.search(pattern, haystack) is not None
 
 
 def _clean_text(value: object) -> str:

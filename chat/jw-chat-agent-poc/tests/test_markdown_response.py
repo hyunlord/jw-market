@@ -5357,6 +5357,7 @@ def test_external_aggregate_nested_calls_are_rendered_as_answer_facts() -> None:
                                     {
                                         "ITEM_NAME": "리바로정2밀리그램",
                                         "INGR_NAME": "피타바스타틴칼슘",
+                                        "PAGE_GB_NM": "제품특허",
                                         "DOMESTIC_PATENT_NO": "10-0777553",
                                         "DOMESTIC_PATENT_STATUS": "소멸",
                                         "DOMESTIC_END_DATE": "2010-11-12",
@@ -5400,6 +5401,7 @@ def test_external_patent_fact_table_uses_actual_api_fields() -> None:
                                     {
                                         "ITEM_NAME": "리바로정2밀리그램",
                                         "INGR_NAME": "피타바스타틴칼슘",
+                                        "PAGE_GB_NM": "제품특허",
                                         "DOMESTIC_PATENT_NO": "10-0777553",
                                         "DOMESTIC_PATENT_STATUS": "소멸",
                                         "DOMESTIC_END_DATE": "2010-11-12",
@@ -5484,6 +5486,7 @@ def test_competitor_patent_fact_surfaces_market_candidates_and_coverage() -> Non
                                     {
                                         "ITEM_NAME": "크레스토정",
                                         "INGR_NAME": "로수바스타틴칼슘",
+                                        "PAGE_GB_NM": "제품특허",
                                         "DOMESTIC_PATENT_NO": "10-1234567",
                                         "DOMESTIC_PATENT_STATUS": "소멸",
                                         "DOMESTIC_END_DATE": "2021-01-02",

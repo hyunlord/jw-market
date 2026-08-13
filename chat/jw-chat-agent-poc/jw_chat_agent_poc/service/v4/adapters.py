@@ -812,21 +812,49 @@ def _clinical_lossless_external_call(
         )
 
     coverage = {
-        "total_reported": result.total_reported,
+        "total_reported": (
+            result.total_unfiltered
+            if result.total_unfiltered is not None
+            else result.total_reported
+        ),
         "records_received": result.records_received,
         "records_unique": result.records_unique,
         "page_count": result.page_count,
         "pagination_complete": result.pagination_complete,
         "partial_reason": result.partial_reason,
     }
+    if result.records_relevant is not None or result.relevance_exclusions:
+        coverage.update(
+            {
+                "records_relevant": (
+                    result.records_relevant
+                    if result.records_relevant is not None
+                    else len(result.records)
+                ),
+                "records_excluded_by_relevance": len(result.relevance_exclusions),
+            }
+        )
+    if "filter.overallStatus" in compiled.parameters:
+        coverage.update(
+            {
+                "records_after_status_filter": result.total_reported,
+                "records_excluded_by_status": (
+                    max(result.total_unfiltered - result.total_reported, 0)
+                    if result.total_unfiltered is not None
+                    and result.total_reported is not None
+                    else None
+                ),
+            }
+        )
     return ExternalCall(
         tool="clinicaltrials_v2_lossless_search",
         source="clinicaltrials_api_v2",
         status="live" if result.records else "no_data",
         summary_text=(
-            f"ClinicalTrials.gov API v2에서 {result.records_unique}건을 전건 수집했습니다."
+            "ClinicalTrials.gov API v2에서 "
+            f"관련성 확인 후 {len(result.records)}건을 채택했습니다."
             if result.records
-            else "ClinicalTrials.gov API v2 조회 결과가 없습니다."
+            else "ClinicalTrials.gov API v2 조회 결과 중 관련 기록이 없습니다."
         ),
         render_data={
             "request": dict(compiled.parameters),
@@ -1268,7 +1296,16 @@ def build_source_adapters() -> dict[SourceName, Any]:
             if resolution is not None and resolution.molecule_en
             else (_ingredient_query(base),)
         )
-        kr_calls = [external.mfds_patent(molecule) for molecule in molecules]
+        canonical_brand = (
+            str(resolution.canonical_brand).strip()
+            if resolution is not None and resolution.canonical_brand
+            else ""
+        )
+        kr_calls = (
+            [external.mfds_patent(molecules[0], item_name=canonical_brand)]
+            if canonical_brand
+            else [external.mfds_patent(molecule) for molecule in molecules]
+        )
         us_calls = [external.mfds_fda_orangebook(molecule) for molecule in molecules]
         news_calls = [
             _v4_web_search(

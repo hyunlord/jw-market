@@ -37,8 +37,24 @@ def build_patent_lane_payload(
     news_calls: Sequence[Mapping[str, Any]],
     entity_tokens: Sequence[str] = (),
 ) -> dict[str, dict[str, Any]]:
-    kr_records, kr_received = _patent_records(kr_calls, lane="kr_primary")
-    us_records, us_received = _patent_records(us_calls, lane="us_secondary")
+    (
+        kr_records,
+        kr_received,
+        kr_source_limit,
+        kr_source_limit_reached,
+        kr_identifier_exclusions,
+        kr_product_patent_rows,
+        kr_non_product_exclusions,
+    ) = _patent_records(kr_calls, lane="kr_primary")
+    (
+        us_records,
+        us_received,
+        us_source_limit,
+        us_source_limit_reached,
+        us_identifier_exclusions,
+        _,
+        _,
+    ) = _patent_records(us_calls, lane="us_secondary")
     relevance_tokens, company_tokens = _relevance_tokens(
         entity_tokens,
         (*kr_records, *us_records),
@@ -63,6 +79,11 @@ def build_patent_lane_payload(
             role="국내 특허 상태의 1차 근거",
             records=kr_records,
             records_received=kr_received,
+            source_limit=kr_source_limit,
+            source_limit_reached=kr_source_limit_reached,
+            identifier_exclusions=kr_identifier_exclusions,
+            product_patent_rows=kr_product_patent_rows,
+            non_product_exclusions=kr_non_product_exclusions,
         ),
         "us_secondary": _lane(
             scope="US_REFERENCE_ONLY",
@@ -70,6 +91,9 @@ def build_patent_lane_payload(
             role="미국 등재 특허의 보조 근거이며 국내 특허 상태와 혼합하지 않음",
             records=us_records,
             records_received=us_received,
+            source_limit=us_source_limit,
+            source_limit_reached=us_source_limit_reached,
+            identifier_exclusions=us_identifier_exclusions,
         ),
         "news": news_lane,
     }
@@ -79,14 +103,55 @@ def _patent_records(
     calls: Sequence[Mapping[str, Any]],
     *,
     lane: Literal["kr_primary", "us_secondary"],
-) -> tuple[list[dict[str, Any]], int]:
+) -> tuple[list[dict[str, Any]], int, int | None, bool, int, int, int]:
     received: list[dict[str, Any]] = []
+    source_limits: list[int] = []
+    source_limit_reached = False
     for call in calls:
-        for item in _items(call):
+        items = _items(call)
+        render_data = call.get("render_data")
+        if isinstance(render_data, Mapping):
+            source_limit = _integer(
+                render_data.get("request_limit")
+                or mapping(render_data.get("request")).get("limit")
+            )
+            if source_limit is not None:
+                source_limits.append(source_limit)
+                source_limit_reached = source_limit_reached or (
+                    bool(render_data.get("source_limit_reached"))
+                    or (lane == "kr_primary" and len(items) >= source_limit)
+                )
+        for item in items:
             received.append(_patent_record(call, item, lane=lane))
+    if lane == "kr_primary":
+        product_patents = [
+            record
+            for record in received
+            if _text(record.get("page_group")) == "제품특허"
+        ]
+        identified = [
+            record for record in product_patents if _text(record.get("patent_no"))
+        ]
+        unique = _deduplicate_patent_numbers(identified)
+        identifier_exclusions = len(product_patents) - len(identified)
+        product_patent_rows = len(product_patents)
+        non_product_exclusions = len(received) - product_patent_rows
+    else:
+        unique = _deduplicate(
+            received,
+            keys=("patent_no", "product", "expiration_date", "owner"),
+        )
+        identifier_exclusions = 0
+        product_patent_rows = 0
+        non_product_exclusions = 0
     return (
-        _deduplicate(received, keys=("patent_no", "product", "expiration_date", "owner")),
+        unique,
         len(received),
+        max(source_limits) if source_limits else None,
+        source_limit_reached,
+        identifier_exclusions,
+        product_patent_rows,
+        non_product_exclusions,
     )
 
 
@@ -100,7 +165,13 @@ def _patent_record(
         product = item.get("ITEM_NAME")
         ingredient = item.get("INGR_ENG_NAME") or item.get("INGR_NAME")
         patent_no = item.get("DOMESTIC_PATENT_NO")
-        invention_title = item.get("INVENTION_TITLE") or item.get("PATENT_TITLE")
+        invention_title = (
+            item.get("DOMESTIC_INVN_NM")
+            or item.get("INVENTION_TITLE")
+            or item.get("PATENT_TITLE")
+        )
+        patent_type = item.get("PATENT_GB_CODE")
+        page_group = item.get("PAGE_GB_NM")
         status = item.get("DOMESTIC_PATENT_STATUS")
         expiration_date = item.get("DOMESTIC_END_DATE")
         owner = item.get("PATENTEE")
@@ -110,12 +181,15 @@ def _patent_record(
         patent_no = item.get("KOR_PAT_NO")
         invention_title = (
             item.get("KOR_INVENTION_TITLE")
+            or item.get("KOR_NAME_OF_INVENTION")
             or item.get("INVENTION_TITLE")
             or item.get("PATENT_TITLE")
         )
         status = item.get("KOR_STATUS")
         expiration_date = item.get("KOR_EXP_DATE")
         owner = item.get("KOR_APPLICANT")
+        patent_type = item.get("PATENT_GB_CODE")
+        page_group = ""
     return {
         "lane": lane,
         "jurisdiction": "KR" if lane == "kr_primary" else "US",
@@ -125,6 +199,8 @@ def _patent_record(
         "ingredient": _text(ingredient),
         "patent_no": _text(patent_no),
         "invention_title": _text(invention_title),
+        "patent_type": _text(patent_type),
+        "page_group": _text(page_group),
         "listed_status": _text(status),
         "status": _text(status),
         "expiration_date": _text(expiration_date),
@@ -274,6 +350,11 @@ def _lane(
     role: str,
     records: list[dict[str, Any]],
     records_received: int,
+    source_limit: int | None = None,
+    source_limit_reached: bool = False,
+    identifier_exclusions: int = 0,
+    product_patent_rows: int = 0,
+    non_product_exclusions: int = 0,
 ) -> dict[str, Any]:
     return {
         "scope": scope,
@@ -282,7 +363,67 @@ def _lane(
         "records_received": records_received,
         "records_unique": len(records),
         "records": records,
+        "source_limit": source_limit,
+        "source_limit_reached": source_limit_reached,
+        "identifier_exclusions": identifier_exclusions,
+        "product_patent_rows": product_patent_rows,
+        "non_product_exclusions": non_product_exclusions,
     }
+
+
+def patent_record_sort_key(record: Mapping[str, Any]) -> tuple[Any, ...]:
+    status = _text(record.get("status") or record.get("listed_status"))
+    expiration = "".join(
+        character
+        for character in _text(record.get("expiration_date"))
+        if character.isdigit()
+    )
+    completeness = sum(
+        bool(_text(record.get(field)))
+        for field in ("invention_title", "patent_type", "owner", "expiration_date")
+    )
+    return (
+        0 if status == "등록" else 1,
+        -int(expiration or "0"),
+        -completeness,
+        _text(record.get("patent_no")),
+        _text(record.get("product")),
+    )
+
+
+def _deduplicate_patent_numbers(
+    records: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        key = _text(record.get("patent_no")).casefold()
+        grouped.setdefault(key, []).append(record)
+    unique: list[dict[str, Any]] = []
+    for candidates in grouped.values():
+        winner = dict(sorted(candidates, key=_patent_duplicate_sort_key)[0])
+        variants = list(
+            dict.fromkeys(
+                _text(candidate.get("status"))
+                for candidate in sorted(candidates, key=_patent_duplicate_sort_key)
+                if _text(candidate.get("status"))
+            )
+        )
+        winner["status_variants"] = variants
+        winner["source_row_count"] = len(candidates)
+        unique.append(winner)
+    return unique
+
+
+def _patent_duplicate_sort_key(record: Mapping[str, Any]) -> tuple[Any, ...]:
+    status = _text(record.get("status") or record.get("listed_status"))
+    status_rank = (
+        0
+        if status == "등록"
+        else 1
+        if "(" in status and ")" in status
+        else 2
+    )
+    return (status_rank, *patent_record_sort_key(record))
 
 
 def _deduplicate(
@@ -303,3 +444,14 @@ def _deduplicate(
 
 def _text(value: Any) -> str:
     return str(value).strip() if value not in (None, "") else ""
+
+
+def _integer(value: Any) -> int | None:
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}

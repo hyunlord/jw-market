@@ -23,6 +23,7 @@ def _patent_lanes_with_news() -> dict[str, dict[str, object]]:
                             "ITEM_NAME": "리바로젯정",
                             "INGR_ENG_NAME": "pitavastatin ezetimibe",
                             "PATENTEE": "유한양행",
+                            "PAGE_GB_NM": "제품특허",
                             "DOMESTIC_PATENT_NO": "10-1234567",
                         }
                     ]

@@ -553,6 +553,7 @@ def test_patent_payload_keeps_kr_us_and_news_in_separate_lanes() -> None:
                 {
                     "ITEM_NAME": "리바로정2밀리그램",
                     "INGR_ENG_NAME": "Pitavastatin Calcium",
+                    "PAGE_GB_NM": "제품특허",
                     "DOMESTIC_PATENT_NO": "10-0777553",
                     "DOMESTIC_PATENT_STATUS": "소멸",
                     "DOMESTIC_END_DATE": "2010-11-12",
@@ -622,11 +623,13 @@ def test_patent_payload_deduplicates_only_within_each_lane() -> None:
             "items": [
                 {
                     "ITEM_NAME": "리바로정",
+                    "PAGE_GB_NM": "제품특허",
                     "DOMESTIC_PATENT_NO": "10-0000001",
                     "DOMESTIC_END_DATE": "2030-01-01",
                 },
                 {
                     "ITEM_NAME": "리바로정",
+                    "PAGE_GB_NM": "제품특허",
                     "DOMESTIC_PATENT_NO": "10-0000001",
                     "DOMESTIC_END_DATE": "2030-01-01",
                 },
@@ -684,12 +687,16 @@ def test_patent_adapter_calls_three_authority_lanes_without_nedrug_duplication(
     class External:
         timeout_s = 12
 
-        def mfds_patent(self, ingredient):
-            called.append(("kr", ingredient))
+        def mfds_patent(self, ingredient, *, item_name=None):
+            called.append(("kr", item_name or ingredient))
             return external_call(
                 "mfds_patent",
                 "식품의약품안전처",
-                {"DOMESTIC_PATENT_NO": "10-0777553", "ITEM_NAME": "리바로정"},
+                {
+                    "PAGE_GB_NM": "제품특허",
+                    "DOMESTIC_PATENT_NO": "10-0777553",
+                    "ITEM_NAME": "리바로정",
+                },
             )
 
         def mfds_fda_orangebook(self, ingredient):
@@ -723,7 +730,7 @@ def test_patent_adapter_calls_three_authority_lanes_without_nedrug_duplication(
 
     result = v4_adapters.build_source_adapters()["patent"]("리바로 특허 만료")
 
-    assert called[0:2] == [("kr", "Pitavastatin"), ("us", "Pitavastatin")]
+    assert called[0:2] == [("kr", "리바로"), ("us", "Pitavastatin")]
     assert called[2][0] == "news"
     assert called[2][1].startswith("news:")
     assert result.status == "ok"
@@ -929,7 +936,10 @@ def test_lossless_clinical_spine_unions_queries_and_renders_every_record() -> No
     assert clinical.records[1].payload["matched_query"] == ["q1", "q2"]
     assert rendered.profile == "clinical_portfolio"
     assert rendered.coverage.records_rendered == 3
-    assert "원천 검색 4건 · 수신 4건 · 중복 제거 후 3건 · 상세 표시 3건" in rendered.text
+    assert (
+        "원천 검색 4건 → 수신 4건 → 중복 제거 3건 → "
+        "관련성 확인 3건 (0건 제외) → 상세 표시 3건"
+    ) in rendered.text
     assert rendered.text.count("NCT00000001") >= 1
     assert rendered.text.count("NCT00000002") >= 1
     assert rendered.text.count("NCT00000003") >= 1
@@ -1017,10 +1027,10 @@ def test_clinical_portfolio_keeps_full_table_and_major_cards_above_twelve() -> N
         observed_on=date(2026, 8, 12),
     )
 
-    assert rendered.coverage.records_rendered == 13
-    assert all(f"NCT{index:08d}" in rendered.text for index in range(1, 14))
-    assert "## 주요 임상시험 건별 상세 (12건)" in rendered.text
-    assert rendered.text.count("### NCT") == 12
+    assert rendered.coverage.records_rendered == 10
+    assert sum(f"NCT{index:08d}" in rendered.text for index in range(1, 14)) == 10
+    assert "외 3건" in rendered.text
+    assert "### NCT" not in rendered.text
 
 
 def test_lossless_timeout_composition_keeps_full_clinical_facts() -> None:
@@ -1270,6 +1280,7 @@ def test_lossless_patent_renderer_keeps_three_lanes_and_bounded_wording() -> Non
                             "items": [
                                 {
                                     "ITEM_NAME": "리바로젯정",
+                                    "PAGE_GB_NM": "제품특허",
                                     "DOMESTIC_PATENT_NO": "10-0777553",
                                     "INVENTION_TITLE": "지질 저하 복합제",
                                     "DOMESTIC_PATENT_STATUS": "말소",
@@ -1348,7 +1359,7 @@ def test_lossless_patent_renderer_keeps_three_lanes_and_bounded_wording() -> Non
 
     assert rendered.profile == "patent_portfolio"
     assert "2026-08-12 조회 기준 NeDrug 특허목록상 상태 '말소'" in rendered.text
-    assert "목록상 존속기간만료일 2030-11-12" in rendered.text
+    assert "등재목록상 소멸일 2030-11-12" in rendered.text
     assert "## 미국 Orange Book 보조표" in rendered.text
     assert "## 뉴스 맥락" in rendered.text
     assert "2026-07-31" in rendered.text and "2026-08-01" in rendered.text
@@ -1775,7 +1786,7 @@ def test_runtime_fallback_retains_full_clinical_facts(monkeypatch) -> None:
     )
 
     assert "NCT00000001" in answer.text
-    assert "Pitavastatin" in answer.text
+    assert "Brief NCT00000001" in answer.text
     assert "자동 해설 생성 미완료" in answer.text
     assert "구체적인 답을 구성하지 못했습니다" not in answer.text
     assert answer.trace["lossless_spine"]["fallback_detail_retention_rate"] == 1.0
@@ -1795,6 +1806,7 @@ def test_runtime_fallback_retains_full_patent_facts(monkeypatch) -> None:
                         "render_data": {
                             "items": [
                                 {
+                                    "PAGE_GB_NM": "제품특허",
                                     "DOMESTIC_PATENT_NO": "10-0777553",
                                     "INVENTION_TITLE": "지질 저하 복합제",
                                     "DOMESTIC_PATENT_STATUS": "말소",
@@ -2075,7 +2087,7 @@ def test_exact_nct_detail_builds_one_evidence_record_and_single_record_render() 
     assert rendered.profile == "single_record_detail"
     assert "NCT05151731" in rendered.text
     assert "PHASE3" in rendered.text
-    assert "Pitavastatin" in rendered.text
+    assert "A randomized pitavastatin trial" in rendered.text
 
 
 def test_runtime_does_not_swallow_lossless_structural_invariant(monkeypatch) -> None:

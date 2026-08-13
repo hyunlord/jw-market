@@ -16,10 +16,6 @@ _QUERY_SUFFIX_RE = re.compile(
     r"clinical\s+trials?).*$",
     re.IGNORECASE,
 )
-_COMBINED_INTERVENTION_RE = re.compile(
-    r"(?:복합|조합|combination|\band\b|\+|(?:^|\s)(?:및|와|과)(?:\s|$))",
-    re.IGNORECASE,
-)
 _ENTITY_SPLIT_RE = re.compile(
     r"\s*[,，]\s*|\s+(?:및|와|과)\s+|(?<=[가-힣A-Za-z0-9])(?:와|과)\s+"
 )
@@ -61,6 +57,22 @@ _RECRUITING_RE = re.compile(
     re.IGNORECASE,
 )
 _COMPLETED_RE = re.compile(r"(?:완료|完了|\bcompleted\b)", re.IGNORECASE)
+_TERMINATED_RE = re.compile(
+    r"(?:종료|중단|\bterminated\b|\bwithdrawn\b)",
+    re.IGNORECASE,
+)
+_HISTORICAL_RE = re.compile(r"(?:과거|이전|\bhistorical\b|\bpast\b)", re.IGNORECASE)
+
+DEFAULT_ACTIVE_CLINICAL_STATUSES = (
+    "NOT_YET_RECRUITING",
+    "RECRUITING",
+    "ACTIVE_NOT_RECRUITING",
+)
+HISTORICAL_CLINICAL_STATUSES = (
+    "COMPLETED",
+    "TERMINATED",
+    "WITHDRAWN",
+)
 
 
 @dataclass(frozen=True)
@@ -131,7 +143,6 @@ def resolver_first_clinical_concepts(
     if resolution is not None:
         molecules = _normalized_latin_values(getattr(resolution, "molecule_en", ()))
         canonical = str(getattr(resolution, "canonical_brand", "") or "").strip()
-        latin_brand = canonical if canonical and not _HANGUL_RE.search(canonical) else ""
         if molecules:
             planner_countries = (
                 _normalized_latin_values(planner_concept.countries)
@@ -146,13 +157,9 @@ def resolver_first_clinical_concepts(
             concepts.append(
                 ClinicalTrialConcept(
                     ingredients=molecules,
-                    brands=(latin_brand,) if latin_brand else (),
+                    brands=(canonical,) if canonical else (),
                     search_area="intervention",
-                    match=(
-                        "both"
-                        if len(molecules) > 1 and _COMBINED_INTERVENTION_RE.search(query)
-                        else "any"
-                    ),
+                    match="both" if len(molecules) > 1 else "any",
                     countries=planner_countries,
                     statuses=planner_statuses,
                     source_queries=(query,),
@@ -209,12 +216,16 @@ def _explicit_scope(
     ]
     status_query = _NOT_YET_RECRUITING_RE.sub("", query)
     statuses: list[str] = []
-    if _NOT_YET_RECRUITING_RE.search(query):
+    if _HISTORICAL_RE.search(query):
+        statuses.extend(HISTORICAL_CLINICAL_STATUSES)
+    elif _NOT_YET_RECRUITING_RE.search(query):
         statuses.append("NOT_YET_RECRUITING")
-    if _RECRUITING_RE.search(status_query):
+    if not statuses and _RECRUITING_RE.search(status_query):
         statuses.append("RECRUITING")
-    if _COMPLETED_RE.search(query):
+    if not statuses and _COMPLETED_RE.search(query):
         statuses.append("COMPLETED")
+    if not statuses and _TERMINATED_RE.search(query):
+        statuses.extend(("TERMINATED", "WITHDRAWN"))
     question_tokens = _semantic_tokens(query)
     for concept in planner_concepts:
         countries.extend(
@@ -229,8 +240,8 @@ def _explicit_scope(
         )
     countries = list(dict.fromkeys(countries))
     statuses = list(dict.fromkeys(statuses))
-    if not countries and not statuses:
-        return None
+    if not statuses:
+        statuses.extend(DEFAULT_ACTIVE_CLINICAL_STATUSES)
     return ClinicalTrialConcept(
         countries=tuple(countries),
         statuses=tuple(statuses),

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 from ipaddress import ip_address
 from pathlib import Path
 import csv
@@ -46,6 +47,9 @@ HIRA_PROCEDURE_SOURCE = "hira_procedure"
 WEB_SEARCH_SOURCE = "web_search"
 WEB_SEARCH_MAX_RESULTS = 5
 TAVILY_TIMEOUT_CAP_S = 5
+MFDS_PATENT_MAX_RESULTS_ENV = "MFDS_PATENT_MAX_RESULTS"
+MFDS_PATENT_DEFAULT_MAX_RESULTS = 500
+MFDS_PATENT_PROVIDER_MAX_RESULTS = 500
 DEFAULT_MCP_GATEWAY_BASE = "http://llmops-gateway-api-service:8080"
 OPENFDA_MCP_DEFAULT_RESOURCE = "184"
 NEDRUG_MCP_DEFAULT_RESOURCE = "250"
@@ -212,9 +216,19 @@ class ExternalApiClient:
         )
 
 
-    def mfds_patent(self, ingredient_en: str) -> ExternalCall:
-        item_name = MFDS_PATENT_QUERY_ALIASES.get(ingredient_en.lower())
-        params = {"item_name": item_name} if item_name else {"ingr_name": ingredient_en}
+    def mfds_patent(
+        self,
+        ingredient_en: str,
+        *,
+        item_name: str | None = None,
+    ) -> ExternalCall:
+        resolved_item_name = item_name or MFDS_PATENT_QUERY_ALIASES.get(ingredient_en.lower())
+        params = (
+            {"item_name": resolved_item_name}
+            if resolved_item_name
+            else {"ingr_name": ingredient_en}
+        )
+        params["limit"] = str(_mfds_patent_result_limit())
         return self._fixture_or_live("mfds_patent", params, xml=True)
 
     def mfds_fda_orangebook(self, ingredient_en: str) -> ExternalCall:
@@ -613,7 +627,15 @@ def _mcp_tool_spec(tool: str, params: dict[str, str]) -> dict[str, Any]:
                 },
             )
         case "mfds_patent":
-            return _nedrug_spec(tool, "search_korea_drug_patent", {"item_name": params.get("item_name"), "ingr_name": params.get("ingr_name"), "limit": 5})
+            return _nedrug_spec(
+                tool,
+                "search_korea_drug_patent",
+                {
+                    "item_name": params.get("item_name"),
+                    "ingr_name": params.get("ingr_name"),
+                    "limit": _mfds_patent_result_limit(params.get("limit")),
+                },
+            )
         case "mfds_fda_orangebook":
             return _nedrug_spec(tool, "search_fda_orangebook_patent", {"prt_name": params.get("prt_name"), "ingr_name": params.get("ingr_name"), "limit": 5})
         case "hira_disease_name_code":
@@ -658,6 +680,18 @@ def _nedrug_spec(tool: str, mcp_tool: str, arguments: dict[str, Any]) -> dict[st
         "mcp_tool": mcp_tool,
         "arguments": _strip_none_arguments(arguments),
     }
+
+
+def _mfds_patent_result_limit(value: object | None = None) -> int:
+    raw = value if value not in (None, "") else os.environ.get(
+        MFDS_PATENT_MAX_RESULTS_ENV,
+        str(MFDS_PATENT_DEFAULT_MAX_RESULTS),
+    )
+    try:
+        parsed = int(str(raw))
+    except (TypeError, ValueError):
+        parsed = MFDS_PATENT_DEFAULT_MAX_RESULTS
+    return max(1, min(parsed, MFDS_PATENT_PROVIDER_MAX_RESULTS))
 
 
 def _hira_spec(tool: str, mcp_tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -1345,13 +1379,40 @@ def _json_or_text(text: str) -> Any:
 
 
 def _mcp_render_data(payload: Any, params: dict[str, str], mcp_tool: str, content_text: str) -> dict[str, Any]:
+    result_limit = (
+        _mfds_patent_result_limit(params.get("limit"))
+        if mcp_tool == "search_korea_drug_patent"
+        else 5
+    )
     if isinstance(payload, list):
-        return {"request": params, "resultCode": "00", "totalCount": len(payload), "items": payload[:5], "mcp": {"tool": mcp_tool, "content_text": content_text}}
+        return {
+            "request": params,
+            "request_limit": result_limit,
+            "source_limit_reached": (
+                mcp_tool == "search_korea_drug_patent"
+                and len(payload) >= result_limit
+            ),
+            "resultCode": "00",
+            "totalCount": len(payload),
+            "items": payload[:result_limit],
+            "mcp": _mcp_trace_metadata(mcp_tool, content_text),
+        }
     if isinstance(payload, dict) and isinstance(payload.get("results"), list):
-        return {"request": params, "payload": {"meta": payload.get("meta", {}), "results": payload["results"][:5]}, "mcp": {"tool": mcp_tool, "content_text": content_text}}
+        return {"request": params, "payload": {"meta": payload.get("meta", {}), "results": payload["results"][:5]}, "mcp": _mcp_trace_metadata(mcp_tool, content_text)}
     if isinstance(payload, dict):
-        return {"request": params, "payload": payload, "mcp": {"tool": mcp_tool, "content_text": content_text}}
-    return {"request": params, "payload": {"value": payload}, "mcp": {"tool": mcp_tool, "content_text": content_text}}
+        return {"request": params, "payload": payload, "mcp": _mcp_trace_metadata(mcp_tool, content_text)}
+    return {"request": params, "payload": {"value": payload}, "mcp": _mcp_trace_metadata(mcp_tool, content_text)}
+
+
+def _mcp_trace_metadata(mcp_tool: str, content_text: str) -> dict[str, Any]:
+    if mcp_tool != "search_korea_drug_patent":
+        return {"tool": mcp_tool, "content_text": content_text}
+    encoded = content_text.encode("utf-8")
+    return {
+        "tool": mcp_tool,
+        "content_length": len(encoded),
+        "content_sha256": hashlib.sha256(encoded).hexdigest(),
+    }
 
 
 def _mcp_summary(tool: str, status: str, render_data: dict[str, Any]) -> str:

@@ -8,6 +8,7 @@ import requests
 
 from jw_chat_agent_poc.service.v4.clinical import (
     CompiledClinicalQuery,
+    assess_clinical_relevance,
     normalize_clinical_study,
 )
 
@@ -32,6 +33,9 @@ class ClinicalSearchResult:
     partial_reason: str | None
     query_manifest: dict[str, Any]
     elapsed_ms: float
+    total_unfiltered: int | None = None
+    records_relevant: int | None = None
+    relevance_exclusions: tuple[dict[str, str], ...] = ()
 
 
 class ClinicalTrialsV2Client:
@@ -50,6 +54,7 @@ class ClinicalTrialsV2Client:
 
     def search(self, compiled: CompiledClinicalQuery) -> ClinicalSearchResult:
         started = monotonic()
+        total_unfiltered, status_probe_error = self._unfiltered_total(compiled)
         page_token: str | None = None
         seen_tokens: set[str] = set()
         received: list[Mapping[str, Any]] = []
@@ -118,6 +123,21 @@ class ClinicalTrialsV2Client:
                 )
             )
 
+        relevant_by_nct: dict[str, dict[str, Any]] = {}
+        relevance_exclusions: list[dict[str, str]] = []
+        for nct_id, record in unique_by_nct.items():
+            decision = assess_clinical_relevance(record, compiled.concept)
+            if decision.keep:
+                record["relevance_matched_tokens"] = list(decision.matched_tokens)
+                relevant_by_nct[nct_id] = record
+                continue
+            relevance_exclusions.append(
+                {
+                    "nct_id": nct_id,
+                    "reason_code": decision.reason_code,
+                }
+            )
+
         pagination_complete = page_token is None and (
             total_reported is None or len(received) >= total_reported
         )
@@ -128,6 +148,13 @@ class ClinicalTrialsV2Client:
                 else "페이지 수집이 완료되지 않아 전체 현황으로 볼 수 없습니다"
             )
 
+        if total_unfiltered is None and "filter.overallStatus" not in compiled.parameters:
+            total_unfiltered = total_reported
+        status_filtered_out = (
+            max(total_unfiltered - total_reported, 0)
+            if total_unfiltered is not None and total_reported is not None
+            else None
+        )
         manifest = {
             "query_id": compiled.query_id,
             "query_type": compiled.query_type,
@@ -135,14 +162,21 @@ class ClinicalTrialsV2Client:
             "parameters": dict(compiled.parameters),
             "source_queries": list(matched_queries),
             "total_reported": total_reported,
+            "total_unfiltered": total_unfiltered,
+            "records_after_status_filter": total_reported,
             "records_received": len(received),
             "records_unique": len(unique_by_nct),
+            "records_relevant": len(relevant_by_nct),
+            "records_excluded_by_status": status_filtered_out,
+            "records_excluded_by_relevance": len(relevance_exclusions),
+            "relevance_exclusions": list(relevance_exclusions),
+            "status_count_probe_error_type": status_probe_error,
             "page_count": page_count,
             "pagination_complete": pagination_complete,
             "partial_reason": partial_reason,
         }
         return ClinicalSearchResult(
-            records=tuple(unique_by_nct.values()),
+            records=tuple(relevant_by_nct.values()),
             total_reported=total_reported,
             records_received=len(received),
             records_unique=len(unique_by_nct),
@@ -151,7 +185,37 @@ class ClinicalTrialsV2Client:
             partial_reason=partial_reason,
             query_manifest=manifest,
             elapsed_ms=round((monotonic() - started) * 1000, 1),
+            total_unfiltered=total_unfiltered,
+            records_relevant=len(relevant_by_nct),
+            relevance_exclusions=tuple(relevance_exclusions),
         )
+
+    def _unfiltered_total(
+        self,
+        compiled: CompiledClinicalQuery,
+    ) -> tuple[int | None, str | None]:
+        if "filter.overallStatus" not in compiled.parameters:
+            return None, None
+        parameters = {
+            key: value
+            for key, value in compiled.parameters.items()
+            if key != "filter.overallStatus"
+        }
+        parameters["pageSize"] = 1
+        parameters["countTotal"] = "true"
+        try:
+            response = self._get(
+                CLINICALTRIALS_V2_STUDIES_URL,
+                params=parameters,
+                timeout=self._timeout_s,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, Mapping):
+                raise ValueError("ClinicalTrials API v2 count response is not an object")
+            return _optional_int(payload.get("totalCount")), None
+        except Exception as exc:  # noqa: BLE001 - the manifest preserves the probe failure
+            return None, type(exc).__name__
 
 
 def _optional_int(value: object) -> int | None:

@@ -26,6 +26,7 @@ _REASON_CODES = (
     "ABSENCE_OVERCLAIM",
     "INTERNAL_TOKEN_LEAK",
     "AS_OF_DATE",
+    "PATENT_STATUS_OVERCLAIM",
 )
 _TRANSFER_RE = re.compile(r"(?:이동|흡수|전환|잠식|대체)")
 _STRUCTURAL_COMMERCIAL_RE = re.compile(
@@ -114,6 +115,10 @@ _ABSENCE_UNCERTAINTY_RE = re.compile(
     r"(?:비급여|급여|허가)[^.\n]{0,50}(?:확인되지|미확인|확정할\s*수\s*없)|"
     r"(?:확인되지|미확인|확정할\s*수\s*없)[^.\n]{0,50}(?:비급여|급여|허가)"
 )
+_PATENT_GLOBAL_EXPIRY_RE = re.compile(
+    r"[^.\n]*특허(?:들|들은|는|가)?[^.\n]{0,100}"
+    r"(?:(?:모두|전부|전체)[^.\n]{0,30})?(?:이미\s*)?소멸[^.\n]*[.]?"
+)
 _FUTURE_DATE_RE = re.compile(r"(?:예정|다가오|앞두고)")
 _INTERNAL_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"확인된 수치"),
@@ -160,12 +165,19 @@ def enforce_reason_codes(
     if absence is not None:
         repairs.append(("ABSENCE_OVERCLAIM", absence))
 
+    patent_status = _repair_patent_status(text, results)
+    if patent_status is not None:
+        repairs.append(("PATENT_STATUS_OVERCLAIM", patent_status))
+
     dated = _repair_as_of_date(text, results, observed_at)
     if dated is not None:
         repairs.append(("AS_OF_DATE", dated))
 
     review_only = len(repairs) >= 2
-    repaired = text if review_only else repairs[0][1] if repairs else text
+    if review_only:
+        repaired = patent_status if patent_status is not None else text
+    else:
+        repaired = repairs[0][1] if repairs else text
     repaired, internal_count = scrub_internal_release_tokens(repaired)
 
     trace: dict[str, Any] = {code: 0 for code in _REASON_CODES}
@@ -194,6 +206,43 @@ def typed_absence_record(result: SourceResult) -> AbsenceConfirmation | None:
     if record.source != result.source or record.source != expected_source:
         return None
     return record
+
+
+def _repair_patent_status(
+    text: str,
+    results: Sequence[SourceResult],
+) -> str | None:
+    if (
+        "이번 조회 범위" in text
+        or _PATENT_GLOBAL_EXPIRY_RE.search(text) is None
+    ):
+        return None
+    records: list[Mapping[str, Any]] = []
+    for result in results:
+        if result.source != "patent" or not isinstance(result.payload, Mapping):
+            continue
+        lanes = result.payload.get("patent_lanes")
+        if not isinstance(lanes, Mapping):
+            continue
+        kr_lane = lanes.get("kr_primary")
+        if not isinstance(kr_lane, Mapping):
+            continue
+        raw_records = kr_lane.get("records")
+        if isinstance(raw_records, list):
+            records.extend(record for record in raw_records if isinstance(record, Mapping))
+    if not records:
+        return None
+    registered = sum(
+        str(record.get("status") or record.get("listed_status") or "").strip()
+        == "등록"
+        for record in records
+    )
+    replacement = (
+        f"이번 조회 범위에서는 등록 상태 등재특허 {registered}건이 확인되었습니다."
+        if registered
+        else f"이번 조회에서 확인된 등재특허 {len(records)}건은 모두 소멸 상태입니다."
+    )
+    return _PATENT_GLOBAL_EXPIRY_RE.sub(replacement, text)
 
 
 def scrub_internal_release_tokens(text: str) -> tuple[str, int]:

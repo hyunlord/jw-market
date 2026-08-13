@@ -1,39 +1,38 @@
 from __future__ import annotations
 
-from collections import Counter, defaultdict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import date
 
 from jw_chat_agent_poc.service.v4.lossless_contracts import EvidenceRecord, EvidenceSet, RenderNode
-from jw_chat_agent_poc.service.v4.render_common import (
-    coverage_text,
-    display,
-    enrollment_display,
-    list_display,
-    results_display,
-    table,
-    text,
-)
+from jw_chat_agent_poc.service.v4.render_common import display, list_display, table, text
 
 
 CLINICAL_REQUIRED_FIELDS = (
     "nct_id",
-    "phases",
+    "brief_title",
     "overall_status",
-    "interventions",
-    "start_date",
+    "phases",
+    "sponsor",
+    "last_update_date",
     "total_reported",
+    "records_after_status_filter",
     "records_received",
     "records_unique",
+    "records_relevant",
     "records_rendered",
 )
 ACTIVE_CLINICAL_STATUSES = {
     "RECRUITING",
     "ACTIVE_NOT_RECRUITING",
-    "ENROLLING_BY_INVITATION",
     "NOT_YET_RECRUITING",
 }
-MIN_ROWS_FOR_AGGREGATION = 3
+MAX_CLINICAL_DETAIL_ROWS = 10
+_STATUS_PRIORITY = {
+    "RECRUITING": 0,
+    "NOT_YET_RECRUITING": 1,
+    "ACTIVE_NOT_RECRUITING": 2,
+}
+_GENERIC_SIGNALS = ("제네릭", "생동", "generic", "bioequivalence")
 
 
 def render_clinical(
@@ -42,169 +41,222 @@ def render_clinical(
     single: bool,
 ) -> tuple[list[RenderNode], tuple[str, ...]]:
     records = list(evidence_set.records)
-    coverage = evidence_set.coverage
-    funnel = coverage_text(coverage, rendered=len(records))
-    scope_lines = ["## 조사 범위와 완전성", funnel]
-    if coverage.partial_reasons:
-        scope_lines.append("부분 결과 사유: " + " / ".join(coverage.partial_reasons))
-    if not coverage.pagination_complete:
-        scope_lines.append("페이지 수집이 완료되지 않아 전체 현황으로 볼 수 없습니다.")
+    selected = _selected_records(records, evidence_set.query_spec, single=single)
     scope = RenderNode(
         block_id="clinical:coverage",
         surface_fields=(
             "total_reported",
+            "records_after_status_filter",
             "records_received",
             "records_unique",
+            "records_relevant",
             "records_rendered",
         ),
-        text="\n".join(scope_lines),
+        text=_coverage_surface(evidence_set, rendered=len(selected), single=single),
     )
 
-    status_counts: Counter[tuple[str, str]] = Counter()
-    sponsor_groups: dict[str, list[str]] = defaultdict(list)
-    for record in records:
-        payload = record.payload
-        phases = list_display(payload.get("phases"))
-        status = display(payload.get("overall_status"))
-        status_counts[(phases, status)] += 1
-        sponsor = display(payload.get("sponsor"))
-        sponsor_groups[sponsor].append(display(payload.get("nct_id")))
-    summary_rows = [
-        [phase, status, str(count)]
-        for (phase, status), count in sorted(status_counts.items())
-    ]
-    summary = RenderNode(
-        block_id="clinical:phase-status",
-        record_ids=tuple(record.evidence_id for record in records),
-        surface_fields=("phases", "overall_status"),
-        text="## 단계 및 상태 집계\n" + table(("단계", "상태", "건수"), summary_rows),
+    column_specs = (
+        ("nct_id", "NCT ID", _nct_link),
+        ("brief_title", "간략 시험명", lambda payload: display(payload.get("brief_title"))),
+        ("overall_status", "상태", lambda payload: display(payload.get("overall_status"))),
+        ("phases", "단계", lambda payload: list_display(payload.get("phases"))),
+        ("sponsor", "스폰서", lambda payload: display(payload.get("sponsor"))),
+        (
+            "last_update_date",
+            "최종 갱신일",
+            lambda payload: display(payload.get("last_update_date")),
+        ),
     )
-    group_rows = [[sponsor, ", ".join(ids)] for sponsor, ids in sorted(sponsor_groups.items())]
-    groups = RenderNode(
-        block_id="clinical:sponsor-groups",
-        record_ids=tuple(record.evidence_id for record in records),
-        surface_fields=("sponsor", "nct_id"),
-        text="## 회사 및 제품별 그룹\n" + table(("스폰서", "시험"), group_rows),
+    included = tuple(
+        spec
+        for spec in column_specs
+        if spec[0] == "nct_id"
+        or any(_has_value(record.payload.get(spec[0])) for record in selected)
     )
-
-    headers = (
-        "NCT ID",
-        "유형",
-        "단계",
-        "상태",
-        "개입",
-        "대조",
-        "스폰서",
-        "시작일",
-        "1차 완료일",
-        "완료일",
-        "결과",
+    rows = tuple(
+        tuple(render(record.payload) for _field, _header, render in included)
+        for record in selected
     )
-    rows = []
-    for record in records:
-        payload = record.payload
-        nct_id = display(payload.get("nct_id"))
-        url = text(payload.get("url"))
-        rows.append(
-            [
-                f"[{nct_id}]({url})" if url else nct_id,
-                display(payload.get("study_type")),
-                list_display(payload.get("phases")),
-                display(payload.get("overall_status")),
-                list_display(payload.get("interventions")),
-                list_display(payload.get("comparators"), na="해당 없음(N/A)"),
-                display(payload.get("sponsor")),
-                display(payload.get("start_date")),
-                display(payload.get("primary_completion_date")),
-                display(payload.get("completion_date")),
-                results_display(payload.get("has_results")),
-            ]
-        )
-    table_title = "## 단일 임상시험 상세" if single else "## 임상시험 전건"
+    table_title = "## 단일 임상시험 상세" if single else "## 임상시험 상세"
+    notes = _selection_notes(
+        evidence_set.query_spec,
+        total=len(records),
+        rendered=len(selected),
+        single=single,
+    )
     record_table = RenderNode(
         block_id="clinical:records",
-        record_ids=tuple(record.evidence_id for record in records),
-        surface_fields=(
-            "nct_id",
-            "study_type",
-            "phases",
-            "overall_status",
-            "interventions",
-            "comparators",
-            "sponsor",
-            "start_date",
-            "primary_completion_date",
-            "completion_date",
-            "has_results",
+        record_ids=tuple(record.evidence_id for record in selected),
+        surface_fields=tuple(field for field, _header, _render in included),
+        text="\n".join(
+            part
+            for part in (
+                table_title,
+                notes,
+                table(tuple(header for _field, header, _render in included), rows),
+            )
+            if part
         ),
-        text=f"{table_title}\n{table(headers, rows)}",
     )
-    nodes = [scope]
-    if len(records) >= MIN_ROWS_FOR_AGGREGATION:
-        nodes.extend((summary, groups))
-    nodes.append(record_table)
-    card_records = _major_clinical_records(records)
-    if card_records:
-        cards = []
-        for record in card_records:
-            payload = record.payload
-            nct_id = display(payload.get("nct_id"))
-            cards.append(
-                "\n".join(
-                    (
-                        f"### {nct_id}",
-                        f"- 공식 제목: {display(payload.get('official_title'))}",
-                        f"- 간략 제목: {display(payload.get('brief_title'))}",
-                        f"- 질환: {list_display(payload.get('conditions'))}",
-                        f"- 등록: {enrollment_display(payload.get('enrollment'))}",
-                        f"- 국가: {list_display(payload.get('countries'))}",
-                        f"- 최종 갱신일: {display(payload.get('last_update_date'))}",
-                    )
-                )
-            )
-        nodes.append(
-            RenderNode(
-                block_id="clinical:cards",
-                record_ids=tuple(record.evidence_id for record in card_records),
-                surface_fields=(
-                    "official_title",
-                    "brief_title",
-                    "conditions",
-                    "enrollment",
-                    "countries",
-                    "last_update_date",
-                ),
-                text=(
-                    (
-                        "## 건별 상세\n"
-                        if len(records) <= 12
-                        else (
-                            f"## 주요 임상시험 건별 상세 ({len(card_records)}건)\n"
-                            "활성 상태, 결과 게시, 최종 갱신일 순으로 선정했습니다.\n\n"
-                        )
-                    )
-                    + "\n\n".join(cards)
-                ),
-            )
+    return [scope, record_table], CLINICAL_REQUIRED_FIELDS
+
+
+def _coverage_surface(
+    evidence_set: EvidenceSet,
+    *,
+    rendered: int,
+    single: bool,
+) -> str:
+    coverage = evidence_set.coverage
+    total = _count(coverage.total_reported)
+    after_status = _count(
+        coverage.records_after_status_filter,
+        fallback=coverage.records_received,
+    )
+    relevant = _count(coverage.records_relevant, fallback=len(evidence_set.records))
+    status_excluded = _excluded(
+        coverage.records_excluded_by_status,
+        before=coverage.total_reported,
+        after=coverage.records_after_status_filter,
+    )
+    relevance_excluded = _excluded(
+        coverage.records_excluded_by_relevance,
+        before=coverage.records_unique,
+        after=coverage.records_relevant,
+    )
+    funnel_parts = [f"원천 검색 {total}건"]
+    if coverage.records_after_status_filter is not None:
+        funnel_parts.append(
+            f"활성 상태 기준 {after_status}건 ({status_excluded}건 제외)"
         )
-    return nodes, CLINICAL_REQUIRED_FIELDS
+    funnel_parts.extend(
+        (
+            f"수신 {coverage.records_received}건",
+            f"중복 제거 {coverage.records_unique}건",
+            f"관련성 확인 {relevant}건 ({relevance_excluded}건 제외)",
+            f"상세 표시 {rendered}건",
+        )
+    )
+    lines = [
+        "## 조사 범위와 완전성",
+        _scope_statement(
+            evidence_set.query_spec,
+            single=single,
+            status_filtered=coverage.records_after_status_filter is not None,
+        ),
+        " → ".join(funnel_parts),
+    ]
+    if coverage.partial_reasons:
+        lines.append("부분 결과 사유: " + " / ".join(coverage.partial_reasons))
+    if not coverage.pagination_complete:
+        lines.append("페이지 수집이 완료되지 않아 전체 현황으로 볼 수 없습니다.")
+    return "\n".join(lines)
 
 
-def _major_clinical_records(records: Sequence[EvidenceRecord]) -> list[EvidenceRecord]:
-    if len(records) <= 12:
+def _scope_statement(
+    query_spec: Sequence[str],
+    *,
+    single: bool,
+    status_filtered: bool,
+) -> str:
+    if single:
+        return "지정한 단일 임상시험 레코드의 상세 범위입니다."
+    joined = " ".join(query_spec).casefold()
+    if any(token in joined for token in ("과거", "완료", "종료", "historical", "completed")):
+        return "완료·종료·철회 시험을 포함한 과거 시험 범위입니다."
+    if status_filtered:
+        return "진행 중·모집 중 시험 기준 (완료·종료 시험 제외)"
+    return "질문에 지정된 임상시험 검색 범위입니다."
+
+
+def _selection_notes(
+    query_spec: Sequence[str],
+    *,
+    total: int,
+    rendered: int,
+    single: bool,
+) -> str:
+    if single or total <= rendered:
+        return ""
+    joined = " ".join(query_spec).casefold()
+    generic = any(token in joined for token in _GENERIC_SIGNALS)
+    criterion = (
+        "제네릭·생동성 관련 시험 우선, 상태 우선순위와 최종 갱신일 순"
+        if generic
+        else "상태 우선순위와 최종 갱신일 순"
+    )
+    return (
+        f"{criterion}으로 {rendered}건을 표시했습니다. "
+        f"외 {total - rendered}건은 원천 집계에 포함되며 표에서는 생략했습니다."
+    )
+
+
+def _selected_records(
+    records: Sequence[EvidenceRecord],
+    query_spec: Sequence[str],
+    *,
+    single: bool,
+) -> list[EvidenceRecord]:
+    if single:
         return list(records)
+    joined = " ".join(query_spec).casefold()
+    prefer_generic = any(token in joined for token in _GENERIC_SIGNALS)
 
     def sort_key(record: EvidenceRecord) -> tuple[int, int, int, str]:
         payload = record.payload
         status = text(payload.get("overall_status")).upper()
+        generic_rank = 0 if prefer_generic and _is_generic_study(payload) else 1
         return (
-            0 if status in ACTIVE_CLINICAL_STATUSES else 1,
-            0 if payload.get("has_results") is True else 1,
+            generic_rank,
+            _STATUS_PRIORITY.get(status, len(_STATUS_PRIORITY)),
             -_date_ordinal(payload.get("last_update_date")),
             text(payload.get("nct_id")),
         )
 
-    return sorted(records, key=sort_key)[:12]
+    return sorted(records, key=sort_key)[:MAX_CLINICAL_DETAIL_ROWS]
+
+
+def _is_generic_study(payload: Mapping[str, object]) -> bool:
+    surface = " ".join(
+        (
+            text(payload.get("brief_title")),
+            text(payload.get("official_title")),
+            list_display(payload.get("interventions"), na=""),
+        )
+    ).casefold()
+    return any(token in surface for token in _GENERIC_SIGNALS)
+
+
+def _nct_link(payload: Mapping[str, object]) -> str:
+    nct_id = display(payload.get("nct_id"))
+    url = text(payload.get("url"))
+    return f"[{nct_id}]({url})" if url else nct_id
+
+
+def _has_value(value: object) -> bool:
+    if value in (None, ""):
+        return False
+    if isinstance(value, (list, tuple, set, dict)):
+        return bool(value)
+    return True
+
+
+def _count(value: int | None, *, fallback: int | None = None) -> str:
+    resolved = value if value is not None else fallback
+    return str(resolved) if resolved is not None else "확인 불가"
+
+
+def _excluded(
+    value: int | None,
+    *,
+    before: int | None,
+    after: int | None,
+) -> str:
+    if value is not None:
+        return str(value)
+    if before is not None and after is not None:
+        return str(max(before - after, 0))
+    return "확인 불가"
 
 
 def _date_ordinal(value: object) -> int:

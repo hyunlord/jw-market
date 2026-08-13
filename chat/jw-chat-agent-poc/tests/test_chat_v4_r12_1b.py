@@ -225,6 +225,7 @@ def test_patent_news_lane_discards_items_without_brand_ingredient_or_company_tok
                             "ITEM_NAME": "리바로젯정",
                             "INGR_ENG_NAME": "pitavastatin calcium ezetimibe",
                             "PATENTEE": "JW중외제약",
+                            "PAGE_GB_NM": "제품특허",
                             "DOMESTIC_PATENT_NO": "10-1234567",
                         }
                     ]
@@ -277,7 +278,14 @@ def test_patent_sources_use_formal_canonical_and_web_news_labels() -> None:
         kr_calls=(
             {
                 "tool": "mfds_patent",
-                "render_data": {"items": [{"DOMESTIC_PATENT_NO": "10-1234567"}]},
+                "render_data": {
+                    "items": [
+                        {
+                            "PAGE_GB_NM": "제품특허",
+                            "DOMESTIC_PATENT_NO": "10-1234567",
+                        }
+                    ]
+                },
             },
         ),
         us_calls=(),
