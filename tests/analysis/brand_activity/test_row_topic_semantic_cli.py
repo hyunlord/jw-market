@@ -214,6 +214,34 @@ def test_parse_failure_preserves_paid_call_count_and_continues() -> None:
     assert summary.calls_used == 3
 
 
+def test_parse_failure_can_stop_wave_before_next_paid_batch() -> None:
+    plan = cli.build_wave_plan(
+        (
+            cli.TopicOccurrenceSet("topics-v1", (_occurrence(1, brand="A"),)),
+            cli.TopicOccurrenceSet("topics-v2", (_occurrence(2, brand="B"),)),
+        ),
+        prompt_version="row_topic_v1",
+        batch_size=150,
+        max_calls=350,
+    )
+    attempted: list[str] = []
+
+    def execute_batch(item: cli.PlannedSemanticBatch) -> _FakeOutcome:
+        attempted.append(item.topic_set_version)
+        if item.topic_set_version == "topics-v1":
+            raise cli.SemanticResponseParseError("invalid response", calls_used=1)
+        return _FakeOutcome(status="complete", calls_used=1)
+
+    with pytest.raises(cli.SemanticResponseParseError, match="invalid response"):
+        cli.execute_wave(
+            plan.waves[0],
+            execute_batch=execute_batch,
+            stop_on_response_parse=True,
+        )
+
+    assert attempted == ["topics-v1"]
+
+
 def test_legacy_adapter_maps_occurrence_results_and_preserves_empty_topics(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

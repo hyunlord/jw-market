@@ -379,6 +379,7 @@ def execute_wave(
     wave: SemanticWave,
     *,
     execute_batch: Callable[[PlannedSemanticBatch], BatchOutcome],
+    stop_on_response_parse: bool = False,
 ) -> WaveExecutionSummary:
     """Execute one explicit wave, continuing only past recorded quality failures."""
     completed = skipped = failed = calls = assignment_rows = status_rows = 0
@@ -401,6 +402,8 @@ def execute_wave(
                 ),
                 flush=True,
             )
+            if stop_on_response_parse:
+                raise
             continue
         calls += outcome.calls_used
         assignment_rows += outcome.assignment_rows
@@ -447,6 +450,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--run-id", default="")
     parser.add_argument("--release-id", default="")
     parser.add_argument("--created-by", default="codex")
+    parser.add_argument(
+        "--stop-on-response-parse",
+        action="store_true",
+        help="stop the wave after recording the first response parse failure",
+    )
     parser.add_argument("--base-url", default="https://jwai-dev.jwhealthcare.com")
     parser.add_argument("--serving-id", default="163")
     parser.add_argument(
@@ -616,7 +624,11 @@ def _execute_selected_wave(
         )
         return outcome
 
-    summary = execute_wave(wave, execute_batch=run_batch)
+    summary = execute_wave(
+        wave,
+        execute_batch=run_batch,
+        stop_on_response_parse=args.stop_on_response_parse,
+    )
     all_batch_ids = tuple(item.batch.batch_id for planned_wave in plan.waves for item in planned_wave.batches)
     states = load_semantic_batch_statuses(
         connection,
