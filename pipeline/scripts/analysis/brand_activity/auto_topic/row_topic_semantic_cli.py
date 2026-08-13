@@ -37,11 +37,12 @@ from pipeline.scripts.analysis.brand_activity.auto_topic.row_topic_assignment im
     AssignmentParseError,
     RowTopicAssignment,
     TopicRubric,
+    parse_assignment_response_allow_missing,
+    row_topic_prompt,
 )
 from pipeline.scripts.analysis.brand_activity.auto_topic.row_topic_db import PreparedRun, prepare_run
 from pipeline.scripts.analysis.brand_activity.auto_topic.row_topic_execute import (
     PROMPT_VERSION,
-    _classify_with_missing_fallback,
 )
 from pipeline.scripts.analysis.brand_activity.auto_topic.row_topic_runner import (
     AssignmentBatch,
@@ -148,6 +149,8 @@ class WaveExecutionSummary:
     calls_used: int
     assignment_rows: int
     status_rows: int
+    dropped_unexpected_count: int
+    dropped_missing_count: int
 
 
 class BatchOutcome(Protocol):
@@ -155,10 +158,53 @@ class BatchOutcome(Protocol):
     calls_used: int
     assignment_rows: int
     status_rows: int
+    dropped_unexpected_count: int
+    dropped_missing_count: int
 
 
 class AssignmentClient(Protocol):
     def classify(self, messages: list[dict[str, str]]) -> tuple[str, dict[str, int], int]: ...
+
+
+def _classify_semantic_lenient_row_ids(
+    client: AssignmentClient | None,
+    rubric: tuple[TopicRubric, ...],
+    rows: tuple[AssignmentInputRow, ...],
+    topic_set_version: str,
+    batch_id: str,
+    *,
+    max_calls: int,
+    calls_used: int,
+) -> dict[str, object]:
+    """Retry malformed responses, but retain valid rows around row-id drift."""
+    if client is None:
+        raise AssignmentParseError("semantic GenOS client is not configured")
+    known_topic_ids = {topic.topic_id for topic in rubric}
+    last_error = ""
+    for attempt in (1, 2):
+        if max_calls and calls_used + attempt > max_calls:
+            raise AssignmentParseError(f"call cap {max_calls} reached before {batch_id}")
+        content, _usage, _latency_ms = client.classify(row_topic_prompt(rubric, rows))
+        try:
+            parsed = parse_assignment_response_allow_missing(
+                content,
+                list(rows),
+                known_topic_ids,
+                topic_set_version,
+                batch_id,
+                allow_unexpected=True,
+            )
+            return {
+                "assignments": parsed.assignments,
+                "calls": attempt,
+                "missing_row_ids": list(parsed.missing_row_ids),
+                "unexpected_row_ids": list(parsed.unexpected_row_ids),
+            }
+        except AssignmentParseError as exc:
+            last_error = str(exc)
+            if attempt == 2:
+                raise
+    raise AssignmentParseError(last_error)
 
 
 class RecordingAssignmentClient:
@@ -210,7 +256,7 @@ class LegacyGenosSemanticAdapter:
         client: AssignmentClient | None,
         call_budget: CallBudget,
         response_recorder: RecordingAssignmentClient | None = None,
-        classify_legacy: LegacyClassifier = _classify_with_missing_fallback,
+        classify_legacy: LegacyClassifier = _classify_semantic_lenient_row_ids,
     ) -> None:
         self._prepared = prepared
         self._client = client
@@ -292,6 +338,8 @@ class LegacyGenosSemanticAdapter:
             isinstance(item, RowTopicAssignment) for item in assignments
         ):
             raise SemanticResponseParseError("legacy adapter returned invalid assignments")
+        missing_row_ids = tuple(sorted({int(value) for value in parsed.get("missing_row_ids", [])}))
+        unexpected_row_ids = {int(value) for value in parsed.get("unexpected_row_ids", [])}
         topics_by_row: dict[int, set[str]] = {
             occurrence.stage_row_id: set() for occurrence in batch.occurrences
         }
@@ -300,12 +348,27 @@ class LegacyGenosSemanticAdapter:
         )
         for assignment in assignments:
             if assignment.row_id not in topics_by_row:
-                raise SemanticResponseParseError(
-                    f"legacy adapter returned unexpected row_id {assignment.row_id}",
-                    calls_used=calls_used,
-                    raw_responses=raw_responses,
-                )
+                unexpected_row_ids.add(assignment.row_id)
+                continue
             topics_by_row[assignment.row_id].add(assignment.topic_id)
+        unexpected = tuple(sorted(unexpected_row_ids))
+        missing = tuple(row_id for row_id in missing_row_ids if row_id in topics_by_row)
+        if unexpected or missing:
+            print(
+                json.dumps(
+                    {
+                        "event": "semantic_row_id_dropped",
+                        "batch_id": batch.batch_id,
+                        "unexpected_count": len(unexpected),
+                        "unexpected_row_ids": unexpected,
+                        "missing_count": len(missing),
+                        "missing_row_ids": missing,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
         return SemanticClassification(
             results=tuple(
                 OccurrenceResult(stage_row_id=row_id, topic_ids=tuple(sorted(topic_ids)))
@@ -313,6 +376,8 @@ class LegacyGenosSemanticAdapter:
             ),
             calls_used=calls_used,
             raw_responses=raw_responses,
+            dropped_unexpected_row_ids=unexpected,
+            dropped_missing_row_ids=missing,
         )
 
     def _row_for(self, occurrence: SemanticOccurrence) -> AssignmentInputRow:
@@ -386,6 +451,7 @@ def execute_wave(
 ) -> WaveExecutionSummary:
     """Execute one explicit wave, continuing only past recorded quality failures."""
     completed = skipped = failed = calls = assignment_rows = status_rows = 0
+    dropped_unexpected = dropped_missing = 0
     for item in wave.batches:
         try:
             outcome = execute_batch(item)
@@ -411,6 +477,8 @@ def execute_wave(
         calls += outcome.calls_used
         assignment_rows += outcome.assignment_rows
         status_rows += outcome.status_rows
+        dropped_unexpected += int(getattr(outcome, "dropped_unexpected_count", 0))
+        dropped_missing += int(getattr(outcome, "dropped_missing_count", 0))
         if outcome.calls_used == 0:
             skipped += 1
         else:
@@ -423,6 +491,10 @@ def execute_wave(
                     "calls_used": outcome.calls_used,
                     "cumulative_calls": calls,
                     "cumulative_usd": round(calls * EMPIRICAL_USD_PER_CALL, 6),
+                    "dropped_unexpected": int(
+                        getattr(outcome, "dropped_unexpected_count", 0)
+                    ),
+                    "dropped_missing": int(getattr(outcome, "dropped_missing_count", 0)),
                 },
                 ensure_ascii=False,
                 sort_keys=True,
@@ -437,6 +509,8 @@ def execute_wave(
         calls_used=calls,
         assignment_rows=assignment_rows,
         status_rows=status_rows,
+        dropped_unexpected_count=dropped_unexpected,
+        dropped_missing_count=dropped_missing,
     )
 
 
@@ -665,6 +739,8 @@ def _execute_selected_wave(
             "calls_used": summary.calls_used,
             "assignment_rows": summary.assignment_rows,
             "status_rows": summary.status_rows,
+            "dropped_unexpected_total": summary.dropped_unexpected_count,
+            "dropped_missing_total": summary.dropped_missing_count,
             "run_terminal": len(states) == len(all_batch_ids)
             and all(status == "complete" for status in states.values()),
         }

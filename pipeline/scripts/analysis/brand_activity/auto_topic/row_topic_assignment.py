@@ -58,6 +58,7 @@ class AssignmentParseResult:
 
     assignments: list[RowTopicAssignment]
     missing_row_ids: tuple[int, ...]
+    unexpected_row_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,6 +144,8 @@ def parse_assignment_response_allow_missing(
     known_topic_ids: set[str],
     topic_set_version: str,
     batch_id: str,
+    *,
+    allow_unexpected: bool = False,
 ) -> AssignmentParseResult:
     """Parse assignments while surfacing omitted row ids for a smaller fallback call."""
     payload = _parse_json_object(content)
@@ -152,6 +155,7 @@ def parse_assignment_response_allow_missing(
     expected_ids = {row.row_id for row in rows}
     seen_ids: set[int] = set()
     duplicate_ids: set[int] = set()
+    unexpected_ids: set[int] = set()
     row_by_id = {row.row_id: row for row in rows}
     assignments: list[RowTopicAssignment] = []
     for value in items:
@@ -166,7 +170,10 @@ def parse_assignment_response_allow_missing(
             continue
         seen_ids.add(row_id)
         if row_id not in expected_ids:
-            raise AssignmentParseError(f"unexpected row_id: {row_id}")
+            if not allow_unexpected:
+                raise AssignmentParseError(f"unexpected row_id: {row_id}")
+            unexpected_ids.add(row_id)
+            continue
         topics = value.get("topics")
         if not isinstance(topics, list):
             raise AssignmentParseError(f"topics must be a list for row_id: {row_id}")
@@ -188,7 +195,11 @@ def parse_assignment_response_allow_missing(
             for topic in normalized_topics
         )
     missing = sorted(expected_ids - seen_ids)
-    return AssignmentParseResult(assignments=assignments, missing_row_ids=tuple(sorted({*missing, *duplicate_ids})))
+    return AssignmentParseResult(
+        assignments=assignments,
+        missing_row_ids=tuple(sorted({*missing, *duplicate_ids})),
+        unexpected_row_ids=tuple(sorted(unexpected_ids)),
+    )
 
 
 def aggregate_topic_shares(

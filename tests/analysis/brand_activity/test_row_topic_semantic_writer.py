@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import json
 
 import pytest
 
@@ -637,6 +638,58 @@ def test_success_closes_started_batch(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert outcome.status == "complete"
     assert events == ["start", "complete"]
+
+
+def test_lenient_row_id_counts_are_retained_on_complete_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batch = semantic_runner.build_semantic_batches(
+        (_occurrence(11), _occurrence(12, "c" * 64)),
+        topic_set_version="topics-v1",
+        prompt_version="prompt-v1",
+        wave_no=1,
+        batch_size=150,
+    )[0]
+    completed: dict[str, object] = {}
+    monkeypatch.setattr(semantic_execute, "start_semantic_batch", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        semantic_execute,
+        "load_existing_semantic_results",
+        lambda *_args, **_kwargs: (),
+    )
+    monkeypatch.setattr(semantic_execute, "insert_semantic_batch", lambda *_args, **_kwargs: (1, 2))
+    monkeypatch.setattr(
+        semantic_execute,
+        "mark_semantic_batch_complete",
+        lambda *_args, **kwargs: completed.update(kwargs),
+    )
+
+    outcome = semantic_execute.execute_semantic_batch(
+        object(),  # type: ignore[arg-type]
+        schema="jw_brand_activity_stage",
+        run_id="run-1",
+        batch=batch,
+        topic_set_version="topics-v1",
+        prompt_version="prompt-v1",
+        classified_at_utc_naive="2026-08-13 10:00:00.000000",
+        classify=lambda _batch: semantic_execute.SemanticClassification(
+            results=(_result(11, ("T1",)), _result(12, ())),
+            calls_used=1,
+            dropped_unexpected_row_ids=(40351,),
+            dropped_missing_row_ids=(12,),
+        ),
+    )
+
+    diagnostic = json.loads(str(completed["diagnostic_message"]))
+    assert completed["diagnostic_code"] == "LENIENT_ROW_ID_DROP"
+    assert diagnostic == {
+        "missing_count": 1,
+        "missing_row_ids": [12],
+        "unexpected_count": 1,
+        "unexpected_row_ids": [40351],
+    }
+    assert outcome.dropped_unexpected_count == 1
+    assert outcome.dropped_missing_count == 1
 
 
 def test_existing_semantic_identity_skips_llm_and_fans_out_through_bridge(

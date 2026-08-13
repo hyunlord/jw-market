@@ -484,6 +484,8 @@ def mark_semantic_batch_complete(
     batch_id: str,
     calls_used: int,
     finished_at_utc_naive: str,
+    diagnostic_code: str | None = None,
+    diagnostic_message: str | None = None,
 ) -> None:
     """Close exactly one running batch after its semantic rows commit."""
     safe_schema = validated_stage_schema(schema)
@@ -492,11 +494,18 @@ def mark_semantic_batch_complete(
             cursor.execute(
                 f"""
                     UPDATE `{safe_schema}`.`{BATCH_TABLE}`
-                    SET status='complete', calls_used=%s, error_code=NULL,
-                        error_message=NULL, finished_at=%s
+                    SET status='complete', calls_used=%s, error_code=%s,
+                        error_message=%s, finished_at=%s
                     WHERE run_id=%s AND batch_id=%s AND status='running'
                 """,
-                (calls_used, finished_at_utc_naive, run_id, batch_id),
+                (
+                    calls_used,
+                    diagnostic_code,
+                    diagnostic_message,
+                    finished_at_utc_naive,
+                    run_id,
+                    batch_id,
+                ),
             )
             if int(cursor.rowcount) != 1:
                 raise ImmutableResultConflict(

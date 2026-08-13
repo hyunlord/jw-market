@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -290,58 +292,66 @@ def test_legacy_adapter_maps_occurrence_results_and_preserves_empty_topics(
     )
 
 
-def test_unexpected_row_id_parse_failure_preserves_raw_response() -> None:
+def test_motilitone_response_drops_stray_row_and_keeps_missing_row_unassigned() -> None:
+    fixture_path = Path(__file__).parent / "fixtures/motilitone_failed_response_4ad0713e.jsonl"
+    fixture_bytes = fixture_path.read_bytes()
+    assert hashlib.sha256(fixture_bytes).hexdigest() == (
+        "4ad0713eb09f1800243b26b25fbafbe5bc2bb14494021b0de8f80f94295eac52"
+    )
+    evidence = json.loads(fixture_bytes)
+    raw_response = evidence["responses"][0]
+    response_items = json.loads(raw_response)["assignments"]
+    payload_row_ids = tuple(
+        [int(item["row_id"]) for item in response_items if int(item["row_id"]) != 40351]
+        + [37051]
+    )
     batch = runner.build_semantic_batches(
-        (_occurrence(11, brand="A"),),
+        tuple(_occurrence(row_id, brand="MOTILITONE") for row_id in payload_row_ids),
         topic_set_version="topics-v1",
         prompt_version="row_topic_v1",
         wave_no=1,
         batch_size=150,
     )[0]
 
-    class FakeRecorder:
-        responses = ('{"assignments":[{"row_id":40351}]}',)
+    class StaticClient:
+        def classify(self, _messages: list[dict[str, str]]) -> tuple[str, dict[str, int], int]:
+            return raw_response, {"total_tokens": 1}, 1
 
-        def clear(self) -> None:
-            pass
-
+    budget = cli.CallBudget(cli.MAX_WAVE_CALLS)
+    client = cli.RecordingAssignmentClient(cli.BudgetedAssignmentClient(StaticClient(), budget))
     adapter = cli.LegacyGenosSemanticAdapter(
         prepared=cli.PreparedRun(
             topic_set_version="topics-v1",
-            rows=(
+            rows=tuple(
                 AssignmentInputRow(
-                    row_id=11,
+                    row_id=row_id,
                     scope_id=batch.scope_id,
                     brand=batch.brand,
-                    keyword_text="keyword-11",
-                ),
-            ),
-            rubrics={(batch.scope_id, batch.brand): ()},
-        ),
-        client=None,
-        call_budget=cli.CallBudget(cli.MAX_WAVE_CALLS),
-        response_recorder=FakeRecorder(),  # type: ignore[arg-type]
-        classify_legacy=lambda *_args, **_kwargs: {
-            "assignments": [
-                RowTopicAssignment(
-                    row_id=40351,
-                    scope_id=batch.scope_id,
-                    brand=batch.brand,
-                    topic_id="T1",
-                    topic_set_version="topics-v1",
-                    prompt_version="row_topic_v1",
-                    batch_id=batch.batch_id,
+                    keyword_text=f"keyword-{row_id}",
                 )
-            ],
-            "calls": 1,
-            "missing_row_ids": [],
-        },
+                for row_id in payload_row_ids
+            ),
+            rubrics={
+                (batch.scope_id, batch.brand): tuple(
+                    cli.TopicRubric(topic_id=f"T{index}", label=f"T{index}", definition="test")
+                    for index in range(1, 8)
+                )
+            },
+        ),
+        client=client,
+        call_budget=budget,
+        response_recorder=client,
     )
 
-    with pytest.raises(cli.SemanticResponseParseError) as caught:
-        adapter.classify(batch)
+    classified = adapter.classify(batch)
+    results_by_id = {item.stage_row_id: item.topic_ids for item in classified.results}
 
-    assert caught.value.raw_responses == FakeRecorder.responses
+    assert len(classified.results) == 147
+    assert classified.dropped_unexpected_row_ids == (40351,)
+    assert classified.dropped_missing_row_ids == (37051,)
+    assert 40351 not in results_by_id
+    assert results_by_id[37051] == ()
+    assert sum(row_id != 37051 for row_id in results_by_id) == 146
 
 
 @pytest.mark.parametrize(

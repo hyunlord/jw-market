@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+import json
 
 import pymysql
 
@@ -29,6 +30,8 @@ class SemanticBatchOutcome:
     calls_used: int = 0
     error_code: str | None = None
     error_message: str | None = None
+    dropped_unexpected_count: int = 0
+    dropped_missing_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +39,8 @@ class SemanticClassification:
     results: tuple[OccurrenceResult, ...]
     calls_used: int
     raw_responses: tuple[str, ...] = ()
+    dropped_unexpected_row_ids: tuple[int, ...] = ()
+    dropped_missing_row_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +81,8 @@ def execute_semantic_batch(
             calls_used=0,
         )
     raw_responses: tuple[str, ...] = ()
+    dropped_unexpected_row_ids: tuple[int, ...] = ()
+    dropped_missing_row_ids: tuple[int, ...] = ()
     try:
         existing_results = load_existing_semantic_results(
             connection,
@@ -110,6 +117,8 @@ def execute_semantic_batch(
             results = classified.results
             calls_used = classified.calls_used
             raw_responses = classified.raw_responses
+            dropped_unexpected_row_ids = classified.dropped_unexpected_row_ids
+            dropped_missing_row_ids = classified.dropped_missing_row_ids
         else:
             results = classified
             calls_used = 1
@@ -134,6 +143,25 @@ def execute_semantic_batch(
             batch_id=batch.batch_id,
             calls_used=calls_used,
             finished_at_utc_naive=classified_at_utc_naive,
+            diagnostic_code=(
+                "LENIENT_ROW_ID_DROP"
+                if dropped_unexpected_row_ids or dropped_missing_row_ids
+                else None
+            ),
+            diagnostic_message=(
+                json.dumps(
+                    {
+                        "unexpected_count": len(dropped_unexpected_row_ids),
+                        "unexpected_row_ids": dropped_unexpected_row_ids[:100],
+                        "missing_count": len(dropped_missing_row_ids),
+                        "missing_row_ids": dropped_missing_row_ids[:100],
+                    },
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+                if dropped_unexpected_row_ids or dropped_missing_row_ids
+                else None
+            ),
         )
     except Exception as exc:
         failed_calls = int(getattr(exc, "calls_used", 0))
@@ -177,4 +205,6 @@ def execute_semantic_batch(
         assignment_rows=assignment_rows,
         status_rows=status_rows,
         calls_used=calls_used,
+        dropped_unexpected_count=len(dropped_unexpected_row_ids),
+        dropped_missing_count=len(dropped_missing_row_ids),
     )
