@@ -664,6 +664,7 @@ def test_v4_mart_dimension_trend_uses_query_catalog_supported_sort() -> None:
     (
         ("아일리아주 급여기준", "아일리아"),
         ("애플리버셉트(Aflibercept) 요양급여 적용기준 및 방법", "아일리아"),
+        ("엠파글리플로진 급여기준", "Empagliflozin"),
     ),
 )
 def test_v4_reimbursement_subject_normalizes_brand_and_ingredient_queries(

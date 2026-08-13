@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import logging
 import os
+import json
 import re
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -87,6 +89,8 @@ class ReimbursementCriterion:
     notice_number: str | None
     source_url: str
     source_notice_id: str | None = None
+    matching_basis: str | None = None
+    match_candidates: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +133,8 @@ class _Cursor(Protocol):
 
     def fetchone(self) -> dict[str, Any] | None: ...
 
+    def fetchall(self) -> list[dict[str, Any]]: ...
+
     def __enter__(self) -> Self: ...
 
     def __exit__(self, *args: object) -> None: ...
@@ -168,6 +174,7 @@ class MariaDbReimbursementStore:
         self.schema_name = schema_name or _reimbursement_database_name()
 
     def get_reimbursement_criteria(self, brand_name: str) -> ReimbursementCacheResult:
+        lookup_key = _normalized_reimbursement_key(brand_name)
         connection: _Connection | None = None
         try:
             connection = self._connect()
@@ -176,10 +183,11 @@ class MariaDbReimbursementStore:
                     """
                     SELECT 1 AS brand_match
                     FROM hira_benefit_notice_brand
-                    WHERE brand_name = %s
+                    WHERE LOWER(brand_name) = LOWER(%s)
+                       OR brand_key = %s
                     LIMIT 1
                     """,
-                    (brand_name,),
+                    (brand_name, lookup_key),
                 )
                 if cursor.fetchone() is None:
                     return self._miss(CacheLookupStatus.BRAND_UNMATCHED)
@@ -190,10 +198,11 @@ class MariaDbReimbursementStore:
                     FROM hira_benefit_notice_brand AS b
                     INNER JOIN hira_benefit_notice AS n
                       ON n.source_notice_id = b.source_notice_id
-                    WHERE b.brand_name = %s
+                    WHERE LOWER(b.brand_name) = LOWER(%s)
+                       OR b.brand_key = %s
                     LIMIT 1
                     """,
-                    (brand_name,),
+                    (brand_name, lookup_key),
                 )
                 if cursor.fetchone() is None:
                     return self._miss(CacheLookupStatus.ZERO_ROWS)
@@ -202,27 +211,31 @@ class MariaDbReimbursementStore:
                     """
                     SELECT
                       b.brand_name,
+                      b.brand_key,
+                      b.index_key_type,
                       n.title,
                       n.raw_text,
                       n.notice_date,
                       n.collected_at,
                       n.notice_no,
                       n.source_url,
-                      n.source_notice_id
+                      n.source_notice_id,
+                      n.ingredient_names_en_json,
+                      n.product_names_json
                     FROM hira_benefit_notice_brand AS b
                     INNER JOIN hira_benefit_notice AS n
                       ON n.source_notice_id = b.source_notice_id
-                    WHERE b.brand_name = %s
+                    WHERE (LOWER(b.brand_name) = LOWER(%s)
+                       OR b.brand_key = %s)
                       AND CHAR_LENGTH(TRIM(n.raw_text)) > 0
                     ORDER BY
                       n.notice_date DESC,
                       n.collected_at DESC,
                       n.source_notice_id DESC
-                    LIMIT 1
                     """,
-                    (brand_name,),
+                    (brand_name, lookup_key),
                 )
-                row = cursor.fetchone()
+                rows = cursor.fetchall()
         except Exception as exc:
             lookup_status = (
                 CacheLookupStatus.TABLE_MISSING
@@ -238,9 +251,28 @@ class MariaDbReimbursementStore:
             if connection is not None:
                 connection.close()
 
+        if not rows:
+            return self._miss(CacheLookupStatus.EMPTY_RAW_TEXT)
+        matching_rows = [
+            row for row in rows if _row_matches_reimbursement_key(row, lookup_key)
+        ]
+        if not matching_rows:
+            return self._miss(CacheLookupStatus.BRAND_UNMATCHED)
+        row = matching_rows[0]
         if row is None:
             return self._miss(CacheLookupStatus.EMPTY_RAW_TEXT)
-        criterion = _criterion_from_cache_row(row)
+        labels = tuple(
+            dict.fromkeys(
+                label
+                for candidate in matching_rows
+                for label in _matching_labels(candidate, lookup_key)
+            )
+        )
+        criterion = _criterion_from_cache_row(
+            row,
+            matching_basis=_matching_basis(row, labels),
+            match_candidates=labels,
+        )
         if not criterion.raw_text.strip():
             return self._miss(CacheLookupStatus.EMPTY_RAW_TEXT)
         return ReimbursementCacheResult(
@@ -597,7 +629,12 @@ def _is_missing_table_error(exc: Exception) -> bool:
     return bool(exc.args and exc.args[0] == 1146)
 
 
-def _criterion_from_cache_row(row: dict[str, Any]) -> ReimbursementCriterion:
+def _criterion_from_cache_row(
+    row: dict[str, Any],
+    *,
+    matching_basis: str | None = None,
+    match_candidates: tuple[str, ...] = (),
+) -> ReimbursementCriterion:
     collected_at = row.get("collected_at")
     if isinstance(collected_at, str):
         collected_at = datetime.fromisoformat(collected_at)
@@ -619,7 +656,78 @@ def _criterion_from_cache_row(row: dict[str, Any]) -> ReimbursementCriterion:
             if row.get("source_notice_id") is None
             else str(row["source_notice_id"])
         ),
+        matching_basis=matching_basis,
+        match_candidates=match_candidates,
     )
+
+
+def _normalized_reimbursement_key(value: object) -> str:
+    normalized = unicodedata.normalize("NFKC", str(value)).casefold().strip()
+    normalized = re.sub(
+        r"\s*\d+(?:\.\d+)?\s*(?:mg|g|ml|mcg|밀리그램|그램|밀리리터).*$",
+        "",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    normalized = re.sub(
+        r"(?:프리필드시린지|피하주사|주사|캡슐|정|주)$",
+        "",
+        normalized,
+    )
+    return re.sub(r"[^0-9a-z가-힣]+", "", normalized)
+
+
+def _json_text_values(row: dict[str, Any], field: str) -> tuple[str, ...]:
+    raw = row.get(field)
+    if not raw:
+        return ()
+    try:
+        values = json.loads(str(raw))
+    except (json.JSONDecodeError, TypeError):
+        LOGGER.warning("reimbursement structured field invalid field=%s", field)
+        return ()
+    if not isinstance(values, list):
+        LOGGER.warning("reimbursement structured field is not a list field=%s", field)
+        return ()
+    return tuple(str(value).strip() for value in values if str(value).strip())
+
+
+def _matching_labels(row: dict[str, Any], lookup_key: str) -> tuple[str, ...]:
+    key_type = str(row.get("index_key_type") or "").upper()
+    products = _json_text_values(row, "product_names_json")
+    ingredients = _json_text_values(row, "ingredient_names_en_json")
+    if key_type == "BRAND_KO":
+        return tuple(value for value in products if _normalized_reimbursement_key(value) == lookup_key)
+    if key_type == "INGREDIENT_EN":
+        return tuple(value for value in ingredients if _normalized_reimbursement_key(value) == lookup_key)
+    return tuple(
+        value
+        for value in (*products, *ingredients)
+        if _normalized_reimbursement_key(value) == lookup_key
+    )
+
+
+def _row_matches_reimbursement_key(row: dict[str, Any], lookup_key: str) -> bool:
+    brand_key = _normalized_reimbursement_key(row.get("brand_key") or "")
+    if brand_key:
+        return brand_key == lookup_key and bool(_matching_labels(row, lookup_key))
+    structured_values = (
+        *_json_text_values(row, "product_names_json"),
+        *_json_text_values(row, "ingredient_names_en_json"),
+    )
+    if structured_values:
+        return any(_normalized_reimbursement_key(value) == lookup_key for value in structured_values)
+    return _normalized_reimbursement_key(row.get("brand_name") or "") == lookup_key
+
+
+def _matching_basis(row: dict[str, Any], labels: tuple[str, ...]) -> str | None:
+    if not labels:
+        return None
+    key_type = str(row.get("index_key_type") or "").upper()
+    label = "성분" if key_type == "INGREDIENT_EN" else "품명"
+    if len(labels) == 1:
+        return f"{label} '{labels[0]}' 기준"
+    return f"매칭 후보 {label}: " + ", ".join(f"'{value}'" for value in labels)
 
 
 def _validated_brand(brand_name: str) -> str:

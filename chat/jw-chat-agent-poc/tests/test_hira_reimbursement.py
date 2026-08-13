@@ -306,6 +306,12 @@ class _DbCursor:
     def fetchone(self):
         return self.rows.pop(0)
 
+    def fetchall(self):
+        rows = self.rows.pop(0)
+        if rows is None:
+            return []
+        return rows if isinstance(rows, list) else [rows]
+
     def __enter__(self):
         return self
 
@@ -339,6 +345,10 @@ def test_mariadb_store_reads_only_authoritative_raw_text() -> None:
             "collected_at": NOW.replace(hour=9, minute=30, tzinfo=None),
             "notice_no": "보건복지부 고시 제2026-101호",
             "source_url": "https://www.hira.or.kr/rc/example.do",
+            "brand_key": "아일리아",
+            "index_key_type": "BRAND_KO",
+            "ingredient_names_en_json": '["Aflibercept"]',
+            "product_names_json": '["아일리아주사"]',
             },
         ]
     )
@@ -359,11 +369,68 @@ def test_mariadb_store_reads_only_authoritative_raw_text() -> None:
     assert "exclusion_rule" not in sql
     assert "dosage_limit" not in sql
     assert [params for _sql, params in connection.cursor_instance.executions] == [
-        ("아일리아",),
-        ("아일리아",),
-        ("아일리아",),
+        ("아일리아", "아일리아"),
+        ("아일리아", "아일리아"),
+        ("아일리아", "아일리아"),
     ]
     assert connection.closed is True
+
+
+def test_mariadb_store_matches_normalized_brand_key_and_reports_product_basis() -> None:
+    row = {
+        "brand_name": "자디앙정 10밀리그램",
+        "brand_key": "자디앙",
+        "index_key_type": "BRAND_KO",
+        "title": "Empagliflozin 경구제",
+        "raw_text": "Empagliflozin 경구제 급여기준 본문",
+        "notice_date": "2026-08-01",
+        "collected_at": NOW.replace(tzinfo=None),
+        "notice_no": "제2026-159호",
+        "source_url": "https://www.hira.or.kr/rc/example.do",
+        "source_notice_id": "20260801-1-0007",
+        "ingredient_names_en_json": '["Empagliflozin"]',
+        "product_names_json": '["자디앙정 10밀리그램"]',
+    }
+    connection = _DbConnection(
+        [{"brand_match": 1}, {"notice_match": 1}, [row]]
+    )
+
+    result = MariaDbReimbursementStore(connect=lambda: connection).get_reimbursement_criteria(
+        "자디앙"
+    )
+
+    assert result.lookup_status is CacheLookupStatus.HIT
+    assert result.data is not None
+    assert result.data.brand_name == "자디앙정 10밀리그램"
+    assert result.data.matching_basis == "품명 '자디앙정 10밀리그램' 기준"
+    assert result.data.match_candidates == ("자디앙정 10밀리그램",)
+
+
+def test_mariadb_store_rejects_legacy_prefix_collisions() -> None:
+    collision = {
+        "brand_name": "리바로",
+        "brand_key": None,
+        "index_key_type": None,
+        "title": "복합경구제",
+        "raw_text": "리바로젯정과 리바로브이정 급여기준 본문",
+        "notice_date": "2021-10-01",
+        "collected_at": NOW.replace(tzinfo=None),
+        "notice_no": "제2021-245호",
+        "source_url": "https://www.hira.or.kr/rc/example.do",
+        "source_notice_id": "20211001-5-0001",
+        "ingredient_names_en_json": '["Ezetimibe + pitavastatin calcium"]',
+        "product_names_json": '["리바로젯정", "리바로브이정"]',
+    }
+    connection = _DbConnection(
+        [{"brand_match": 1}, {"notice_match": 1}, [collision]]
+    )
+
+    result = MariaDbReimbursementStore(connect=lambda: connection).get_reimbursement_criteria(
+        "리바로"
+    )
+
+    assert result.data is None
+    assert result.lookup_status is CacheLookupStatus.BRAND_UNMATCHED
 
 
 @pytest.mark.parametrize(
@@ -799,6 +866,28 @@ def test_http_client_parses_observed_hira_popup_link_and_compound_product_name()
         "https://www.hira.or.kr/rc/insu/insuadtcrtr/InsuAdtCrtrPopup.do"
         "?mtgHmeDd=20241201&sno=3&mtgMtrRegSno=0011"
     )
+
+
+@pytest.mark.parametrize("product_name", ("자디앙정", "타그리소캡슐", "아일리아주"))
+def test_http_client_matches_common_product_form_suffixes(product_name: str) -> None:
+    list_html = f"""
+    <table><tr><td><a href="/detail">{product_name} 급여기준</a></td></tr></table>
+    """
+    detail_html = """
+    <div class="view_cont"><p>공식 보험인정기준의 상세한 적용 조건을 안내하는 본문입니다.</p></div>
+    """
+    session = _Session(
+        [
+            _Response(list_html, url="https://www.hira.or.kr/list"),
+            _Response(detail_html, url="https://www.hira.or.kr/detail"),
+        ]
+    )
+    brand = product_name.removesuffix("캡슐").removesuffix("정").removesuffix("주")
+
+    result = HiraReimbursementHttpClient(session=session).fetch(brand)
+
+    assert result is not None
+    assert result.title == f"{product_name} 급여기준"
 
 
 def test_http_client_applies_one_deadline_across_list_and_detail_requests() -> None:

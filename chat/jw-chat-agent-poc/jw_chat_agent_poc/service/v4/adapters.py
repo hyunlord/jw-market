@@ -75,6 +75,7 @@ _INGREDIENT_ALIASES = {
 _REIMBURSEMENT_ALIASES = {
     "aflibercept": "아일리아",
     "애플리버셉트": "아일리아",
+    "엠파글리플로진": "Empagliflozin",
 }
 _REIMBURSEMENT_TERMS = re.compile(
     r"(?:요양)?급여\s*(?:적용)?기준(?:\s*및\s*방법)?|건강보험|약제|고시",

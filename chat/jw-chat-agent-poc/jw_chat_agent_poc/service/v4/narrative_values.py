@@ -76,6 +76,8 @@ NARRATIVE_FIELDS: Final = (
     "effective_date",
     "target_product",
     "target_ingredient",
+    "matching_basis",
+    "match_candidates",
 )
 GROUP_FIELDS: Final = (
     "overall_status",
@@ -164,6 +166,8 @@ FIELD_LABELS: Final = {
     "effective_date": "시행일",
     "target_product": "대상 품명",
     "target_ingredient": "대상 성분",
+    "matching_basis": "매칭 근거",
+    "match_candidates": "매칭 후보",
 }
 _LONG_NARRATIVE_FIELDS: Final = {
     "brief_summary",
