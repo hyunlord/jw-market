@@ -98,6 +98,7 @@ def compose_lossless_answer(
     requested_fields_mode: RequestedFieldsMode = "shadow",
     request_satisfaction_mode: RequestSatisfactionMode = "inject",
 ) -> CompositionResult:
+    commentary = _drop_empty_bold_headings(commentary)
     fallback = bool(synthesis_trace.get("fallback_reason")) or synthesis_trace.get("status") in {
         "fallback",
         "no_usable_evidence",
@@ -425,6 +426,26 @@ def _markdown_sections(value: str) -> tuple[str, list[tuple[str, str]]]:
         end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
         sections.append((match.group(1).strip(), text[match.end() : end].strip()))
     return preamble, sections
+
+
+_BOLD_HEADING_RE = re.compile(r"^\s*\*\*[^*\n]+\*\*\s*$")
+
+
+def _drop_empty_bold_headings(value: str) -> str:
+    lines = value.splitlines()
+    output: list[str] = []
+    for index, line in enumerate(lines):
+        if not _BOLD_HEADING_RE.fullmatch(line):
+            output.append(line)
+            continue
+        next_visible = next(
+            (candidate for candidate in lines[index + 1 :] if candidate.strip()),
+            "",
+        )
+        if not next_visible or _BOLD_HEADING_RE.fullmatch(next_visible) or next_visible.lstrip().startswith("#"):
+            continue
+        output.append(line)
+    return "\n".join(output)
 
 
 def _render_sections(sections: Sequence[tuple[str, str]]) -> list[str]:

@@ -51,6 +51,7 @@ def build_inspection_detail(
             result.source,
             source_result_index,
             source_result_counts[result.source],
+            _raw_records(result.payload) if result.status == "ok" else (),
         )
         source_ids = {record.evidence_id for record in evidence_records}
         raw_records = _raw_records(result.payload) if result.status == "ok" else []
@@ -147,6 +148,7 @@ def _result_evidence_records(
     source: str,
     source_result_index: int,
     source_result_count: int,
+    raw_records: Sequence[Mapping[str, Any]],
 ) -> tuple[Any, ...]:
     if evidence is None:
         return ()
@@ -156,7 +158,61 @@ def _result_evidence_records(
     )
     if matched:
         return matched
+    raw_identifiers = {
+        identifier
+        for raw_record in raw_records
+        for identifier in _public_identifiers(raw_record)
+    }
+    if raw_identifiers:
+        matched = tuple(
+            record
+            for record in evidence.records
+            if raw_identifiers & _public_identifiers(record.payload)
+        )
+        if matched:
+            return matched
     return evidence.records if source_result_count == 1 else ()
+
+
+_PUBLIC_IDENTIFIER_KEYS = frozenset(
+    {
+        "nct_id",
+        "nctId",
+        "patent_no",
+        "patent_number",
+        "application_number",
+        "item_name",
+        "item_seq",
+        "product_name",
+        "brand",
+        "sickCd",
+        "sickNm",
+        "title",
+        "brief_title",
+    }
+)
+
+
+def _public_identifiers(value: Any) -> set[str]:
+    identifiers: set[str] = set()
+    if isinstance(value, Mapping):
+        for key, nested in value.items():
+            if key in _PUBLIC_IDENTIFIER_KEYS and nested not in (None, ""):
+                if isinstance(nested, (list, tuple)):
+                    identifiers.update(_normalized_identifier(item) for item in nested)
+                elif not isinstance(nested, Mapping):
+                    identifiers.add(_normalized_identifier(nested))
+            elif isinstance(nested, (Mapping, list, tuple)):
+                identifiers.update(_public_identifiers(nested))
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            identifiers.update(_public_identifiers(item))
+    identifiers.discard("")
+    return identifiers
+
+
+def _normalized_identifier(value: Any) -> str:
+    return "".join(str(value).casefold().split())
 
 
 def _request_parameters(result: SourceResult) -> dict[str, Any]:

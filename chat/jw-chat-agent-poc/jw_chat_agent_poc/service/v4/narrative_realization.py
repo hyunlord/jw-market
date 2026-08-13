@@ -226,9 +226,10 @@ def _cross_source_fusion_node(
             )
         )
         lines.append(
-            f"{anchor_text} 한편, {other_text} [출처: {citations}]"
+            f"{anchor_text} {other_text} 각각 확인했습니다. [출처: {citations}]"
         )
-        bound_ids.extend((anchor_record.evidence_id, other_record.evidence_id))
+        bound_ids.extend(record.evidence_id for record in anchor_records)
+        bound_ids.extend(record.evidence_id for record in other_records)
     if not lines:
         return None
     return RenderNode(
@@ -252,7 +253,10 @@ def _source_fact_fragment(
     for index, record in enumerate(ranked, start=1):
         identity = record_identity(record, index)
         fields = tuple(
-            field for field in NARRATIVE_FIELDS if field_value(record, field) is not None
+            field
+            for field in NARRATIVE_FIELDS
+            if field not in {"sales_krw", "market_share"}
+            and field_value(record, field) is not None
         )[:3]
         if identity is None or not fields:
             continue
@@ -262,7 +266,8 @@ def _source_fact_fragment(
         )
         return (
             record,
-            f"{public_source_label(evidence_set.source)} {identity}: {details}.",
+            f"{public_source_label(evidence_set.source)}에서 {len(records)}건을 확인했고 "
+            f"대표 항목 {identity}은(는) {details}로 나타났으며,",
         )
     return None
 

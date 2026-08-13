@@ -16,6 +16,7 @@ from jw_chat_agent_poc.service.v4.lossless_contracts import (
 from jw_chat_agent_poc.service.v4.lossless_spine import compose_lossless_answer
 from jw_chat_agent_poc.service.v4.contracts import PlannerOutput, SourceResult, ToolQueries
 from jw_chat_agent_poc.service.v4.evidence_sets import build_evidence_sets
+from jw_chat_agent_poc.service.v4.inspection import build_inspection_detail
 from jw_chat_agent_poc.service.v4.deterministic_render import _auxiliary_node
 from jw_chat_agent_poc.service.v4.narrative_realization import (
     build_narrative_realization,
@@ -352,6 +353,125 @@ def test_a_cross_source_fusion_binds_three_sentences_to_source_records() -> None
     assert "단계 3상" in fusion.text
     assert "원인" not in fusion.text
     assert "때문" not in fusion.text
+    assert "한편" not in fusion.text
+    assert "각각 확인했습니다" in fusion.text
+
+
+def test_a_embedded_raw_enum_in_record_title_is_localized() -> None:
+    record = EvidenceRecord(
+        evidence_id="ct:NCT00548145",
+        source="clinicaltrials",
+        result_kind="structured_clinical_record",
+        payload={
+            "title": "P03962 연구(COMPLETED)",
+            "overall_status": "COMPLETED",
+            "phase": "PHASE3",
+            "sponsor": "Merck",
+        },
+    )
+
+    realized = build_narrative_realization(
+        (_evidence("clinicaltrials", record),),
+        (record.evidence_id,),
+    )
+    surface = "\n".join(node.text for node in realized.nodes)
+
+    assert "P03962 연구(완료)" in surface
+    assert "COMPLETED" not in surface
+
+
+def test_a_compose_removes_empty_bold_pseudo_heading() -> None:
+    commentary = """**임상 현황**
+
+확인된 임상시험을 설명합니다.
+
+**특허 만료 정보**
+
+**시장 동향**
+시장 수치를 설명합니다.
+"""
+
+    composed = compose_lossless_answer(
+        DeterministicRender(profile="market_analysis"),
+        commentary,
+        synthesis_trace={},
+        mode="inject",
+    )
+
+    assert "**임상 현황**" in composed.text
+    assert "**특허 만료 정보**" not in composed.text
+    assert "**시장 동향**" in composed.text
+
+
+def test_e_inspection_binds_repeated_clinical_calls_by_nct_id() -> None:
+    results = tuple(
+        SourceResult(
+            source="clinicaltrials",
+            query=f"query {nct_id}",
+            status="ok",
+            payload={
+                "calls": [
+                    {
+                        "render_data": {
+                            "request": {"query.intr": ingredient},
+                            "payload": {
+                                "studies": [
+                                    {
+                                        "nct_id": nct_id,
+                                        "brief_title": title,
+                                    }
+                                ]
+                            },
+                        }
+                    }
+                ]
+            },
+        )
+        for nct_id, ingredient, title in (
+            ("NCT00000001", "pitavastatin", "시험 1"),
+            ("NCT00000002", "ezetimibe", "시험 2"),
+        )
+    )
+    records = tuple(
+        EvidenceRecord(
+            evidence_id=f"ct:NCT0000000{index}",
+            source="clinicaltrials",
+            result_kind="structured_clinical_record",
+            payload={
+                "nct_id": f"NCT0000000{index}",
+                "brief_title": f"시험 {index}",
+            },
+        )
+        for index in (1, 2)
+    )
+    evidence = _evidence("clinicaltrials", *records)
+    rendered = DeterministicRender(
+        profile="clinical_portfolio",
+        nodes=(
+            RenderNode(
+                block_id="clinical:records",
+                record_ids=tuple(record.evidence_id for record in records),
+                text="NCT00000001 NCT00000002",
+            ),
+        ),
+        structured_claims=tuple(
+            {"arguments": [{"record_id": record.evidence_id}]}
+            for record in records
+        ),
+    )
+
+    detail = build_inspection_detail(
+        _plan("임상 현황"),
+        results,
+        (evidence,),
+        rendered,
+        answer_text="NCT00000001 NCT00000002",
+    )
+
+    assert [call["counts"] for call in detail["calls"]] == [
+        {"returned": 1, "parsed": 1, "envelope": 1, "rendered": 1, "narrated": 1},
+        {"returned": 1, "parsed": 1, "envelope": 1, "rendered": 1, "narrated": 1},
+    ]
 
 
 def test_a_relation_insight_is_one_paragraph_bound_to_union_of_t2_records() -> None:

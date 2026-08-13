@@ -149,14 +149,25 @@ def display_field_value(record: EvidenceRecord, field: str | None) -> str | None
 
 def public_enum_value(value: object) -> str:
     raw = str(value)
-    return _PUBLIC_ENUMS.get(raw.upper(), raw)
+    exact = _PUBLIC_ENUMS.get(raw.upper())
+    if exact is not None:
+        return exact
+    output = raw
+    for token in sorted(_PUBLIC_ENUMS, key=len, reverse=True):
+        output = re.sub(
+            rf"(?<![A-Za-z0-9_]){re.escape(token)}(?![A-Za-z0-9_])",
+            _PUBLIC_ENUMS[token],
+            output,
+            flags=re.IGNORECASE,
+        )
+    return output
 
 
 def record_identity(record: EvidenceRecord, index: int) -> str | None:
     for field in IDENTITY_FIELDS:
         value = field_value(record, field)
         if value:
-            return value
+            return public_enum_value(value)
     return None
 
 

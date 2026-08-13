@@ -57,7 +57,11 @@ def render_clinical(
 
     column_specs = (
         ("nct_id", "NCT ID", _nct_link),
-        ("brief_title", "간략 시험명", lambda payload: display(payload.get("brief_title"))),
+        (
+            "brief_title",
+            "간략 시험명",
+            lambda payload: public_enum_value(display(payload.get("brief_title"))),
+        ),
         (
             "overall_status",
             "상태",
