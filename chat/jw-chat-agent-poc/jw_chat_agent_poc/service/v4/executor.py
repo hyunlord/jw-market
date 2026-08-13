@@ -20,6 +20,7 @@ from jw_chat_agent_poc.service.v4.source_tiers import source_tier
 
 SourceAdapter = Callable[..., SourceResult]
 SourceProgressCallback = Callable[[SourceResult], None]
+TransportEventCallback = Callable[[Mapping[str, Any]], None]
 
 
 @dataclass(frozen=True)
@@ -251,8 +252,19 @@ class ParallelSourceExecutor:
                         (deadline - actual_started) * 1000,
                     ),
                 )
+
+            def record_transport_event(event: Mapping[str, Any]) -> None:
+                with schedule_lock:
+                    _merge_transport_event(tool_trace[index], event)
+
             try:
-                return self._run(source, query, clinical_concept, deadline)
+                return self._run(
+                    source,
+                    query,
+                    clinical_concept,
+                    deadline,
+                    transport_event_callback=record_transport_event,
+                )
             finally:
                 release_tier_zero(index)
 
@@ -461,6 +473,8 @@ class ParallelSourceExecutor:
         query: str,
         clinical_concept: ClinicalTrialConcept | None,
         deadline: float,
+        *,
+        transport_event_callback: TransportEventCallback | None = None,
     ) -> SourceResult:
         started = time.monotonic()
         if deadline - started < 0.05:
@@ -471,11 +485,16 @@ class ParallelSourceExecutor:
                 notice="남은 응답 예산이 최소 파싱 시간보다 짧아 조회하지 않음",
             )
         try:
-            result = (
-                self._adapters[source](query, concept=clinical_concept)
-                if source == "clinicaltrials" and clinical_concept is not None
-                else self._adapters[source](query)
-            )
+            adapter = self._adapters[source]
+            if source == "clinicaltrials" and clinical_concept is not None:
+                result = adapter(query, concept=clinical_concept)
+            elif getattr(adapter, "supports_transport_event_callback", False):
+                result = adapter(
+                    query,
+                    transport_event_callback=transport_event_callback,
+                )
+            else:
+                result = adapter(query)
         except Exception as exc:  # noqa: BLE001 - one failed source must not block synthesis
             return SourceResult(
                 source=source,
@@ -487,6 +506,66 @@ class ParallelSourceExecutor:
         return result.model_copy(
             update={"elapsed_ms": (time.monotonic() - started) * 1000}
         )
+
+
+def _merge_transport_event(
+    tool_trace: dict[str, Any],
+    event: Mapping[str, Any],
+) -> None:
+    policy = tool_trace.setdefault(
+        "web_transport",
+        {
+            "attempt_trace": [],
+            "requests_issued": 0,
+            "responses_received": 0,
+            "retry_count": 0,
+            "read_timeout_retries": 0,
+            "credit_at_risk_without_response": 0,
+            "pending_attempts": 0,
+            "retry_scope": "connect_or_5xx_only",
+        },
+    )
+    attempt = int(event.get("attempt") or 0)
+    attempts = policy["attempt_trace"]
+    current = next((item for item in attempts if item["attempt"] == attempt), None)
+    if current is None:
+        current = {"attempt": attempt}
+        attempts.append(current)
+        attempts.sort(key=lambda item: item["attempt"])
+    current.update(dict(event))
+
+    issued = [item for item in attempts if bool(item.get("request_issued"))]
+    completed = [item for item in issued if item.get("phase") == "attempt_completed"]
+    policy.update(
+        {
+            "requests_issued": len(issued),
+            "responses_received": sum(
+                bool(item.get("response_received")) for item in completed
+            ),
+            "retry_count": max(len(issued) - 1, 0),
+            "read_timeout_retries": sum(
+                1
+                for previous, following in zip(issued, issued[1:], strict=False)
+                if previous.get("error_type") == "read_timeout"
+                and bool(following.get("request_issued"))
+            ),
+            "credit_at_risk_without_response": sum(
+                not bool(item.get("response_received")) for item in issued
+            ),
+            "pending_attempts": sum(
+                item.get("phase") != "attempt_completed" for item in issued
+            ),
+        }
+    )
+    for key in (
+        "search_depth",
+        "topic",
+        "connect_timeout_seconds",
+        "read_timeout_seconds",
+        "max_concurrency",
+    ):
+        if key in event:
+            policy[key] = event[key]
 
 
 def _cache_query(

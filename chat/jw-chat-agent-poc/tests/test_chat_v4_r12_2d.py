@@ -10,6 +10,12 @@ import pytest
 
 from jw_chat_agent_poc.service.v4 import adapters as v4_adapters
 from jw_chat_agent_poc.service.v4.contracts import SourceResult
+from jw_chat_agent_poc.service.v4.contracts import (
+    PlannerOutput,
+    RequestedAnswerShape,
+    ToolQueries,
+)
+from jw_chat_agent_poc.service.v4.executor import ParallelSourceExecutor
 from jw_chat_agent_poc.service.v4.retrieval_events import (
     classify_failure_signals,
     public_retrieval_notice,
@@ -172,3 +178,90 @@ def test_short_read_timeout_is_typed_as_incomplete_not_zero_results(
     assert "조회가 완료되지 않아 확인할 수 없습니다" in surface
     assert "0건" not in surface
     assert "조회 결과가 없습니다" not in surface
+
+
+def test_soft_deadline_keeps_transport_request_in_execution_trace() -> None:
+    def empty(source: str):
+        return lambda query: SourceResult(source=source, query=query, status="empty")
+
+    def mart(query: str) -> SourceResult:
+        return SourceResult(source="mart", query=query, status="ok", payload={"rows": [1]})
+
+    def web(
+        query: str,
+        *,
+        transport_event_callback=None,
+    ) -> SourceResult:
+        transport_event_callback(
+            {
+                "attempt": 1,
+                "phase": "request_issued",
+                "request_issued": True,
+                "response_received": False,
+                "status": "in_flight",
+            }
+        )
+        time.sleep(0.08)
+        transport_event_callback(
+            {
+                "attempt": 1,
+                "phase": "attempt_completed",
+                "request_issued": True,
+                "response_received": True,
+                "status": "ok",
+                "error_type": None,
+            }
+        )
+        return SourceResult(source="web", query=query, status="ok")
+
+    setattr(web, "supports_transport_event_callback", True)
+    adapters = {
+        "mart": mart,
+        "nedrug": empty("nedrug"),
+        "hira": empty("hira"),
+        "openfda": empty("openfda"),
+        "clinicaltrials": empty("clinicaltrials"),
+        "web": web,
+        "patent": empty("patent"),
+    }
+    plan = PlannerOutput(
+        resolved_question="synthetic",
+        expanded_intents=("synthetic",),
+        answer_sources=("mart",),
+        tool_queries=ToolQueries(
+            mart=("synthetic",),
+            nedrug=("synthetic",),
+            hira=("synthetic",),
+            openfda=("synthetic",),
+            clinicaltrials=("synthetic",),
+            web=("synthetic",),
+            patent=("synthetic",),
+        ),
+        linking_plan="first hop is sufficient",
+        requested_answer_shape=RequestedAnswerShape(),
+    )
+
+    outcome = ParallelSourceExecutor(
+        adapters=adapters,
+        per_tool_timeout_s=1.0,
+        total_timeout_s=1.0,
+    ).execute_with_trace(
+        plan,
+        session_id="soft-deadline-transport-trace",
+        answer_sources=("mart",),
+        soft_deadline_s=0.02,
+        source_filter=("mart", "web"),
+    )
+
+    web_trace = next(item for item in outcome.trace["tools"] if item["source"] == "web")
+    assert web_trace["status"] == "timeout"
+    assert web_trace["exclusion_reason"] == "soft_deadline_after_answer_quorum"
+    assert web_trace["web_transport"]["requests_issued"] == 1
+    assert web_trace["web_transport"]["responses_received"] == 0
+    assert web_trace["web_transport"]["pending_attempts"] == 1
+    assert web_trace["web_transport"]["retry_count"] == 0
+
+    time.sleep(0.09)
+    assert web_trace["web_transport"]["responses_received"] == 1
+    assert web_trace["web_transport"]["pending_attempts"] == 0
+    assert web_trace["web_transport"]["credit_at_risk_without_response"] == 0
