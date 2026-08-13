@@ -99,11 +99,32 @@ _SOURCE_SCOPE = {
 }
 _V4_GATE_WEB_CACHE: dict[tuple[str, str, str], Any] = {}
 _V4_GATE_WEB_CACHE_LOCK = threading.Lock()
-_TRANSPORT_ERROR_RE = re.compile(
-    r"timed out|read timeout|connect timeout|connection (?:aborted|refused|reset)|"
-    r"max retries exceeded|temporary failure in name resolution|name or service not known|"
-    r"network is unreachable|remote end closed connection|proxyerror|"
-    r"\b(?:502|503|504) server error\b",
+_WEB_SEARCH_CONNECT_TIMEOUT_ENV = "WEB_SEARCH_CONNECT_TIMEOUT_SECONDS"
+_WEB_SEARCH_READ_TIMEOUT_ENV = "WEB_SEARCH_TIMEOUT_SECONDS"
+_WEB_SEARCH_MAX_CONCURRENCY_ENV = "WEB_SEARCH_MAX_CONCURRENCY"
+_WEB_SEARCH_CONNECT_TIMEOUT_DEFAULT_S = 2.0
+_WEB_SEARCH_READ_TIMEOUT_DEFAULT_S = 8.0
+_WEB_SEARCH_MAX_CONCURRENCY_DEFAULT = 2
+_WEB_SEARCH_SEMAPHORES: dict[int, threading.BoundedSemaphore] = {}
+_WEB_SEARCH_SEMAPHORES_LOCK = threading.Lock()
+_READ_TIMEOUT_RE = re.compile(r"read\s+timed?\s*out|read[_\s-]*timeout", re.IGNORECASE)
+_CONNECT_TIMEOUT_RE = re.compile(
+    r"connect(?:ion)?\s+timed?\s*out|connect[_\s-]*timeout",
+    re.IGNORECASE,
+)
+_QUOTA_ERROR_RE = re.compile(
+    r"\b429\b|too[_\s-]*many[_\s-]*requests|rate[_\s-]*limit|quota|"
+    r"usage\s*limit|plan.+limit|사용량\s*한도",
+    re.IGNORECASE,
+)
+_HTTP_5XX_RE = re.compile(
+    r"\bHTTP\s*5\d\d\b|\b5\d\d\s+server\s+error\b",
+    re.IGNORECASE,
+)
+_CONNECT_ERROR_RE = re.compile(
+    r"connection (?:aborted|refused|reset)|max retries exceeded|"
+    r"temporary failure in name resolution|name or service not known|"
+    r"network is unreachable|remote end closed connection|proxyerror",
     re.IGNORECASE,
 )
 _PRODUCT_STRENGTH_RE = re.compile(
@@ -1878,41 +1899,71 @@ def _v4_web_search(
         with _V4_GATE_WEB_CACHE_LOCK:
             cached = _V4_GATE_WEB_CACHE.get(cache_key)
         if cached is not None:
+            cached_policy = cached.render_data.get("v4_tavily_policy", {})
             return replace(
                 cached,
                 render_data={
                     **cached.render_data,
                     "v4_tavily_policy": {
-                        **cached.render_data.get("v4_tavily_policy", {}),
+                        **cached_policy,
                         "gate_cache_hit": True,
+                        "attempts": 0,
+                        "attempt_trace": [],
+                        "requests_issued": 0,
+                        "responses_received": 0,
+                        "retry_count": 0,
+                        "read_timeout_retries": 0,
+                        "credit_at_risk_without_response": 0,
                     },
                 },
             )
 
-    attempts = 1
     call = _v4_tavily_mcp_request(
         external,
         query,
         search_depth=search_depth,
         topic=topic,
     )
+    attempt_trace = [_v4_web_attempt_trace(call, attempt=1)]
     if _v4_transport_retryable(call):
-        attempts = 2
         call = _v4_tavily_mcp_request(
             external,
             query,
             search_depth=search_depth,
             topic=topic,
         )
+        attempt_trace.append(_v4_web_attempt_trace(call, attempt=2))
+    connect_timeout_s, read_timeout_s = _v4_web_timeouts()
+    requests_issued = sum(bool(item["request_issued"]) for item in attempt_trace)
+    responses_received = sum(bool(item["response_received"]) for item in attempt_trace)
+    read_timeout_retries = sum(
+        1
+        for previous in attempt_trace[:-1]
+        if previous["error_type"] == "read_timeout"
+    )
     call = replace(
         call,
         render_data={
             **call.render_data,
             "v4_tavily_policy": {
-                "attempts": attempts,
+                "attempts": len(attempt_trace),
+                "attempt_trace": attempt_trace,
+                "requests_issued": requests_issued,
+                "responses_received": responses_received,
+                "retry_count": max(len(attempt_trace) - 1, 0),
+                "read_timeout_retries": read_timeout_retries,
+                "credit_at_risk_without_response": sum(
+                    bool(item["request_issued"])
+                    and not bool(item["response_received"])
+                    and item["error_type"] == "read_timeout"
+                    for item in attempt_trace
+                ),
                 "search_depth": search_depth,
                 "gate_cache_hit": False,
-                "retry_scope": "transport_only",
+                "retry_scope": "connect_or_5xx_only",
+                "connect_timeout_seconds": connect_timeout_s,
+                "read_timeout_seconds": read_timeout_s,
+                "max_concurrency": _v4_web_concurrency_limit(),
             },
         },
     )
@@ -1928,18 +1979,134 @@ def _v4_transport_retryable(call: Any) -> bool:
     render_data = getattr(call, "render_data", {})
     if not isinstance(render_data, dict):
         return False
-    if str(render_data.get("error_type") or "").casefold() == "parse_failure":
-        return False
+    error_type, _status, _response_received = _v4_web_failure_metadata(call)
+    return error_type in {"connect_timeout", "connect_error", "http_5xx"}
+
+
+def _v4_web_attempt_trace(call: Any, *, attempt: int) -> dict[str, Any]:
+    render_data = getattr(call, "render_data", {})
+    if not isinstance(render_data, dict):
+        render_data = {}
+    error_type, status, inferred_response = _v4_web_failure_metadata(call)
+    request_issued = render_data.get("request_issued")
+    response_received = render_data.get("response_received")
+    return {
+        "attempt": attempt,
+        "request_issued": bool(True if request_issued is None else request_issued),
+        "response_received": bool(
+            inferred_response if response_received is None else response_received
+        ),
+        "status": status,
+        "error_type": error_type,
+        "elapsed_ms": getattr(call, "elapsed_ms", None),
+    }
+
+
+def _v4_web_failure_metadata(call: Any) -> tuple[str | None, str, bool]:
+    call_status = str(getattr(call, "status", "") or "").casefold()
+    render_data = getattr(call, "render_data", {})
+    if not isinstance(render_data, dict):
+        render_data = {}
+    explicit = str(render_data.get("error_type") or "").casefold()
     detail = " ".join(
         str(value)
         for value in (
+            explicit,
             render_data.get("error"),
             render_data.get("message"),
             getattr(call, "summary_text", ""),
         )
         if value
     )
-    return bool(_TRANSPORT_ERROR_RE.search(detail))
+    if call_status in {"live", "fixture"}:
+        return None, "ok", True
+    if call_status in {"no_data", "empty"}:
+        return None, "empty", True
+    if explicit in {"parse_failure", "parse_error"} or re.search(
+        r"parse|malformed|decode|schema",
+        detail,
+        re.IGNORECASE,
+    ):
+        return "parse_failure", "parse_error", True
+    if explicit == "quota" or _QUOTA_ERROR_RE.search(detail):
+        return "quota", "quota", True
+    if explicit == "read_timeout" or _READ_TIMEOUT_RE.search(detail):
+        return "read_timeout", "timeout", False
+    if explicit in {"concurrency_timeout", "queue_timeout"}:
+        return "concurrency_timeout", "timeout", False
+    if explicit == "connect_timeout" or _CONNECT_TIMEOUT_RE.search(detail):
+        return "connect_timeout", "timeout", False
+    if explicit == "http_5xx" or _HTTP_5XX_RE.search(detail):
+        return "http_5xx", "upstream", True
+    if explicit == "connect_error" or _CONNECT_ERROR_RE.search(detail):
+        return "connect_error", "upstream", False
+    return explicit or "upstream_error", "upstream", False
+
+
+def _v4_web_timeouts() -> tuple[float, float]:
+    return (
+        _bounded_env_float(
+            _WEB_SEARCH_CONNECT_TIMEOUT_ENV,
+            default=_WEB_SEARCH_CONNECT_TIMEOUT_DEFAULT_S,
+            minimum=0.001,
+            maximum=10.0,
+        ),
+        _bounded_env_float(
+            _WEB_SEARCH_READ_TIMEOUT_ENV,
+            default=_WEB_SEARCH_READ_TIMEOUT_DEFAULT_S,
+            minimum=0.001,
+            maximum=45.0,
+        ),
+    )
+
+
+def _bounded_env_float(
+    name: str,
+    *,
+    default: float,
+    minimum: float,
+    maximum: float,
+) -> float:
+    raw = os.environ.get(name, "").strip()
+    try:
+        value = float(raw) if raw else default
+    except ValueError:
+        LOGGER.warning("invalid %s; using default %.3f", name, default)
+        return default
+    if value < minimum or value > maximum:
+        LOGGER.warning("out-of-range %s; using default %.3f", name, default)
+        return default
+    return value
+
+
+def _v4_web_concurrency_limit() -> int:
+    raw = os.environ.get(_WEB_SEARCH_MAX_CONCURRENCY_ENV, "").strip()
+    try:
+        value = int(raw) if raw else _WEB_SEARCH_MAX_CONCURRENCY_DEFAULT
+    except ValueError:
+        LOGGER.warning(
+            "invalid %s; using default %d",
+            _WEB_SEARCH_MAX_CONCURRENCY_ENV,
+            _WEB_SEARCH_MAX_CONCURRENCY_DEFAULT,
+        )
+        return _WEB_SEARCH_MAX_CONCURRENCY_DEFAULT
+    if value < 1 or value > 16:
+        LOGGER.warning(
+            "out-of-range %s; using default %d",
+            _WEB_SEARCH_MAX_CONCURRENCY_ENV,
+            _WEB_SEARCH_MAX_CONCURRENCY_DEFAULT,
+        )
+        return _WEB_SEARCH_MAX_CONCURRENCY_DEFAULT
+    return value
+
+
+def _v4_web_semaphore(limit: int) -> threading.BoundedSemaphore:
+    with _WEB_SEARCH_SEMAPHORES_LOCK:
+        semaphore = _WEB_SEARCH_SEMAPHORES.get(limit)
+        if semaphore is None:
+            semaphore = threading.BoundedSemaphore(limit)
+            _WEB_SEARCH_SEMAPHORES[limit] = semaphore
+        return semaphore
 
 
 def _v4_tavily_mcp_request(
@@ -1966,17 +2133,71 @@ def _v4_tavily_mcp_request(
     spec["arguments"]["search_depth"] = search_depth
     url = external._mcp_url(spec["resource_id"], spec["source"])
     started = time.monotonic()
-    try:
-        with mcp_attempt_limit(1):
-            result = McpJsonClient(
-                url,
-                timeout_s=int(getattr(external, "timeout_s", 12)),
-            ).call_tool(spec["mcp_tool"], spec["arguments"])
-    except McpClientError as exc:
+    connect_timeout_s, read_timeout_s = _v4_web_timeouts()
+    concurrency_limit = _v4_web_concurrency_limit()
+    semaphore = _v4_web_semaphore(concurrency_limit)
+    queue_started = time.monotonic()
+    acquired = semaphore.acquire(timeout=read_timeout_s)
+    queue_wait_ms = round((time.monotonic() - queue_started) * 1000, 1)
+    if not acquired:
         elapsed = round((time.monotonic() - started) * 1000, 1)
-        return _web_error(TAVILY_MCP_SOURCE, query, exc, elapsed)
+        call = _web_error(
+            TAVILY_MCP_SOURCE,
+            query,
+            McpClientError("web concurrency slot wait timed out"),
+            elapsed,
+        )
+        return replace(
+            call,
+            render_data={
+                **call.render_data,
+                "status": "timeout",
+                "error_type": "concurrency_timeout",
+                "request_issued": False,
+                "response_received": False,
+                "queue_wait_ms": queue_wait_ms,
+            },
+        )
+    try:
+        try:
+            with mcp_attempt_limit(1):
+                result = McpJsonClient(
+                    url,
+                    timeout_s=read_timeout_s,
+                    connect_timeout_s=connect_timeout_s,
+                    first_attempt_timeout_s=read_timeout_s,
+                ).call_tool(spec["mcp_tool"], spec["arguments"])
+        except McpClientError as exc:
+            elapsed = round((time.monotonic() - started) * 1000, 1)
+            call = _web_error(TAVILY_MCP_SOURCE, query, exc, elapsed)
+            error_type, status, response_received = _v4_web_failure_metadata(call)
+            return replace(
+                call,
+                render_data={
+                    **call.render_data,
+                    "status": status,
+                    "error_type": error_type,
+                    "request_issued": True,
+                    "response_received": response_received,
+                    "queue_wait_ms": queue_wait_ms,
+                },
+            )
+    finally:
+        semaphore.release()
     elapsed = round((time.monotonic() - started) * 1000, 1)
-    return _tavily_mcp_web_call(params, result, elapsed)
+    call = _tavily_mcp_web_call(params, result, elapsed)
+    error_type, status, response_received = _v4_web_failure_metadata(call)
+    return replace(
+        call,
+        render_data={
+            **call.render_data,
+            "status": status,
+            "error_type": error_type,
+            "request_issued": True,
+            "response_received": response_received,
+            "queue_wait_ms": queue_wait_ms,
+        },
+    )
 
 
 def _mart_payload_ok(payload: dict[str, Any]) -> bool:
