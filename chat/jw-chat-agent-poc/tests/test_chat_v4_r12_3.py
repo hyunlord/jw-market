@@ -19,9 +19,9 @@ from jw_chat_agent_poc.service.v4.narrative_realization import (
 )
 
 
-def _evidence(*records: EvidenceRecord) -> EvidenceSet:
+def _evidence(*records: EvidenceRecord, source: str = "clinicaltrials") -> EvidenceSet:
     return EvidenceSet(
-        source="clinicaltrials",
+        source=source,
         retrieved_at="2026-08-13T00:00:00Z",
         coverage=CoverageLedger(
             total_reported=len(records),
@@ -333,3 +333,91 @@ def test_b_micro_narrative_discloses_records_left_to_the_lossless_table() -> Non
 
     assert realization.unnarrated_record_count == 2
     assert "나머지 2건은 아래 정본 표" in realization.nodes[0].text
+
+
+def test_b_micro_narrative_does_not_reference_a_table_for_unrendered_records() -> None:
+    clinical = _evidence(
+        _record(
+            "NCT00000001",
+            status="RECRUITING",
+            sponsor="Alpha Pharma",
+            start_date="2024-01-01",
+            enrollment=100,
+        )
+    )
+    patents = _evidence(
+        *(
+            EvidenceRecord(
+                evidence_id=f"patent:KR:{index}",
+                source="patent",
+                result_kind="structured_patent_record",
+                payload={"status": "소멸", "expiration_date": f"2025-01-{index:02d}"},
+            )
+            for index in range(1, 10)
+        ),
+        source="patent",
+    )
+
+    realization = build_narrative_realization(
+        (clinical, patents),
+        tuple(record.evidence_id for item in (clinical, patents) for record in item.records),
+        table_record_ids=(clinical.records[0].evidence_id,),
+    )
+
+    assert realization.unnarrated_record_count == 2
+    assert "아래 정본 표" not in realization.nodes[0].text
+
+
+def test_a_t2_relation_sentences_are_source_scoped() -> None:
+    clinical = _evidence(
+        _record(
+            "NCT00000001",
+            status="RECRUITING",
+            sponsor="Alpha Pharma",
+            start_date="2024-01-01",
+            enrollment=100,
+        ),
+        _record(
+            "NCT00000002",
+            status="COMPLETED",
+            sponsor="Beta Pharma",
+            start_date="2025-01-01",
+            enrollment=120,
+        ),
+    )
+    patents = _evidence(
+        EvidenceRecord(
+            evidence_id="patent:KR:1",
+            source="patent",
+            result_kind="structured_patent_record",
+            payload={"status": "소멸", "expiration_date": "2024-01-01"},
+        ),
+        EvidenceRecord(
+            evidence_id="patent:KR:2",
+            source="patent",
+            result_kind="structured_patent_record",
+            payload={"status": "소멸(무효)", "expiration_date": "2025-01-01"},
+        ),
+        source="patent",
+    )
+
+    realization = build_narrative_realization(
+        (clinical, patents),
+        tuple(record.evidence_id for item in (clinical, patents) for record in item.records),
+    )
+
+    source_by_id = {
+        record.evidence_id: item.source
+        for item in (clinical, patents)
+        for record in item.records
+    }
+    for item in realization.claims:
+        if item.claim.claim_type != "T2":
+            continue
+        sources = {source_by_id[record_id] for record_id in item.recomputation.record_ids}
+        assert len(sources) == 1
+        expected_label = {
+            "clinicaltrials": "ClinicalTrials.gov",
+            "patent": "식품의약품안전처 의약품 특허목록",
+        }[next(iter(sources))]
+        assert expected_label in item.text

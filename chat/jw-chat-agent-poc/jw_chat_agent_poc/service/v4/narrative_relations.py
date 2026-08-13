@@ -61,11 +61,14 @@ def build_relation_claims(
                 f"{label}에서 확인된 레코드는 {len(records)}건입니다.",
             )
         )
-        output.extend(_field_relations(records))
+        output.extend(_field_relations(records, label))
     return tuple(output)
 
 
-def _field_relations(records: Sequence[EvidenceRecord]) -> tuple[RealizedClaim, ...]:
+def _field_relations(
+    records: Sequence[EvidenceRecord],
+    source_label: str,
+) -> tuple[RealizedClaim, ...]:
     output: list[RealizedClaim] = []
     for field in GROUP_FIELDS:
         field_records = tuple(
@@ -81,7 +84,11 @@ def _field_relations(records: Sequence[EvidenceRecord]) -> tuple[RealizedClaim, 
             groups = ", ".join(
                 f"{value} {count}건" for value, count in sorted(counts.items())
             )
-            prefix = f"{label}가 제공된 레코드 기준으로" if partial else f"{label}별로"
+            prefix = (
+                f"{source_label}에서 {label}가 제공된 레코드 기준으로"
+                if partial
+                else f"{source_label} 레코드는 {label}별로"
+            )
             output.append(
                 _relation(
                     "GROUP_COUNT",
@@ -93,9 +100,9 @@ def _field_relations(records: Sequence[EvidenceRecord]) -> tuple[RealizedClaim, 
         elif counts:
             common = next(iter(counts))
             subject = (
-                f"{label}가 제공된 레코드는"
+                f"{source_label}에서 {label}가 제공된 레코드는"
                 if partial
-                else "확인된 레코드는"
+                else f"{source_label}에서 확인된 레코드는"
             )
             output.append(
                 _relation(
@@ -105,7 +112,7 @@ def _field_relations(records: Sequence[EvidenceRecord]) -> tuple[RealizedClaim, 
                     f"{subject} 모두 {label} {common}입니다.",
                 )
             )
-    output.extend(_date_relations(records))
+    output.extend(_date_relations(records, source_label))
     for field in NUMERIC_FIELDS:
         field_records = tuple(
             record
@@ -120,14 +127,17 @@ def _field_relations(records: Sequence[EvidenceRecord]) -> tuple[RealizedClaim, 
                     "COMPARE_NUMERIC",
                     field_records,
                     field,
-                    f"{FIELD_LABELS.get(field, field)}은 최소 "
+                    f"{source_label} 레코드의 {FIELD_LABELS.get(field, field)}은 최소 "
                     f"{display_number(min(present))}, 최대 {display_number(max(present))}입니다.",
                 )
             )
     return tuple(output)
 
 
-def _date_relations(records: Sequence[EvidenceRecord]) -> tuple[RealizedClaim, ...]:
+def _date_relations(
+    records: Sequence[EvidenceRecord],
+    source_label: str,
+) -> tuple[RealizedClaim, ...]:
     output: list[RealizedClaim] = []
     for field in DATE_FIELDS:
         field_records = tuple(
@@ -142,7 +152,8 @@ def _date_relations(records: Sequence[EvidenceRecord]) -> tuple[RealizedClaim, .
                 "RANGE",
                 field_records,
                 field,
-                f"{FIELD_LABELS.get(field, field)} 범위는 {min(present)}부터 "
+                f"{source_label} 레코드의 {FIELD_LABELS.get(field, field)} 범위는 "
+                f"{min(present)}부터 "
                 f"{max(present)}까지입니다.",
             )
         )
@@ -152,7 +163,8 @@ def _date_relations(records: Sequence[EvidenceRecord]) -> tuple[RealizedClaim, .
                     "ORDER_BY_TIME",
                     field_records,
                     field,
-                    f"{FIELD_LABELS.get(field, field)} 순으로 보면 {min(present)}이 "
+                    f"{source_label} 레코드의 {FIELD_LABELS.get(field, field)} 순으로 "
+                    f"보면 {min(present)}이 "
                     f"가장 이르고 {max(present)}이 가장 늦습니다.",
                 )
             )
@@ -163,7 +175,8 @@ def _date_relations(records: Sequence[EvidenceRecord]) -> tuple[RealizedClaim, .
                     "SIMULTANEITY",
                     field_records,
                     field,
-                    f"{simultaneous[0]}에 {simultaneous[1]}건이 같은 시점으로 확인됩니다.",
+                    f"{source_label} 레코드는 {simultaneous[0]}에 "
+                    f"{simultaneous[1]}건이 같은 시점으로 확인됩니다.",
                 )
             )
     return tuple(output)

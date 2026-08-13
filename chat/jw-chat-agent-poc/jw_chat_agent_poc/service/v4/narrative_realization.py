@@ -29,6 +29,7 @@ from jw_chat_agent_poc.service.v4.narrative_values import (
     field_value,
     record_identity,
 )
+from jw_chat_agent_poc.service.v4.source_labels import public_source_label
 
 
 MAX_NARRATED_RECORDS: Final = 8
@@ -56,11 +57,14 @@ class NarrativeRealization(BaseModel):
     recomputations: tuple[RecomputationEvidence, ...]
     truncated_t2_count: int = 0
     unnarrated_record_count: int = 0
+    table_reference_record_ids: tuple[str, ...] = ()
 
 
 def build_narrative_realization(
     evidence_sets: Sequence[EvidenceSet],
     rendered_ids: Sequence[str],
+    *,
+    table_record_ids: Sequence[str] | None = None,
 ) -> NarrativeRealization:
     records_by_id = {
         record.evidence_id: record
@@ -74,7 +78,12 @@ def build_narrative_realization(
     )
     narrated = records[:MAX_NARRATED_RECORDS]
     unnarrated_count = max(0, len(records) - len(narrated))
-    micro_node, t1_claims = _micro_narratives(narrated, unnarrated_count)
+    table_ids = frozenset(rendered_ids if table_record_ids is None else table_record_ids)
+    micro_node, t1_claims, table_references = _micro_narratives(
+        narrated,
+        records,
+        table_ids,
+    )
     t2_candidates = tuple(
         sorted(
             build_relation_claims(
@@ -97,13 +106,15 @@ def build_narrative_realization(
         recomputations=tuple(item.recomputation for item in t2_claims),
         truncated_t2_count=max(0, len(t2_candidates) - len(t2_claims)),
         unnarrated_record_count=unnarrated_count,
+        table_reference_record_ids=table_references,
     )
 
 
 def _micro_narratives(
     records: Sequence[EvidenceRecord],
-    unnarrated_count: int,
-) -> tuple[RenderNode | None, tuple[RealizedClaim, ...]]:
+    all_records: Sequence[EvidenceRecord],
+    table_record_ids: frozenset[str],
+) -> tuple[RenderNode | None, tuple[RealizedClaim, ...], tuple[str, ...]]:
     claims: list[RealizedClaim] = []
     lines: list[str] = []
     surface_fields: list[str] = []
@@ -118,16 +129,29 @@ def _micro_narratives(
             f"{FIELD_LABELS.get(field, field)} {value}"
             for field, value in zip(fields, values, strict=True)
         )
-        sentence = f"{record_identity(record, index)}은(는) {details}로 확인됩니다."
+        sentence = (
+            f"{public_source_label(record.source)}의 {record_identity(record, index)}은(는) "
+            f"{details}로 확인됩니다."
+        )
         lines.append(f"- {sentence}")
         surface_fields.extend(fields)
         claims.append(_field_claim(record, fields, values, sentence))
     if not lines:
-        return None, ()
-    if unnarrated_count:
-        lines.append(
-            f"- 나머지 {unnarrated_count}건은 아래 정본 표에서 확인할 수 있습니다."
+        return None, (), ()
+    narrated_ids = frozenset(record.evidence_id for record in records)
+    table_references: list[str] = []
+    for source in dict.fromkeys(record.source for record in records):
+        omitted = tuple(
+            record
+            for record in all_records
+            if record.source == source and record.evidence_id not in narrated_ids
         )
+        if omitted and all(record.evidence_id in table_record_ids for record in omitted):
+            table_references.extend(record.evidence_id for record in omitted)
+            lines.append(
+                f"- {public_source_label(source)}의 나머지 {len(omitted)}건은 "
+                "아래 정본 표에서 확인할 수 있습니다."
+            )
     return (
         RenderNode(
             block_id="narrative:field-restatement",
@@ -136,6 +160,7 @@ def _micro_narratives(
             text="## [직접 확인] 레코드 설명\n" + "\n".join(lines),
         ),
         tuple(claims),
+        tuple(table_references),
     )
 
 

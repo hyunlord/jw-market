@@ -93,7 +93,26 @@ def render_deterministic_facts(
     base_rendered_ids = tuple(
         dict.fromkeys(record_id for node in nodes for record_id in node.record_ids)
     )
-    realization = build_narrative_realization(rendered_sets, base_rendered_ids)
+    table_record_ids = tuple(
+        dict.fromkeys(
+            record_id
+            for node in nodes
+            if re.search(r"(?m)^\|\s*-{3,}", node.text)
+            for record_id in node.record_ids
+        )
+    )
+    realization = build_narrative_realization(
+        rendered_sets,
+        base_rendered_ids,
+        table_record_ids=table_record_ids,
+    )
+    has_table_reference = any(
+        "아래 정본 표" in node.text for node in realization.nodes
+    )
+    if has_table_reference != bool(realization.table_reference_record_ids):
+        raise LosslessInvariantError("narrative table reference binding mismatch")
+    if set(realization.table_reference_record_ids) - set(table_record_ids):
+        raise LosslessInvariantError("narrative references records without a rendered table")
     verified_recomputations = tuple(
         verify_recomputation(proof, rendered_sets)
         for proof in realization.recomputations
