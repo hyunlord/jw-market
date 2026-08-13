@@ -37,6 +37,7 @@ MFDS_PATENT_QUERY_ALIASES = {
     "ezetimibe": "리바로젯",
 }
 MFDS_PATENT_INGREDIENT_ALIASES = {
+    "emicizumab": "에미시주맙",
     "pitavastatin": "Pitavastatin",
     "pitavastatin calcium": "Pitavastatin",
     "피타바스타틴": "Pitavastatin",
@@ -223,7 +224,11 @@ class ExternalApiClient:
         item_name: str | None = None,
     ) -> ExternalCall:
         resolved_item_name = item_name or MFDS_PATENT_QUERY_ALIASES.get(ingredient_en.lower())
-        params = {"ingr_name": ingredient_en}
+        resolved_ingredient = MFDS_PATENT_INGREDIENT_ALIASES.get(
+            ingredient_en.casefold(),
+            ingredient_en,
+        )
+        params = {"ingr_name": resolved_ingredient}
         if resolved_item_name:
             params["item_name"] = resolved_item_name
         params["limit"] = str(_mfds_patent_result_limit())

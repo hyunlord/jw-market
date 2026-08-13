@@ -243,9 +243,9 @@ def test_a_mfds_serialization_keeps_expanded_product_and_ingredient(
 
     assert result.status == "ok"
     assert captured["item_name"] == "헴리브라"
-    assert captured["ingr_name"] == "emicizumab"
+    assert captured["ingr_name"] == "에미시주맙"
     assert spec["arguments"]["item_name"] == "헴리브라"
-    assert spec["arguments"]["ingr_name"] == "emicizumab"
+    assert spec["arguments"]["ingr_name"] == "에미시주맙"
 
 
 def test_a_single_kcd_and_abbreviated_year_range_expand_without_substitution() -> None:
