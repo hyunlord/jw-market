@@ -189,6 +189,61 @@ def test_a_t2_enumerates_every_supported_field_before_applying_cap() -> None:
     }
 
 
+def test_a_t2_groups_partial_fields_over_only_the_bound_records() -> None:
+    complete = _record(
+        "NCT00000001",
+        status="COMPLETED",
+        sponsor="Alpha Pharma",
+        start_date="2023-01-01",
+        enrollment=100,
+    )
+    recruiting = _record(
+        "NCT00000002",
+        status="RECRUITING",
+        sponsor="Beta Pharma",
+        start_date="2024-01-01",
+        enrollment=200,
+    )
+    missing_status_record = _record(
+        "NCT00000003",
+        status="COMPLETED",
+        sponsor="Gamma Pharma",
+        start_date="2025-01-01",
+        enrollment=300,
+    )
+    missing_status = missing_status_record.model_copy(
+        update={
+            "payload": {
+                key: value
+                for key, value in missing_status_record.payload.items()
+                if key != "overall_status"
+            }
+        }
+    )
+    evidence = _evidence(complete, recruiting, missing_status)
+
+    realization = build_narrative_realization(
+        (evidence,), tuple(record.evidence_id for record in evidence.records)
+    )
+
+    status_group = next(
+        item
+        for item in realization.claims
+        if item.claim.operator_id == "GROUP_COUNT"
+        and item.recomputation.field_path == "payload.overall_status"
+    )
+    assert status_group.recomputation.record_ids == (
+        complete.evidence_id,
+        recruiting.evidence_id,
+    )
+    assert status_group.recomputation.expected == {
+        "COMPLETED": 1,
+        "RECRUITING": 1,
+    }
+    assert "상태가 제공된 레코드 기준" in status_group.text
+    assert verify_recomputation(status_group.recomputation, (evidence,)).matched
+
+
 def test_a_recomputation_mismatch_is_rejected_instead_of_downgraded() -> None:
     original = _evidence(
         _record(

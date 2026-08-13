@@ -68,30 +68,41 @@ def build_relation_claims(
 def _field_relations(records: Sequence[EvidenceRecord]) -> tuple[RealizedClaim, ...]:
     output: list[RealizedClaim] = []
     for field in GROUP_FIELDS:
-        values = tuple(field_value(record, field) for record in records)
-        if any(value is None for value in values):
+        field_records = tuple(
+            record for record in records if field_value(record, field) is not None
+        )
+        if len(field_records) < 2:
             continue
+        values = tuple(field_value(record, field) for record in field_records)
         counts = Counter(value for value in values if value is not None)
+        label = FIELD_LABELS.get(field, field)
+        partial = len(field_records) < len(records)
         if len(counts) > 1:
             groups = ", ".join(
                 f"{value} {count}건" for value, count in sorted(counts.items())
             )
+            prefix = f"{label}가 제공된 레코드 기준으로" if partial else f"{label}별로"
             output.append(
                 _relation(
                     "GROUP_COUNT",
-                    records,
+                    field_records,
                     field,
-                    f"{FIELD_LABELS.get(field, field)}별로 {groups}입니다.",
+                    f"{prefix} {groups}입니다.",
                 )
             )
         elif counts:
             common = next(iter(counts))
+            subject = (
+                f"{label}가 제공된 레코드는"
+                if partial
+                else "확인된 레코드는"
+            )
             output.append(
                 _relation(
                     "COMMON_VALUE",
-                    records,
+                    field_records,
                     field,
-                    f"확인된 레코드는 모두 {FIELD_LABELS.get(field, field)} {common}입니다.",
+                    f"{subject} 모두 {label} {common}입니다.",
                 )
             )
     output.extend(_date_relations(records))
