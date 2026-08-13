@@ -1712,6 +1712,11 @@ def _should_inherit_session_contract(question: str, state: SessionState) -> bool
     )
     if any(entity.casefold() in normalized for entity in known_entities):
         return True
+    if any(
+        marker in normalized
+        for marker in ("그럼 경쟁 브랜드", "차이 정리", "둘 비교")
+    ):
+        return True
     return any(
         marker in normalized
         for marker in (

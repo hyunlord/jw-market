@@ -23,6 +23,8 @@ from jw_chat_agent_poc.service.v4.narrative_realization import (
     measure_final_narrative_surface,
 )
 from jw_chat_agent_poc.service.v4.render_clinical import render_clinical
+from jw_chat_agent_poc.service.v4.runtime import _bind_session_state_contract
+from jw_chat_agent_poc.service.v4.session_state import SessionState
 from jw_chat_agent_poc.service.v4.synthesizer import (
     _SYNTHESIS_SYSTEM_PROMPT,
     _synthesis_messages,
@@ -1338,3 +1340,45 @@ def test_a_nedrug_uppercase_records_are_narratable_with_public_fields() -> None:
     assert realized.unnarrated_record_count == 0
     assert realized.average_narrated_field_count == 4.0
     assert realized.identifier_only_sentence_count == 0
+
+
+@pytest.mark.parametrize(
+    "question",
+    (
+        "그럼 경쟁 브랜드는?",
+        "차이 정리해줘",
+        "둘 비교해줘",
+    ),
+)
+def test_h_implicit_comparison_followup_inherits_entity_and_record_scope(
+    question: str,
+) -> None:
+    state = SessionState(
+        canonical_entities=("리바로젯", "로수젯", "리피토"),
+        primary_entity="리바로젯",
+        mentioned_related_entities=("로수젯", "리피토"),
+        record_type="reimbursement",
+        comparison_anchor="리바로젯",
+    )
+
+    bound = _bind_session_state_contract(_plan(question), question, state)
+
+    assert "리바로젯" in bound.resolved_question
+    assert "급여기준" in bound.resolved_question
+    for _, queries in bound.tool_queries.items():
+        assert all("리바로젯" in query for query in queries)
+        assert all("급여기준" in query for query in queries)
+
+
+def test_h_explicit_new_subject_does_not_inherit_previous_comparison_scope() -> None:
+    state = SessionState(
+        canonical_entities=("리바로젯", "로수젯", "리피토"),
+        primary_entity="리바로젯",
+        record_type="reimbursement",
+    )
+    question = "아일리아 급여기준 알려줘"
+
+    bound = _bind_session_state_contract(_plan(question), question, state)
+
+    assert bound.resolved_question == question
+    assert "리바로젯" not in bound.resolved_question
