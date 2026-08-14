@@ -4,6 +4,8 @@ from datetime import date
 from types import SimpleNamespace
 from typing import Any
 
+from jw_chat_agent_poc.service.v4 import adapters as v4_adapters
+from jw_chat_agent_poc.service.v4 import synthesizer as v4_synthesizer
 from jw_chat_agent_poc.service.v4.clinical import compile_clinical_query
 from jw_chat_agent_poc.service.v4.clinical_query_policy import (
     prepare_resolved_clinical_requests,
@@ -226,3 +228,130 @@ def test_r129a_nested_empty_values_and_known_enums_are_publicly_sanitized() -> N
     assert "DRUG" not in interventions
     assert "의약품" in interventions
     assert narrative_field_value(record, "study_type") == "중재 연구"
+
+
+def test_r129a_mart_period_is_clamped_to_injected_latest_available_period() -> None:
+    class QueryLayer:
+        def __init__(self) -> None:
+            self.metric_periods: list[str] = []
+
+        def market_scope(self, brand: str) -> dict[str, Any]:
+            return {
+                "source": "UBIST",
+                "tool": "market_scope",
+                "render_data": {
+                    "market_id": "ml_livalo",
+                    "anchor_brand": brand,
+                    "period": "2026-06",
+                },
+            }
+
+        def brand_metric(
+            self,
+            brand: str,
+            metric: str,
+            period: str,
+            *,
+            market: str | None = None,
+            history_points: int = 10,
+        ) -> dict[str, Any]:
+            self.metric_periods.append(period)
+            if period != "latest":
+                return {"source": "UBIST", "tool": metric, "status": "no_data"}
+            return {
+                "source": "UBIST",
+                "tool": metric,
+                "render_data": {
+                    "brand": brand,
+                    "period": "2026-06",
+                    "market_id": market,
+                    "history_points": history_points,
+                    "brand_value_series_10pt": [
+                        {"period": "2025-06", "value": 100.0},
+                        {"period": "2026-06", "value": 110.0},
+                    ],
+                },
+            }
+
+        def top_brands(
+            self,
+            brand: str,
+            *,
+            limit: int,
+            metric: str,
+            market: str | None = None,
+        ) -> dict[str, Any]:
+            return {
+                "source": "UBIST",
+                "tool": "top_brands",
+                "render_data": {
+                    "level_top5_trend_series": [
+                        {"brand": brand, "company": "JW", "rank": 1}
+                    ]
+                },
+            }
+
+        def market_member_metric(
+            self,
+            anchor_brand: str,
+            member_brand: str,
+            *,
+            market: str | None = None,
+            metric: str,
+        ) -> dict[str, Any]:
+            return {
+                "source": "UBIST",
+                "tool": "market_member_metric",
+                "render_data": {
+                    "brand": member_brand,
+                    "market_id": market,
+                    "metric": metric,
+                    "brand_value_series_10pt": [
+                        {"period": "2025-06", "value": 100.0},
+                        {"period": "2026-06", "value": 110.0},
+                    ],
+                },
+            }
+
+        def cause_card_data(self, brand: str, market: str | None) -> dict[str, Any]:
+            return {"brand": brand, "market": market, "ei_ms": {"value": 1.0}}
+
+    layer = QueryLayer()
+    calls = v4_adapters._strategic_mart_calls(
+        layer,
+        "리바로",
+        "리바로 매출 알려줘",
+        period_from="2021-01-01",
+        period_to="2026-08-15",
+    )
+
+    assert layer.metric_periods == ["latest"] * 4
+    assert len(calls) == 8
+    bundle = next(call for call in calls if call.get("tool") == "entity_bundle")
+    assert bundle["entity_bundle"]["requested_period"] == "latest"
+    assert all(call.get("status") != "no_data" for call in calls)
+    assert v4_adapters._mart_period_clamp_notice_for_calls(
+        "2026-08-15",
+        calls,
+    ) == (
+        "요청한 종료 기간 2026-08-15은 데이터마트 최신 가용 기간 "
+        "2026-06을 넘어, 최신 가용 기간 기준으로 조정했습니다."
+    )
+
+
+def test_r129a_mart_period_clamp_is_coverage_and_surface_notice() -> None:
+    notice = (
+        "요청한 종료 기간 2026-08-15은 데이터마트 최신 가용 기간 "
+        "2026-06을 넘어, 최신 가용 기간 기준으로 조정했습니다."
+    )
+    result = SourceResult(
+        source="mart",
+        query="리바로 매출 알려줘",
+        status="ok",
+        payload={"calls": [{"tool": "market_scope"}]},
+        notice=notice,
+    )
+
+    assert v4_synthesizer._coverage_notices((result,)) == (notice,)
+    answer = v4_synthesizer._finalize_answer("매출 답변입니다.", (result,))
+    assert answer.count(notice) == 1

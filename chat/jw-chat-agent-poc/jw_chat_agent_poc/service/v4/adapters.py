@@ -1342,6 +1342,7 @@ def build_source_adapters() -> dict[SourceName, Any]:
     ) -> SourceResult:
         started_at = datetime.now(UTC)
         payloads: list[dict[str, Any]] = []
+        period_clamp_notices: list[str] = []
         has_general_payload = False
         route = general_view.route(query)
         if route in {GeneralRoute.GENERAL_ONLY, GeneralRoute.DUAL}:
@@ -1381,6 +1382,13 @@ def build_source_adapters() -> dict[SourceName, Any]:
                 if layer is not None
                 else []
             )
+            if period_to and (
+                clamp_notice := _mart_period_clamp_notice_for_calls(
+                    period_to,
+                    strategic,
+                )
+            ):
+                period_clamp_notices.append(clamp_notice)
             if _needs_deep_analysis(query):
                 deep_analysis = _load_canonical_deep_analysis(
                     str(item.canonical_brand),
@@ -1417,7 +1425,11 @@ def build_source_adapters() -> dict[SourceName, Any]:
                 )
                 for label in source_labels
             ),
-            notice=None if payloads else "mart read-only adapters returned no rows",
+            notice=(
+                " ".join(dict.fromkeys(period_clamp_notices))
+                if period_clamp_notices
+                else None if payloads else "mart read-only adapters returned no rows"
+            ),
         )
 
     def nedrug(query: str) -> SourceResult:
@@ -1855,6 +1867,60 @@ def _month_span(period_from: str | None, period_to: str | None) -> int | None:
     return min(60, months) if months > 0 else None
 
 
+def _mart_month_key(value: str | None) -> tuple[int, int] | None:
+    match = re.fullmatch(
+        r"(20\d{2})-(0[1-9]|1[0-2])(?:-[0-3]\d)?",
+        str(value or ""),
+    )
+    if match is None:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
+def _mart_available_period(scope: Mapping[str, Any]) -> str | None:
+    render_data = scope.get("render_data")
+    if not isinstance(render_data, Mapping):
+        return None
+    period = str(render_data.get("period") or "").strip()
+    return period if _mart_month_key(period) is not None else None
+
+
+def _clamp_mart_period(
+    requested: str,
+    available: str | None,
+) -> tuple[str, bool]:
+    requested_key = _mart_month_key(requested)
+    available_key = _mart_month_key(available)
+    if requested_key is None or available_key is None or requested_key <= available_key:
+        return requested, False
+    return "latest", True
+
+
+def _mart_period_clamp_notice(requested: str, available: str) -> str:
+    return (
+        f"요청한 종료 기간 {requested}은 데이터마트 최신 가용 기간 "
+        f"{available}을 넘어, 최신 가용 기간 기준으로 조정했습니다."
+    )
+
+
+def _mart_period_clamp_notice_for_calls(
+    requested: str,
+    calls: Sequence[Mapping[str, Any]],
+) -> str | None:
+    available = next(
+        (
+            period
+            for call in calls
+            if (period := _mart_available_period(call)) is not None
+        ),
+        None,
+    )
+    _, clamped = _clamp_mart_period(requested, available)
+    if not clamped or available is None:
+        return None
+    return _mart_period_clamp_notice(requested, available)
+
+
 def _strategic_mart_calls(
     layer,
     brand: str,
@@ -1866,7 +1932,6 @@ def _strategic_mart_calls(
     lowered = query.casefold()
     recent_year_match = _RECENT_YEAR_RE.search(query)
     recent_years = int(recent_year_match.group(1)) if recent_year_match else None
-    metric_period = period_to or ("latest" if recent_years else requested_period(query) or "latest")
     structured_history_points = _month_span(period_from, period_to)
     relative_history_points = structured_history_points or (
         min(60, recent_years * 12 + 1) if recent_years else None
@@ -1879,6 +1944,10 @@ def _strategic_mart_calls(
     if _mart_payload_ok(scope):
         calls.append(scope)
     market = _mart_market_id(scope)
+    metric_period, period_clamped = _clamp_mart_period(
+        period_to or ("latest" if recent_years else requested_period(query) or "latest"),
+        _mart_available_period(scope),
+    )
 
     metric_package = (
         ("sales", 60),
@@ -1915,7 +1984,9 @@ def _strategic_mart_calls(
         )
 
     bundle_period = (
-        f"{period_from}~{period_to}"
+        "latest"
+        if period_clamped
+        else f"{period_from}~{period_to}"
         if period_from and period_to
         else f"최근 {recent_years}년" if recent_years else metric_period
     )

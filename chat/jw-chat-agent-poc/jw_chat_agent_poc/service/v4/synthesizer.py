@@ -1399,6 +1399,14 @@ def _finalize_answer(answer: str, results: Sequence[SourceResult]) -> str:
                 if label not in answer
             )
         ).rstrip()
+    for result in results:
+        notice = str(result.notice or "").strip()
+        if (
+            result.source == "mart"
+            and notice.startswith("요청한 종료 기간 ")
+            and notice not in answer
+        ):
+            answer = f"{answer.rstrip()}\n\n{notice}"
     answer = _append_automatic_footnotes(answer, results)
     return answer
 
@@ -1822,6 +1830,10 @@ def _deep_analysis_freshness_labels(
 def _coverage_notices(results: Sequence[SourceResult]) -> tuple[str, ...]:
     notices: list[str] = []
     for result in results:
+        mart_notice = str(result.notice or "").strip()
+        if result.source == "mart" and mart_notice.startswith("요청한 종료 기간 "):
+            notices.append(mart_notice)
+            continue
         if result.source not in {"hira", "nedrug"} or not isinstance(result.payload, Mapping):
             continue
         coverage = result.payload.get("period_coverage")
