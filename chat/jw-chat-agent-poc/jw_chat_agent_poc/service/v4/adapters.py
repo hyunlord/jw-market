@@ -58,8 +58,11 @@ LIMIT 1
 """
 _NCT_RE = re.compile(r"\bNCT\d{8}\b", re.IGNORECASE)
 _HIRA_CODE_RE = re.compile(r"(?<![A-Za-z0-9])([A-Za-z]\d{2}(?:\.?\d)?)(?![A-Za-z0-9])")
-_RECENT_YEAR_RE = re.compile(r"최근\s*(\d{1,2})\s*년")
+_RECENT_YEAR_RE = re.compile(r"최근\s*(\d{1,2})\s*(?:개)?년(?:도)?")
 _YEAR_RE = re.compile(r"20\d{2}")
+_SHORT_KOREAN_YEAR_RE = re.compile(r"(?<!\d)(\d{2})\s*(?:년도|년)")
+_LATEST_HIRA_YEAR_RE = re.compile(r"최근\s*년도|최신|가장\s*최근")
+_HIRA_YEAR_DISCOVERY_WINDOW = 3
 _DISEASE_ALIASES = {
     "당뇨망막병증": ("H360", "diabetic retinopathy"),
     "당뇨병성 망막병증": ("H360", "diabetic retinopathy"),
@@ -604,12 +607,32 @@ def _requested_hira_years(
 ) -> tuple[str, ...] | None:
     """Return the complete calendar range requested by the V4 HIRA query."""
     year_now = current_year or current_kst_date().year
-    named = tuple(dict.fromkeys(_YEAR_RE.findall(query)))
+    named = tuple(
+        dict.fromkeys(
+            [
+                *_YEAR_RE.findall(query),
+                *(
+                    f"20{match}"
+                    for match in _SHORT_KOREAN_YEAR_RE.findall(query)
+                ),
+            ]
+        )
+    )
+    had_explicit_year = bool(named)
+    named = tuple(year for year in named if int(year) <= year_now)
     if len(named) >= 2:
         first, last = sorted((int(min(named)), int(max(named))))
         return tuple(str(year) for year in range(first, last + 1))
     if named:
         return named
+    if had_explicit_year:
+        return ()
+    if "재작년" in query:
+        return None
+    if "작년" in query:
+        return (str(year_now - 1),)
+    if "올해" in query:
+        return (str(year_now),)
     recent = _RECENT_YEAR_RE.search(query)
     if recent:
         count = max(1, min(10, int(recent.group(1))))
@@ -617,6 +640,123 @@ def _requested_hira_years(
     if "추이" in query or "시계열" in query or re.search(r"(?:연도|년도|해)\s*(?:별|마다)", query):
         return tuple(str(year) for year in range(year_now - 4, year_now + 1))
     return None
+
+
+def _hira_discovery_years(*, current_year: int | None = None) -> tuple[str, ...]:
+    year_now = current_year or current_kst_date().year
+    return tuple(
+        str(year)
+        for year in range(
+            year_now,
+            year_now - _HIRA_YEAR_DISCOVERY_WINDOW,
+            -1,
+        )
+    )
+
+
+def _hira_period_row_count(call: Any) -> int:
+    render_data = getattr(call, "render_data", None)
+    items = render_data.get("items") if isinstance(render_data, Mapping) else None
+    return len(items) if isinstance(items, list) else 0
+
+
+def _hira_year_coverage(
+    years: Sequence[str],
+    calls: Sequence[Any],
+    *,
+    requested_axis: str,
+    actual_axis: str,
+    tool: str,
+    selected_years: Sequence[str],
+    selection_mode: str,
+) -> dict[str, Any]:
+    return {
+        "requested_periods": list(years),
+        "provided_periods": list(selected_years),
+        "requested_axis": requested_axis,
+        "actual_axis": actual_axis,
+        "tool": tool,
+        "selection_mode": selection_mode,
+        "periods": [
+            {
+                "period": year,
+                "status": _hira_period_status(call),
+                "availability_status": (
+                    "AVAILABLE" if _hira_period_status(call) == "ok" else "EMPTY"
+                ),
+                "received_count": _hira_period_row_count(call),
+                "elapsed_ms": getattr(call, "elapsed_ms", None),
+            }
+            for year, call in zip(years, calls, strict=True)
+        ],
+    }
+
+
+def _hira_year_notice(
+    years: Sequence[str],
+    calls: Sequence[Any],
+    selected_years: Sequence[str],
+    *,
+    latest_selection: bool,
+    unresolved_expression: bool,
+) -> str | None:
+    if not years:
+        return "요청 연도가 현재 연도보다 미래여서 조회하지 않았습니다."
+    if latest_selection and selected_years:
+        prefix = (
+            "연도 표현을 해석하지 못해 "
+            if unresolved_expression
+            else ""
+        )
+        return f"{prefix}최신 제공 연도 {selected_years[-1]}년 데이터를 사용합니다."
+    if latest_selection:
+        ordered = sorted(int(year) for year in years)
+        return f"탐색한 {ordered[0]}~{ordered[-1]}년은 아직 미제공입니다."
+
+    provided = [
+        year
+        for year, call in zip(years, calls, strict=True)
+        if _hira_period_status(call) == "ok"
+    ]
+    if tuple(provided) == tuple(years):
+        return None
+
+    def period_label(values: Sequence[str]) -> str:
+        if not values:
+            return ""
+        if len(values) == 1:
+            return values[0]
+        numeric = sorted(int(value) for value in values)
+        if numeric == list(range(min(numeric), max(numeric) + 1)):
+            return f"{min(numeric)}~{max(numeric)}"
+        return "·".join(values)
+
+    empty = [
+        year
+        for year, call in zip(years, calls, strict=True)
+        if _hira_period_status(call) == "no_data"
+    ]
+    failed = [
+        year
+        for year, call in zip(years, calls, strict=True)
+        if _hira_period_status(call) == "error"
+    ]
+    provided_label = (
+        f"{period_label(provided)}년 제공"
+        if provided
+        else "제공 연도 없음"
+    )
+    parts = [f"요청 {period_label(years)}년 중 {provided_label}"]
+    if empty:
+        parts.append(f"{period_label(empty)}년은 아직 미제공")
+    if failed:
+        parts.append(f"{period_label(failed)}년은 조회 실패")
+    return " · ".join(parts) + "입니다."
+
+
+def _join_notices(*notices: str | None) -> str | None:
+    values = tuple(notice.strip() for notice in notices if notice and notice.strip())
+    return "\n".join(dict.fromkeys(values)) or None
 
 
 def _ingredient_query(query: str) -> str:
@@ -1262,8 +1402,19 @@ def build_source_adapters() -> dict[SourceName, Any]:
                     ),
                     notice=route.scope_notice,
                 )
-            calls = [external.hira_disease_name_code(code)]
-            years = _requested_hira_years(base) or ("2024",)
+            disease_call = external.hira_disease_name_code(code)
+            requested_years = _requested_hira_years(base)
+            latest_selection = requested_years is None
+            years = (
+                requested_years
+                if requested_years is not None
+                else _hira_discovery_years()
+            )
+            unresolved_expression = bool(
+                re.search(r"(?:년|년도|올해|작년|최근|최신)", base)
+                and not _LATEST_HIRA_YEAR_RE.search(base)
+                and "재작년" in base
+            )
 
             def fetch_hira_year(disease_code: str, year: str) -> ExternalCall:
                 fetch = getattr(external, route.tool)
@@ -1283,35 +1434,51 @@ def build_source_adapters() -> dict[SourceName, Any]:
                     },
                 )
 
-            calls.extend(
-                _parallel_hira_year_calls(
-                    fetch_hira_year,
-                    code,
-                    years,
-                )
+            year_calls = _parallel_hira_year_calls(
+                fetch_hira_year,
+                code,
+                years,
             )
+            available = [
+                (year, call)
+                for year, call in zip(years, year_calls, strict=True)
+                if _hira_period_status(call) == "ok"
+            ]
+            selected = available[:1] if latest_selection else available
+            selected_years = tuple(year for year, _call in selected)
+            calls = [disease_call, *(call for _year, call in selected)]
             result = external_calls("hira", query, calls)
+            availability_notice = _hira_year_notice(
+                years,
+                year_calls,
+                selected_years,
+                latest_selection=latest_selection,
+                unresolved_expression=unresolved_expression,
+            )
             scope_notice = route.scope_notice
             if route.requested_label:
-                year_label = "·".join(years)
+                year_label = "·".join(selected_years or years)
                 scope_notice = (
                     f"요청하신 {route.requested_label} 집계는 현재 지원되지 않아, "
                     f"입원/외래 기준 {year_label}년 데이터로 답변합니다."
                 )
-            coverage = {
-                "requested_periods": list(years),
-                "requested_axis": route.requested_label or route.label,
-                "actual_axis": route.label,
-                "tool": route.tool,
-                "periods": [
-                    {"period": year, "status": _hira_period_status(call)}
-                    for year, call in zip(years, calls[1:], strict=True)
-                ],
-            }
+            coverage = _hira_year_coverage(
+                years,
+                year_calls,
+                requested_axis=route.requested_label or route.label,
+                actual_axis=route.label,
+                tool=route.tool,
+                selected_years=selected_years,
+                selection_mode="latest_available" if latest_selection else "requested_range",
+            )
             return result.model_copy(
                 update={
                     "payload": {**result.payload, "period_coverage": coverage},
-                    "notice": scope_notice or result.notice,
+                    "notice": _join_notices(
+                        scope_notice,
+                        availability_notice,
+                        result.notice if not selected else None,
+                    ),
                 }
             )
 
