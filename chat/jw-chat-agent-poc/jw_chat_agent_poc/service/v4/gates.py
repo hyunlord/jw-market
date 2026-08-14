@@ -301,9 +301,13 @@ def apply_v4_gates(
         )
         verified_summary, _ = normalize_answer_surface(verified_summary)
         text = _merge_unique_blocks(verified_summary, text)
+    monthly_table = _render_mart_monthly_table(mart_results, question)
+    if monthly_table and monthly_table.splitlines()[0] not in text:
+        text = _merge_unique_blocks(monthly_table, text)
     trace["requested_metric_surface"] = {
         "repaired": metric_missing and can_repair,
         "expected_display_numbers": sorted(requested_display_numbers),
+        "monthly_rows": max(0, monthly_table.count("\n|") - 1),
     }
 
     timed_out = tuple(item for item in results if item.status == "timeout")
@@ -1258,6 +1262,71 @@ def _render_mart_history(results: tuple[SourceResult, ...], question: str) -> st
                 lines.append(f"| {period} | {brand_display} | {market_display} |")
             return prose + "\n\n" + yearly + "\n\n" + "\n".join(lines)
     return ""
+
+
+def _render_mart_monthly_table(
+    results: tuple[SourceResult, ...],
+    question: str,
+) -> str:
+    if not any(token in question.casefold() for token in ("월별", "월간")):
+        return ""
+    requested_years = set(re.findall(r"(?<!\d)(20\d{2})\s*년", question))
+    candidates: list[tuple[bool, str, list[Mapping[str, Any]]]] = []
+    for result in results:
+        calls = result.payload.get("calls") if isinstance(result.payload, dict) else None
+        if not isinstance(calls, list):
+            continue
+        for call in calls:
+            render_data = call.get("render_data") if isinstance(call, dict) else None
+            if not isinstance(render_data, Mapping):
+                continue
+            series_candidates: list[tuple[str, Any]] = [
+                (
+                    str(render_data.get("brand") or "브랜드").strip() or "브랜드",
+                    render_data.get("brand_value_series_10pt"),
+                )
+            ]
+            trends = render_data.get("level_top5_trend_series")
+            if isinstance(trends, list):
+                series_candidates.extend(
+                    (
+                        str(trend.get("brand") or "브랜드").strip() or "브랜드",
+                        trend.get("series"),
+                    )
+                    for trend in trends
+                    if isinstance(trend, Mapping)
+                )
+            for brand, series in series_candidates:
+                if not isinstance(series, list):
+                    continue
+                rows = [
+                    item
+                    for item in series
+                    if isinstance(item, Mapping)
+                    and re.fullmatch(r"20\d{2}-(?:0[1-9]|1[0-2])", str(item.get("period") or ""))
+                    and item.get("value_억원") is not None
+                    and (
+                        not requested_years
+                        or str(item.get("period"))[:4] in requested_years
+                    )
+                ]
+                if rows:
+                    candidates.append((brand.casefold() in question.casefold(), brand, rows))
+    if not candidates:
+        return ""
+    _, brand, rows = max(candidates, key=lambda item: (item[0], len(item[2])))
+    by_period = {
+        str(item["period"]): item["value_억원"]
+        for item in rows
+    }
+    if len(by_period) < 2:
+        return ""
+    lines = [f"| 월 | {brand} 매출 |", "| --- | ---: |"]
+    lines.extend(
+        f"| {period} | {_format_mart_value(value)}억원 |"
+        for period, value in sorted(by_period.items())
+    )
+    return "\n".join(lines)
 
 
 def is_typed_absence_confirmation(result: SourceResult) -> bool:

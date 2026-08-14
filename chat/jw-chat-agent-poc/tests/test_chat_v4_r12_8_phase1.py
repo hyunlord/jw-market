@@ -530,3 +530,46 @@ def test_q6_monthly_mart_period_is_structured_and_dynamic(monkeypatch) -> None:
     assert shape.granularity == "month"
     assert (shape.period_from, shape.period_to) == ("2026-01", "2026-08")
     assert adapters._month_span(shape.period_from, shape.period_to) == 8
+
+
+def test_q6_monthly_mart_answer_renders_month_axis_without_unrelated_rows() -> None:
+    result = SourceResult(
+        source="mart",
+        query="리바로 2026년 매출",
+        status="ok",
+        payload={
+            "calls": [
+                    {
+                        "render_data": {
+                            "level_top5_trend_series": [
+                                {
+                                    "brand": "리바로",
+                                    "series": [
+                                        {"period": "2025-12", "value_억원": 90.86},
+                                        *[
+                                            {
+                                                "period": f"2026-{month:02d}",
+                                                "value_억원": 70 + month,
+                                            }
+                                            for month in range(1, 7)
+                                        ],
+                                    ],
+                                }
+                            ]
+                        }
+                    }
+                ]
+        },
+    )
+
+    gated = apply_v4_gates(
+        "리바로 2026년 월별 매출",
+        "2026년 리바로 매출을 확인했습니다.",
+        (result,),
+    )
+
+    assert "| 월 | 리바로 매출 |" in gated.text
+    assert "| 2026-01 | 71.00억원 |" in gated.text
+    assert "| 2026-06 | 76.00억원 |" in gated.text
+    assert "2025-12" not in gated.text
+    assert gated.text.count("| 2026-") == 6
