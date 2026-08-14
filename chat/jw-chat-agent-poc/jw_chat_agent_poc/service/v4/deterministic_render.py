@@ -403,6 +403,15 @@ def select_render_profile(
     clinical = _set_for("clinicaltrials", evidence_sets)
     patent = _set_for("patent", evidence_sets)
     policy = _set_for("hira", evidence_sets)
+    for source in plan.answer_sources:
+        if source == "clinicaltrials" and clinical and clinical.records:
+            if re.search(r"\bNCT\d{8}\b", plan.resolved_question, re.IGNORECASE):
+                return "single_record_detail"
+            return "clinical_portfolio"
+        if source == "patent" and patent and patent.records:
+            return "patent_portfolio"
+        if source == "hira" and policy and policy.records:
+            return "policy_document"
     if clinical and clinical.records and ("임상" in question or "nct" in question):
         if re.search(r"\bNCT\d{8}\b", plan.resolved_question, re.IGNORECASE):
             return "single_record_detail"

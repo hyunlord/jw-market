@@ -937,7 +937,10 @@ def test_d_clinical_summary_does_not_inherit_domestic_patent_heading() -> None:
     )
 
     rendered = render_deterministic_facts(
-        _plan("리바로젯 특허현황", answer_sources=("patent",)),
+        _plan(
+            "리바로젯의 국내외 특허 등재 현황과 관련 임상 시험 및 시장 점유율 정보",
+            answer_sources=("patent",),
+        ),
         (patent, clinical),
         observed_on=date(2026, 8, 13),
     )
