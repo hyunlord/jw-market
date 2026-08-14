@@ -20,6 +20,7 @@ from jw_chat_agent_poc.service.v4.lossless_contracts import (
     EvidenceSet,
 )
 from jw_chat_agent_poc.service.v4.narrative_values import narrative_field_value
+from jw_chat_agent_poc.service.v4.render_clinical import _direct_relevance_counts
 from jw_chat_agent_poc.tools.external.clinicaltrials_v2 import ClinicalTrialsV2Client
 
 
@@ -253,6 +254,42 @@ def test_r129a_duplicate_ct_query_id_does_not_double_coverage_counts() -> None:
     assert len(clinical.query_manifest) == 1
     assert clinical.query_manifest[0]["records_direct_relevance_confirmed"] == 14
     assert clinical.query_manifest[0]["records_direct_relevance_unconfirmed"] == 9
+
+
+def test_r129a_direct_relevance_counts_use_unique_rendered_records() -> None:
+    records = (
+        EvidenceRecord(
+            evidence_id="ct:NCT00000001",
+            source="clinicaltrials",
+            result_kind="structured_clinical_record",
+            payload={"relevance_status": "직접 관련 확인"},
+        ),
+        EvidenceRecord(
+            evidence_id="ct:NCT00000002",
+            source="clinicaltrials",
+            result_kind="structured_clinical_record",
+            payload={"relevance_status": "직접 관련 여부 미확인"},
+        ),
+    )
+    evidence = EvidenceSet(
+        source="clinicaltrials",
+        query_spec=("all", "korea subset"),
+        retrieved_at="2026-08-15T00:00:00+09:00",
+        coverage=CoverageLedger(records_received=3, records_unique=2),
+        records=records,
+        query_manifest=(
+            {
+                "records_direct_relevance_confirmed": 1,
+                "records_direct_relevance_unconfirmed": 1,
+            },
+            {
+                "records_direct_relevance_confirmed": 1,
+                "records_direct_relevance_unconfirmed": 0,
+            },
+        ),
+    )
+
+    assert _direct_relevance_counts(evidence) == (1, 1)
 
 
 def test_r129a_nested_empty_values_and_known_enums_are_publicly_sanitized() -> None:

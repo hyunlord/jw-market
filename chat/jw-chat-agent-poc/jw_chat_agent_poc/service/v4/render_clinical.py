@@ -173,6 +173,16 @@ def _coverage_surface(
 
 
 def _direct_relevance_counts(evidence_set: EvidenceSet) -> tuple[int | None, int]:
+    statuses = [
+        str(record.payload.get("relevance_status") or "").strip()
+        for record in evidence_set.records
+    ]
+    if any(statuses):
+        return (
+            sum(status == "직접 관련 확인" for status in statuses),
+            sum(status == "직접 관련 여부 미확인" for status in statuses),
+        )
+
     confirmed = 0
     unconfirmed = 0
     found = False
