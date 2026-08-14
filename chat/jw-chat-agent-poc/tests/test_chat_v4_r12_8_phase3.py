@@ -124,6 +124,45 @@ def test_p3_2_document_overview_strips_display_noise_without_dumping_chunks() ->
     ) in answer
 
 
+def test_p3_2_live_document_noise_is_not_exposed() -> None:
+    uploaded = UploadedFileSearchResult(
+        file_context=(
+            "[1] Datamonitor_DM-DiabetesType2-2026-02-23.pdf "
+            "(document_id=117843) (page=8)\n"
+            "섹션: Source:\n"
+            "# Treatment\n\n"
+            "[2] TEMP_DOCUMENT_5845.pdf (page=1)\n"
+            "[DA] 문서: TEMP_DOCUMENT_5845.pdf | p.1 "
+            "# Disease Analysis: Diabetes Type 2 Last Reviewed: 17 Nov, 2025\n\n"
+            "[3] TEMP_DOCUMENT_5845.pdf (page=108)\n"
+            "<!-- Start of picture text --> Citeline powers a full suite<br>of services.\n"
+            "Copyright 2026 Citeline\n"
+        ),
+        file_sources=("Datamonitor_DM-DiabetesType2-2026-02-23.pdf",),
+        errors=(),
+        file_source_items=(
+            {
+                "file_name": "Datamonitor_DM-DiabetesType2-2026-02-23.pdf",
+                "document_id": 117843,
+                "i_page": 8,
+                "section_title": "Source:",
+            },
+        ),
+        has_active_file=True,
+    )
+
+    answer = render_document_overview(build_document_source_result("pdf 설명해줘", uploaded))
+
+    assert "Datamonitor_DM-DiabetesType2-2026-02-23.pdf" in answer
+    assert "Disease Analysis: Diabetes Type 2" in answer
+    assert "document_id" not in answer
+    assert "TEMP_DOCUMENT" not in answer
+    assert "Start of picture text" not in answer
+    assert "Copyright" not in answer
+    assert "<br>" not in answer
+    assert "Source:" not in answer
+
+
 def test_p3_3_document_lane_uses_shared_evidence_and_inspection_contract() -> None:
     result = build_document_source_result("리바로 시장을 설명해줘", _uploaded())
     evidence_sets = build_evidence_sets(_plan(), (result,), observed_on=date(2026, 8, 14))

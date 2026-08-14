@@ -18,6 +18,15 @@ _CHUNK_HEADER_RE = re.compile(
 _SECTION_LABEL_RE = re.compile(r"^\s*섹션\s*:\s*(?P<section>.+?)\s*$", re.IGNORECASE)
 _COPYRIGHT_RE = re.compile(r"^\s*(?:©|copyright\b).*$", re.IGNORECASE)
 _PAGE_ONLY_RE = re.compile(r"^\s*(?:page\s*)?\d{1,4}\s*$", re.IGNORECASE)
+_DOCUMENT_ID_SUFFIX_RE = re.compile(r"\s*\(document_id\s*=\s*[^)]+\)\s*", re.IGNORECASE)
+_TEMP_DOCUMENT_RE = re.compile(r"^TEMP_DOCUMENT_[^.]+(?:\.[A-Za-z0-9]+)?$", re.IGNORECASE)
+_PARSER_DOCUMENT_PREFIX_RE = re.compile(
+    r"^\[[^]]+\]\s*문서\s*:\s*TEMP_DOCUMENT_[^|]+\|\s*p\.\d+\s*",
+    re.IGNORECASE,
+)
+_PICTURE_MARKER_RE = re.compile(r"<!--\s*(?:Start|End) of picture text\s*-->", re.IGNORECASE)
+_HTML_BREAK_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
+_MARKDOWN_HEADING_ONLY_RE = re.compile(r"^#{1,6}\s+[^.!?。]+$")
 _OVERVIEW_RE = re.compile(
     r"(?:pdf|문서|보고서|자료).{0,12}(?:설명|요약|개요|구성|핵심|결론)|"
     r"(?:설명|요약).{0,8}(?:pdf|문서|보고서|자료)",
@@ -90,7 +99,8 @@ def render_document_overview(result: SourceResult) -> str:
         if str(record.get("content") or "").strip()
     )
     dates = tuple(dict.fromkeys(match.group(1) for content in contents for match in _DATE_RE.finditer(content)))
-    overview = _bounded_sentence(contents[0], 500) if contents else "본문 요약을 확인하지 못했습니다."
+    overview_source = max(contents, key=_overview_content_score) if contents else ""
+    overview = _bounded_sentence(overview_source, 500) if overview_source else "본문 요약을 확인하지 못했습니다."
     key_points = "\n".join(f"- {_bounded_sentence(content, 600)}" for content in contents[:5])
     structure = "\n".join(
         f"- {section}" + (f" (p.{page})" if page is not None else "")
@@ -160,9 +170,14 @@ def _document_records(
     records: list[dict[str, Any]] = []
     for chunk in chunks:
         item = _source_item_for_chunk(chunk, source_items)
-        section = chunk["section"] or str(item.get("section_title") or "").strip()
+        section = _public_section(
+            chunk["section"] or str(item.get("section_title") or "").strip()
+        )
         page = chunk["page"] or _positive_int(item.get("i_page") or item.get("slide_number"))
-        name = chunk["document_name"] or str(item.get("file_name") or "업로드 문서")
+        name = _public_document_name(
+            chunk["document_name"],
+            fallback=str(item.get("file_name") or _first_document_name(source_items)),
+        )
         visible_lines = [
             line
             for line in chunk["lines"]
@@ -190,7 +205,7 @@ def _section_and_lines(raw_body: str) -> tuple[str, list[str]]:
     section = ""
     lines: list[str] = []
     for raw_line in raw_body.splitlines():
-        line = " ".join(raw_line.split())
+        line = _clean_display_line(raw_line)
         if not line:
             continue
         section_match = _SECTION_LABEL_RE.match(line)
@@ -201,6 +216,29 @@ def _section_and_lines(raw_body: str) -> tuple[str, list[str]]:
             continue
         lines.append(line)
     return section, lines
+
+
+def _clean_display_line(raw_line: str) -> str:
+    line = _PICTURE_MARKER_RE.sub(" ", raw_line)
+    line = _HTML_BREAK_RE.sub(" ", line)
+    line = _PARSER_DOCUMENT_PREFIX_RE.sub("", line)
+    return " ".join(line.split())
+
+
+def _public_document_name(value: Any, *, fallback: str) -> str:
+    name = _DOCUMENT_ID_SUFFIX_RE.sub(" ", str(value or "")).strip()
+    if not name or _TEMP_DOCUMENT_RE.fullmatch(name):
+        name = _DOCUMENT_ID_SUFFIX_RE.sub(" ", fallback).strip()
+    return name or "업로드 문서"
+
+
+def _public_section(value: Any) -> str:
+    section = " ".join(str(value or "").split()).strip(" :")
+    return "" if section.casefold() in {"source", "section"} else section
+
+
+def _overview_content_score(content: str) -> tuple[int, int]:
+    return (0 if _MARKDOWN_HEADING_ONLY_RE.fullmatch(content) else 1, len(content))
 
 
 def _source_item_for_chunk(
