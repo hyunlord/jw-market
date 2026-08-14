@@ -337,10 +337,35 @@ def record_refs(record: Mapping[str, Any]) -> tuple[SourceReference, ...]:
     return (
         SourceReference(
             url=url,
-            title=text(record.get("title") or record.get("brief_title")) or None,
+            title=_source_reference_title(record),
             published_at=text(record.get("published_at") or record.get("published_date")) or None,
         ),
     )
+
+
+def _source_reference_title(record: Mapping[str, Any]) -> str | None:
+    nct_id = text(record.get("nct_id") or record.get("nctId"))
+    patent_no = text(record.get("patent_no") or record.get("patent_number"))
+    title = text(
+        record.get("title")
+        or record.get("brief_title")
+        or record.get("invention_title")
+        or record.get("patent_title")
+    )
+    if nct_id:
+        parts = (nct_id, title, text(record.get("overall_status") or record.get("status")))
+    elif patent_no:
+        parts = (
+            patent_no,
+            title,
+            text(record.get("applicant") or record.get("owner") or record.get("assignee")),
+            text(record.get("expiry_date") or record.get("expiration_date")),
+            text(record.get("status")),
+        )
+    else:
+        parts = (text(record.get("publisher")), title)
+    bounded = tuple(part[:120].strip() for part in parts if part.strip())
+    return " · ".join(dict.fromkeys(bounded)) or None
 
 
 def dedupe_refs(groups: Iterable[Iterable[SourceReference]]) -> tuple[SourceReference, ...]:

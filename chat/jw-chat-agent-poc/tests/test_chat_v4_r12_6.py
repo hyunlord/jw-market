@@ -17,7 +17,6 @@ from jw_chat_agent_poc.service.v4.lossless_spine import compose_lossless_answer
 from jw_chat_agent_poc.service.v4.contracts import PlannerOutput, SourceResult, ToolQueries
 from jw_chat_agent_poc.service.v4.evidence_sets import build_evidence_sets
 from jw_chat_agent_poc.service.v4.inspection import build_inspection_detail
-from jw_chat_agent_poc.service.v4.deterministic_render import _auxiliary_node
 from jw_chat_agent_poc.service.v4.narrative_realization import (
     build_narrative_realization,
     measure_final_narrative_surface,
@@ -220,7 +219,7 @@ def test_a_composition_preserves_question_driven_sections_and_deduplicates() -> 
         mode="inject",
     )
 
-    assert composed.text.startswith("리바로젯 관련 임상시험이 확인됐습니다.")
+    assert composed.text.startswith("NCT00000001은 모집 중입니다.")
     assert "## 핵심 답" not in composed.text
     assert "## 근거와 맥락" not in composed.text
     assert "## FDA 요약" not in composed.text
@@ -252,24 +251,6 @@ def test_a_all_commentary_precedes_deterministic_coverage_and_tables() -> None:
     )
 
     assert composed.text.index("마지막 해설입니다.") < composed.text.index("## 조사 범위")
-
-
-def test_a_auxiliary_table_has_no_source_heading_or_internal_sequence() -> None:
-    record = EvidenceRecord(
-        evidence_id="fda:opaque-internal-id",
-        source="openfda",
-        result_kind="openfda",
-        payload={"status": "no_data"},
-    )
-
-    node = _auxiliary_node("openfda", (record,), news=False)
-
-    assert "## FDA 보조 자료" not in node.text
-    assert "근거 1" not in node.text
-    assert "opaque-internal-id" not in node.text
-    assert "| 출처 | 식별자 | 상태 | 요약 |" in node.text
-    assert "FDA" in node.text
-    assert "식별자 미제공" in node.text
 
 
 def test_a_t2_status_and_phase_aggregation_explains_the_distribution() -> None:

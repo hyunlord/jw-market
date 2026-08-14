@@ -70,6 +70,7 @@ def build_inspection_detail(
                 "status": _public_status(result, returned),
                 "elapsed_seconds": round(max(result.elapsed_ms, 0.0) / 1000, 3),
                 "request_parameters": _request_parameters(result),
+                "output": _inspection_output(raw_records, returned),
                 "counts": {
                     "returned": returned,
                     "parsed": parsed,
@@ -81,11 +82,17 @@ def build_inspection_detail(
                 "dropped_count": max(returned - parsed, 0),
                 "drop_reasons": _drop_reasons(
                     result,
+                    evidence,
                     returned,
                     parsed,
                     envelope,
                     rendered_count,
                     narrated,
+                    evidence_records,
+                    rendered_ids,
+                    narrated_ids,
+                    raw_records,
+                    answer_text,
                 ),
             }
         )
@@ -238,6 +245,37 @@ def _request_parameters(result: SourceResult) -> dict[str, Any]:
     return output
 
 
+def _inspection_output(
+    records: Sequence[Mapping[str, Any]],
+    returned: int,
+) -> dict[str, Any]:
+    return {
+        "returned": returned,
+        "records": [
+            {"identifiers": sorted(_display_identifiers(record)) or ["식별자 없음"]}
+            for record in records
+        ],
+    }
+
+
+def _display_identifiers(value: Any) -> set[str]:
+    identifiers: set[str] = set()
+    if isinstance(value, Mapping):
+        for key, nested in value.items():
+            if key in _PUBLIC_IDENTIFIER_KEYS and nested not in (None, ""):
+                if isinstance(nested, (list, tuple)):
+                    identifiers.update(str(item).strip() for item in nested if str(item).strip())
+                elif not isinstance(nested, Mapping):
+                    identifiers.add(str(nested).strip())
+            elif isinstance(nested, (Mapping, list, tuple)):
+                identifiers.update(_display_identifiers(nested))
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            identifiers.update(_display_identifiers(item))
+    identifiers.discard("")
+    return identifiers
+
+
 _PRIMARY_VALUE_KEYS = frozenset(
     {
         "ptntCnt",
@@ -307,19 +345,27 @@ def _public_status(result: SourceResult, returned: int) -> str:
 
 def _drop_reasons(
     result: SourceResult,
+    evidence: EvidenceSet | None,
     returned: int,
     parsed: int,
     envelope: int,
     rendered: int,
     narrated: int,
+    evidence_records: Sequence[Any],
+    rendered_ids: set[str],
+    narrated_ids: set[str],
+    raw_records: Sequence[Mapping[str, Any]],
+    answer_text: str,
 ) -> list[dict[str, Any]]:
     reasons: list[dict[str, Any]] = []
+    reasons.extend(_relevance_drop_reasons(evidence))
     if returned > parsed:
         reasons.append(
             {
                 "stage": "parsing",
                 "count": returned - parsed,
                 "reason": "검증 가능한 레코드로 변환되지 않음",
+                "record_ids": [],
             }
         )
     if parsed > envelope:
@@ -328,27 +374,132 @@ def _drop_reasons(
                 "stage": "envelope",
                 "count": parsed - envelope,
                 "reason": "동일 호출 내 원시 레코드가 근거 묶음으로 결합됨",
+                "record_ids": [],
             }
         )
     if envelope > rendered:
+        count = envelope - rendered
         reasons.append(
             {
                 "stage": "render",
-                "count": envelope - rendered,
+                "count": count,
                 "reason": "현재 답변 표면에 배치되지 않음",
+                "record_ids": _bounded_drop_identifiers(
+                    count,
+                    raw_records,
+                    answer_text,
+                    evidence_records,
+                    excluded_ids=rendered_ids,
+                ),
             }
         )
     if rendered > narrated:
+        count = rendered - narrated
         reasons.append(
             {
                 "stage": "narrative",
-                "count": rendered - narrated,
+                "count": count,
                 "reason": "표에는 있으나 서술에 직접 등장하지 않음",
+                "record_ids": _bounded_drop_identifiers(
+                    count,
+                    raw_records,
+                    answer_text,
+                    evidence_records,
+                    included_ids=rendered_ids,
+                    excluded_ids=narrated_ids,
+                ),
             }
         )
     if result.status != "ok" and result.notice:
-        reasons.append({"stage": "retrieval", "count": 0, "reason": _sanitize(result.notice)})
+        reasons.append(
+            {
+                "stage": "retrieval",
+                "count": 0,
+                "reason": _sanitize(result.notice),
+                "record_ids": [],
+            }
+        )
     return reasons
+
+
+def _bounded_drop_identifiers(
+    count: int,
+    raw_records: Sequence[Mapping[str, Any]],
+    answer_text: str,
+    evidence_records: Sequence[Any],
+    *,
+    included_ids: set[str] | None = None,
+    excluded_ids: set[str] | None = None,
+) -> list[str]:
+    identifiers = [
+        _drop_identifier(record)
+        for record in raw_records
+        if not _record_is_surfaced(record, answer_text)
+    ]
+    for record in evidence_records:
+        if included_ids is not None and record.evidence_id not in included_ids:
+            continue
+        if excluded_ids is not None and record.evidence_id in excluded_ids:
+            continue
+        identifiers.append(
+            sorted(_display_identifiers(record.payload))[0]
+            if _display_identifiers(record.payload)
+            else "식별자 없음"
+        )
+    bounded = identifiers[:count]
+    return [*bounded, *("식별자 없음" for _ in range(count - len(bounded)))]
+
+
+def _relevance_drop_reasons(evidence: EvidenceSet | None) -> list[dict[str, Any]]:
+    if evidence is None or not evidence.coverage.records_excluded_by_relevance:
+        return []
+    grouped: dict[str, list[str]] = {}
+    for manifest in evidence.query_manifest:
+        exclusions = manifest.get("relevance_exclusions")
+        if not isinstance(exclusions, list):
+            continue
+        for exclusion in exclusions:
+            if not isinstance(exclusion, Mapping):
+                continue
+            reason = _sanitize(str(exclusion.get("reason") or "질문 관련성 조건을 충족하지 않음"))
+            grouped.setdefault(reason, []).append(_drop_identifier(exclusion))
+    if grouped:
+        reasons = []
+        for reason, record_ids in sorted(grouped.items()):
+            unique_ids = sorted(dict.fromkeys(record_ids))
+            reasons.append({
+                "stage": "relevance",
+                "count": len(unique_ids),
+                "reason": reason,
+                "record_ids": unique_ids,
+            })
+        return reasons
+    return [
+        {
+            "stage": "relevance",
+            "count": evidence.coverage.records_excluded_by_relevance,
+            "reason": "질문 관련성 조건을 충족하지 않음",
+            "record_ids": ["식별자 없음"],
+        }
+    ]
+
+
+def _drop_identifier(record: Mapping[str, Any]) -> str:
+    for key in (
+        "nct_id",
+        "nctId",
+        "patent_no",
+        "patent_number",
+        "application_number",
+        "url",
+        "title",
+        "brief_title",
+        "brand",
+    ):
+        value = record.get(key)
+        if value not in (None, "") and not isinstance(value, (Mapping, list, tuple)):
+            return _sanitize(str(value))
+    return "식별자 없음"
 
 
 def _sanitize(value: str) -> str:

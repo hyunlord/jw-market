@@ -11,6 +11,7 @@ from jw_chat_agent_poc.service.v4.contracts import (
     ToolQueries,
 )
 from jw_chat_agent_poc.service.v4.executor import ParallelSourceExecutor
+from jw_chat_agent_poc.service.v4.inspection import build_inspection_detail
 from jw_chat_agent_poc.service.v4.lossless_spine import (
     build_evidence_sets,
     compose_lossless_answer,
@@ -234,9 +235,10 @@ def test_quota_empty_result_keeps_provider_quota_reason_in_trace() -> None:
 
 def test_policy_profile_keeps_primary_and_all_nonempty_auxiliary_sources_bound() -> None:
     plan = _plan("리바로젯 급여기준", answer_sources=("hira",))
+    results = (_policy_result(), _openfda_result(), _web_result())
     evidence_sets = build_evidence_sets(
         plan,
-        (_policy_result(), _openfda_result(), _web_result()),
+        results,
         observed_on=date(2026, 8, 13),
     )
     rendered = render_deterministic_facts(
@@ -258,19 +260,27 @@ def test_policy_profile_keeps_primary_and_all_nonempty_auxiliary_sources_bound()
         synthesis_trace={"status": "synthesized"},
         mode="inject",
     )
+    inspection = build_inspection_detail(
+        plan,
+        results,
+        evidence_sets,
+        rendered,
+        answer_text=composed.text,
+    )
 
     assert rendered.profile == "policy_document"
-    assert rendered_ids == evidence_ids
+    assert rendered_ids < evidence_ids
     assert rendered.coverage.records_rendered == len(rendered_ids)
     assert rendered.coverage.records_unique == len(evidence_ids)
     assert composed.trace["rendered_table_rows"] == composed.trace["lossless_records_rendered"]
-    assert composed.trace["lossless_records_rendered"] == len(evidence_ids)
+    assert composed.trace["lossless_records_rendered"] == len(rendered_ids)
     assert "## FDA 보조 자료" not in composed.text
     assert "## 웹 뉴스 보조 자료" not in composed.text
-    assert "| FDA |" in composed.text
-    assert "| 웹 뉴스 |" in composed.text
-    assert composed.text.index("## 고시 정보") < composed.text.index("| FDA |")
-    assert composed.text.index("| FDA |") < composed.text.index("| 웹 뉴스 |")
+    assert "| FDA |" not in composed.text
+    assert "| 웹 뉴스 |" not in composed.text
+    inspected_sources = {call["source_label"] for call in inspection["calls"]}
+    assert inspected_sources == {"건강보험심사평가원", "FDA", "웹 뉴스"}
+    assert all(call["output"]["returned"] >= 1 for call in inspection["calls"])
     assert re.search(
         r"(?i)(?:openfda_label_search|search_drug_labels|web_search|mcp_[a-z0-9_]+)",
         composed.text,

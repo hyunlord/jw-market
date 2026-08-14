@@ -20,12 +20,11 @@ from jw_chat_agent_poc.service.v4.narrative_realization import (
     build_narrative_realization,
     verify_recomputation,
 )
-from jw_chat_agent_poc.service.v4.narrative_values import record_identity
 from jw_chat_agent_poc.service.v4.render_clinical import (
     ACTIVE_CLINICAL_STATUSES,
     render_clinical,
 )
-from jw_chat_agent_poc.service.v4.render_common import table, text
+from jw_chat_agent_poc.service.v4.render_common import text
 from jw_chat_agent_poc.service.v4.render_patent import render_patent
 from jw_chat_agent_poc.service.v4.render_policy import render_policy
 from jw_chat_agent_poc.service.v4.retrieval_events import (
@@ -33,10 +32,7 @@ from jw_chat_agent_poc.service.v4.retrieval_events import (
     public_retrieval_notice,
     retrieval_event_from_result,
 )
-from jw_chat_agent_poc.service.v4.source_labels import (
-    patent_lane_label,
-    public_source_label,
-)
+from jw_chat_agent_poc.service.v4.source_labels import public_source_label
 from jw_chat_agent_poc.service.v4.source_tiers import source_tier
 
 
@@ -92,7 +88,11 @@ def render_deterministic_facts(
     nodes = _insert_auxiliary_nodes(plan, nodes, auxiliary_sets)
     rendered_sets = (selected, *auxiliary_sets)
     base_rendered_ids = tuple(
-        dict.fromkeys(record_id for node in nodes for record_id in node.record_ids)
+        dict.fromkeys(
+            record_id
+            for node in nodes
+            for record_id in node.record_ids
+        )
     )
     table_record_ids = tuple(
         dict.fromkeys(
@@ -228,92 +228,15 @@ def _insert_auxiliary_nodes(
         else:
             primary_fact_nodes.append(node)
 
-    auxiliary_fact_nodes: list[RenderNode] = []
-    auxiliary_news_nodes: list[RenderNode] = []
-    for evidence_set in sorted(
-        auxiliary_sets,
-        key=lambda item: (source_tier(plan, item.source), item.source),
-    ):
-        regular = tuple(
-            record for record in evidence_set.records if not _is_news_record(record)
-        )
-        news = tuple(record for record in evidence_set.records if _is_news_record(record))
-        if regular:
-            auxiliary_fact_nodes.append(
-                _auxiliary_node(evidence_set.source, regular, news=False)
-            )
-        if news:
-            auxiliary_news_nodes.append(
-                _auxiliary_node(evidence_set.source, news, news=True)
-            )
+    # Auxiliary records remain available to narrative realization and inspection.
+    # Their generic status cards are not useful answer content and expose lane mechanics.
+    del plan, auxiliary_sets
     return [
         *coverage_nodes,
         *primary_fact_nodes,
-        *auxiliary_fact_nodes,
         *primary_news_nodes,
-        *auxiliary_news_nodes,
         *limit_nodes,
     ]
-
-
-def _auxiliary_node(
-    source: str,
-    records: Sequence[EvidenceRecord],
-    *,
-    news: bool,
-) -> RenderNode:
-    label = (
-        patent_lane_label("news")
-        if source == "patent" and news
-        else public_source_label(source)
-    )
-    rows = tuple(
-        (
-            label,
-            record_identity(record, index) or "식별자 미제공",
-            _record_status(record.payload),
-            _record_summary(record.payload),
-        )
-        for index, record in enumerate(records, start=1)
-    )
-    return RenderNode(
-        block_id=f"aux:{source}:{'news' if news else 'records'}",
-        record_ids=tuple(record.evidence_id for record in records),
-        surface_fields=("source", "identity", "status", "summary"),
-        text=table(("출처", "식별자", "상태", "요약"), rows),
-    )
-
-
-def _is_news_record(record: EvidenceRecord) -> bool:
-    return record.source == "web" or record.result_kind == "web_document"
-
-
-def _record_status(payload: Mapping[str, Any]) -> str:
-    status = text(payload.get("status")).casefold()
-    if status in {"no_data", "empty"}:
-        return "결과 없음"
-    if status == "timeout":
-        return "시간 초과"
-    if status in {"error", "unsupported"}:
-        return "상류 오류"
-    return "수신"
-
-
-def _record_summary(payload: Mapping[str, Any]) -> str:
-    render_data = payload.get("render_data")
-    candidates: list[Mapping[str, Any]] = [payload]
-    if isinstance(render_data, Mapping):
-        candidates.append(render_data)
-        items = render_data.get("items")
-        if isinstance(items, list):
-            candidates.extend(item for item in items if isinstance(item, Mapping))
-    for candidate in candidates:
-        for key in ("title", "brief_title", "product_name", "label"):
-            value = text(candidate.get(key))
-            if value:
-                return value
-    status = _record_status(payload)
-    return "상세 근거 수신" if status == "수신" else status
 
 
 def _source_refs(

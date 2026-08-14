@@ -182,10 +182,12 @@ def compose_lossless_answer(
             requested_fields_mode=requested_fields_mode,
             request_notice=rendered.request_notice if inject_request_notice else None,
         )
+    text, numeric_separator_repairs = _repair_numeric_separators(text)
     text, public_source_rewrites = normalize_public_source_surface(text)
     text, duplicate_leading_sentences_removed = _deduplicate_sentences(text)
     trace["answer_mutation"] = True
     trace["public_source_surface"] = {"rewritten": public_source_rewrites}
+    trace["numeric_separator_repairs"] = numeric_separator_repairs
     narrative_character_count = _narrative_character_count(text)
     narrative_character_floor = max(1500, rendered.coverage.records_rendered * 80)
     narrative_minimum_required = rendered.coverage.records_rendered > 0
@@ -293,11 +295,7 @@ def _assemble_injected_answer(
             )
         )
 
-    primary_narrative = (
-        [*fact_narratives, *commentary_blocks]
-        if rendered.profile == "patent_portfolio"
-        else [*commentary_blocks, *fact_narratives]
-    )
+    primary_narrative = [*fact_narratives, *commentary_blocks]
     blocks = [
         *primary_narrative,
         *fact_coverage,
@@ -515,6 +513,16 @@ def _deduplicate_sentences(text: str) -> tuple[str, int]:
         parts.append(line[cursor:])
         output.append("".join(parts).strip())
     return "\n".join(output).strip(), removed
+
+
+def _repair_numeric_separators(text: str) -> tuple[str, int]:
+    repaired, thousands = re.subn(
+        r"(?<=\d)\.\s+(?=\d{3}\s*(?:만|천|백)?\s*(?:Rx|건|명|원|억원))",
+        ",",
+        text,
+    )
+    repaired, decimals = re.subn(r"(?<=\d)\.\s+(?=\d{3}\s*%)", ".", repaired)
+    return repaired, thousands + decimals
 
 
 def _narrative_character_count(text: str) -> int:

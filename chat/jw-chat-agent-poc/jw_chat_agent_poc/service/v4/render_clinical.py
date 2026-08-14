@@ -328,9 +328,7 @@ def _is_generic_study(payload: Mapping[str, object]) -> bool:
 
 
 def _nct_link(payload: Mapping[str, object]) -> str:
-    nct_id = display(payload.get("nct_id"))
-    url = text(payload.get("url"))
-    return f"[{nct_id}]({url})" if url else nct_id
+    return display(payload.get("nct_id"))
 
 
 def _has_value(value: object) -> bool:
