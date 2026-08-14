@@ -222,6 +222,7 @@ class V4Runtime:
         conversation_id: str | None,
         turns: Sequence[ConversationTurn],
         progress_callback: ProgressCallback | None = None,
+        supplemental_results: Sequence[SourceResult] = (),
     ) -> V4Answer:
         started = time.monotonic()
         progress_events: list[dict[str, Any]] = []
@@ -550,6 +551,7 @@ class V4Runtime:
             *linked_results,
             *gap_execution.results,
             *absence_execution.results,
+            *supplemental_results,
         )
         for source in SOURCE_NAMES:
             missing_results = max(

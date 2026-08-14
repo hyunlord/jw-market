@@ -54,6 +54,7 @@ _SOURCE_SCOPE = {
     "clinicaltrials": "GLOBAL",
     "web": "GLOBAL",
     "patent": "GLOBAL",
+    "document": "KR",
 }
 _FOOTNOTES = {
     "hira": "HIRA 환자수는 주상병 기준 청구 실인원이며 유병률과 다릅니다.",
@@ -509,6 +510,15 @@ def _synthesis_messages(
             "web_context_uses_reported_language": True,
             "separate_official_and_reported_claims": True,
             "do_not_replace_absent_document_with_other_document": True,
+        }
+    if any(result.source == "document" for result in external):
+        prompt["uploaded_document_contract"] = {
+            "same_evidence_fusion": True,
+            "compare_with_other_sources_in_the_same_paragraph": True,
+            "per_source_paragraph_dump_forbidden": True,
+            "raw_chunk_dump_forbidden": True,
+            "cite_document_name_section_and_page": True,
+            "official_source_wins_on_conflict": True,
         }
     reexamination_contract = _reexamination_prompt_contract(
         plan.resolved_question,
@@ -1259,6 +1269,7 @@ SOURCE_ORDER = {
     "clinicaltrials": 4,
     "web": 5,
     "patent": 6,
+    "document": 7,
 }
 
 

@@ -14,6 +14,7 @@ SourceName = Literal[
     "clinicaltrials",
     "web",
     "patent",
+    "document",
 ]
 AbsenceStatus = Literal[
     "doc_not_found",

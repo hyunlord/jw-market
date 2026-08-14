@@ -39,7 +39,9 @@ def build_evidence_sets(
 ) -> tuple[EvidenceSet, ...]:
     grouped = {
         source: tuple(result for result in results if result.source == source)
-        for source in ("mart", "nedrug", "hira", "openfda", "clinicaltrials", "web", "patent")
+        for source in (
+            "mart", "nedrug", "hira", "openfda", "clinicaltrials", "web", "patent", "document"
+        )
     }
     built: list[EvidenceSet] = []
     for source, source_results in grouped.items():

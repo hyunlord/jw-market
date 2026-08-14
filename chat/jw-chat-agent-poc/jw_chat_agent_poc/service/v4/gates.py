@@ -1892,6 +1892,7 @@ def _source_reference_type(result: SourceResult) -> str:
         "clinicaltrials": "임상 검색",
         "web": "웹 검색",
         "patent": "특허 검색",
+        "document": "업로드 문서 검색",
     }[result.source]
 
 

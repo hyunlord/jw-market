@@ -77,7 +77,17 @@ def build_inspection_detail(
                     "envelope": envelope,
                     "rendered": rendered_count,
                     "narrated": narrated,
+                    **(
+                        {"used": _used_chunk_count(result.payload)}
+                        if result.source == "document"
+                        else {}
+                    ),
                 },
+                **(
+                    {"document_names": _document_names(result.payload)}
+                    if result.source == "document"
+                    else {}
+                ),
                 "unused_count": max(returned - narrated, 0),
                 "dropped_count": max(returned - parsed, 0),
                 "drop_reasons": _drop_reasons(
@@ -105,6 +115,23 @@ def build_inspection_detail(
         ),
         "calls": calls,
     }
+
+
+def _used_chunk_count(payload: Any) -> int:
+    if isinstance(payload, Mapping):
+        value = payload.get("used_chunk_count")
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    return 0
+
+
+def _document_names(payload: Any) -> list[str]:
+    if not isinstance(payload, Mapping):
+        return []
+    values = payload.get("document_names")
+    if not isinstance(values, (list, tuple)):
+        return []
+    return list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
 
 
 def _returned_count(payload: Any) -> int:
@@ -199,6 +226,9 @@ _PUBLIC_IDENTIFIER_KEYS = frozenset(
         "sickNm",
         "title",
         "brief_title",
+        "record_id",
+        "document_name",
+        "file_name",
     }
 )
 

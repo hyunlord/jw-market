@@ -128,6 +128,16 @@ def normalize_generic_record(source: str, raw_record: Mapping[str, Any]) -> dict
                 "summary_truncated": summary_truncated,
             }
         )
+    elif source == "document":
+        content, content_truncated = _bounded_text(text(record.get("content")), limit=4000)
+        record.update(
+            {
+                "document_name": text(record.get("document_name")) or "업로드 문서",
+                "section": text(record.get("section")) or None,
+                "content": content or None,
+                "content_truncated": content_truncated,
+            }
+        )
     elif source == "openfda":
         openfda = mapping(record.get("openfda"))
         label_text = _first_text(
