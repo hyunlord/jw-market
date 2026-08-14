@@ -375,3 +375,37 @@ def test_d3_numeric_separator_is_not_mistaken_for_sentence_boundary() -> None:
     assert "9,000만 Rx" in composed.text
     assert "5.395%" in composed.text
     assert "9. 000" not in composed.text
+
+
+def test_d3_sanitizes_duplicate_market_commentary_without_fact_injection() -> None:
+    rendered = DeterministicRender(profile="market_analysis")
+    repeated = (
+        "요청하신 2026-08 데이터를 조회할 수 없습니다. "
+        "해당하는 시계열 데이터가 없습니다. "
+        "다른 기간 값으로 대체하지 않습니다."
+    )
+
+    composed = compose_lossless_answer(
+        rendered,
+        f"{repeated}\n\n{repeated} [출처: 내부 데이터마트]",
+        synthesis_trace={},
+        mode="inject",
+    )
+
+    assert composed.text.count("요청하신 2026-08 데이터를 조회할 수 없습니다.") == 1
+    assert composed.trace["duplicate_leading_sentences_removed"] >= 1
+
+
+def test_d3_keeps_shadow_commentary_byte_identical() -> None:
+    rendered = DeterministicRender(profile="market_analysis")
+    commentary = "같은 문장입니다.\n\n같은 문장입니다."
+
+    composed = compose_lossless_answer(
+        rendered,
+        commentary,
+        synthesis_trace={},
+        mode="shadow",
+    )
+
+    assert composed.text == commentary
+    assert composed.answer_mutated is False

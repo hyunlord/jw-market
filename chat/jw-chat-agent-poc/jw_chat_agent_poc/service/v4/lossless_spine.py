@@ -164,6 +164,23 @@ def compose_lossless_answer(
     )
     inject_source_notices = bool(mode == "inject" and rendered.source_notices)
     if not inject_facts and not inject_request_notice and not inject_source_notices:
+        if mode == "inject":
+            text, numeric_separator_repairs = _repair_numeric_separators(commentary)
+            text, public_source_rewrites = normalize_public_source_surface(text)
+            text, duplicate_leading_sentences_removed = _deduplicate_sentences(text)
+            mutated = text.strip() != commentary.strip()
+            trace["answer_mutation"] = mutated
+            trace["public_source_surface"] = {"rewritten": public_source_rewrites}
+            trace["numeric_separator_repairs"] = numeric_separator_repairs
+            trace["duplicate_leading_sentences_removed"] = (
+                duplicate_leading_sentences_removed
+            )
+            return CompositionResult(
+                text=text.strip(),
+                answer_mutated=mutated,
+                fallback_detail_retention_rate=retention,
+                trace=trace,
+            )
         return CompositionResult(
             text=commentary,
             answer_mutated=False,
@@ -503,7 +520,12 @@ def _deduplicate_sentences(text: str) -> tuple[str, int]:
         for match in sentence_re.finditer(line):
             parts.append(line[cursor : match.start()])
             sentence = match.group(0).strip()
-            key = re.sub(r"\s+", " ", sentence).casefold()
+            sentence_without_source = re.sub(
+                r"\s*\[[^\n]+\]\s*$",
+                "",
+                sentence,
+            )
+            key = re.sub(r"\s+", " ", sentence_without_source).casefold()
             if key in seen:
                 removed += 1
             else:
