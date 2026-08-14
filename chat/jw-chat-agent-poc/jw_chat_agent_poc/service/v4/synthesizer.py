@@ -14,6 +14,7 @@ from jw_chat_agent_poc.service.conversation import ConversationTurn
 from jw_chat_agent_poc.service.v4.comparison_facts import build_comparison_facts
 from jw_chat_agent_poc.service.v4.contracts import PlannerOutput, SourceResult
 from jw_chat_agent_poc.service.v4.gates import (
+    hira_row_axis_label,
     inspect_requested_hira_surface,
     render_mart_dimension_facts,
 )
@@ -2103,7 +2104,7 @@ def _hira_patient_facts(payload: Any) -> tuple[str, ...]:
             row_year = year or str(row.get("year") or "")
             if not row_year or row.get("ptntCnt") in (None, ""):
                 continue
-            care_type = str(row.get("inpatOpat") or "환자")
+            care_type = hira_row_axis_label(row)
             values: list[str] = []
             for field, label, unit in public_fields:
                 raw_value = row.get(field)

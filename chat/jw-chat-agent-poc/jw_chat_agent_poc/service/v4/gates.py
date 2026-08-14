@@ -197,6 +197,16 @@ class _HiraSurfaceFact:
     display: str
 
 
+def hira_row_axis_label(row: Mapping[str, Any]) -> str:
+    """Return the public labels that identify one HIRA dimensional row."""
+
+    labels = [
+        str(row.get(field) or "").strip()
+        for field in ("inpatOpat", "sex", "age", "grade", "lcName")
+    ]
+    return " · ".join(dict.fromkeys(label for label in labels if label)) or "환자"
+
+
 def apply_v4_gates(
     question: str,
     answer: str,
@@ -1498,7 +1508,7 @@ def _requested_hira_facts(
                 if not isinstance(row, dict):
                     continue
                 year = request_year or str(row.get("year") or "").strip()
-                care_type = str(row.get("inpatOpat") or "환자").strip()
+                care_type = hira_row_axis_label(row)
                 if not year:
                     continue
                 if requested_years and year not in requested_years:
@@ -1623,6 +1633,10 @@ def _invalid_hira_patient_sentences(
             if care_types:
                 candidates = [
                     fact for fact in candidates if fact.care_type == care_types[-1]
+                ]
+            elif any(fact.care_type != "환자" for fact in candidates):
+                candidates = [
+                    fact for fact in candidates if fact.care_type in prefix
                 ]
             rendered_value = _normalize_number(match.group("value"))
             if rendered_value not in {fact.value for fact in candidates}:

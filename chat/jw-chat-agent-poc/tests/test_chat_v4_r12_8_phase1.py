@@ -10,6 +10,7 @@ from jw_chat_agent_poc.service.v4.contracts import (
     ToolQueries,
 )
 from jw_chat_agent_poc.service.v4.expansion import expand_parameter_axes
+from jw_chat_agent_poc.service.v4.gates import apply_v4_gates
 from jw_chat_agent_poc.service.v4.query_scope import (
     DEFAULT_ENTITY_LIMIT,
     HARD_ENTITY_LIMIT,
@@ -32,6 +33,7 @@ from jw_chat_agent_poc.service.v4.runtime import (
     _session_inheritance_notice,
 )
 from jw_chat_agent_poc.service.v4.session_state import SessionState
+from jw_chat_agent_poc.service.v4.synthesizer import _hira_patient_facts
 
 
 def _plan(
@@ -228,6 +230,67 @@ def test_q5_axis_only_patient_followup_keeps_only_hira_source() -> None:
         for source, queries in bound.tool_queries.items()
         if source != "hira"
     )
+
+
+def test_q4_gender_age_rows_keep_both_axis_labels_in_prompt_facts() -> None:
+    payload = {
+        "calls": [
+            {
+                "render_data": {
+                    "request": {"sickCd": "D50", "year": "2023"},
+                    "items": [
+                        {
+                            "sex": "남",
+                            "age": "10~19세",
+                            "sickCd": "D50",
+                            "sickNm": "철결핍빈혈",
+                            "ptntCnt": "1601",
+                        }
+                    ],
+                }
+            }
+        ]
+    }
+
+    facts = _hira_patient_facts(payload)
+
+    assert "남 · 10~19세 환자수는 1,601명" in facts[0]
+    assert "환자 환자수" not in facts[0]
+
+
+def test_q4_gender_age_surface_repair_rejects_unlabeled_patient_values() -> None:
+    result = SourceResult(
+        source="hira",
+        query="D50 성별 연령별 환자수 2023년",
+        status="ok",
+        payload={
+            "calls": [
+                {
+                    "render_data": {
+                        "request": {"sickCd": "D50", "year": "2023"},
+                        "items": [
+                            {
+                                "sex": "남",
+                                "age": "10~19세",
+                                "ptntCnt": "1601",
+                                "units": {"ptntCnt": "명"},
+                            }
+                        ],
+                    }
+                }
+            ]
+        },
+    )
+
+    gated = apply_v4_gates(
+        "23년 상병코드 D50의 성별/연령 10세 구간별 환자수를 비교해줘",
+        "2023년 D50 환자 환자수 1,601명으로 확인되었습니다.",
+        (result,),
+    )
+
+    assert "남 · 10~19세 환자수 1,601명" in gated.text
+    assert "환자 환자수" not in gated.text
+    assert gated.trace["requested_hira_surface"]["missing_after_repair"] == []
 
 
 def test_q1_session_state_remembers_planned_kcd_codes_and_interpreted_period() -> None:
