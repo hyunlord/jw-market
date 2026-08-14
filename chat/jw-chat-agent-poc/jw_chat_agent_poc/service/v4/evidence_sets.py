@@ -74,6 +74,7 @@ def _clinical_set(results: Sequence[SourceResult], observed_on: date) -> Evidenc
     pagination_complete = True
     partial_reasons: list[str] = []
     query_spec: list[str] = []
+    counted_query_ids: set[str] = set()
 
     for result in results:
         query_spec.append(result.query)
@@ -88,8 +89,12 @@ def _clinical_set(results: Sequence[SourceResult], observed_on: date) -> Evidenc
             )
         for call in source_calls:
             records, manifest, coverage = clinical_call_records(call, result.query)
-            if manifest:
+            query_id = text(manifest.get("query_id"))
+            duplicate_query = bool(query_id and query_id in counted_query_ids)
+            if manifest and not duplicate_query:
                 manifests.append(manifest)
+                if query_id:
+                    counted_query_ids.add(query_id)
             searches.append({"query_manifest": manifest, "records": records})
             unique_before_relevance_ids.update(
                 text(record.get("nct_id")).upper()
@@ -101,6 +106,8 @@ def _clinical_set(results: Sequence[SourceResult], observed_on: date) -> Evidenc
                 for exclusion in mapping_list(manifest.get("relevance_exclusions"))
                 if text(exclusion.get("nct_id"))
             )
+            if duplicate_query:
+                continue
             call_total = optional_int(coverage.get("total_reported"))
             if call_total is None:
                 all_totals_known = False

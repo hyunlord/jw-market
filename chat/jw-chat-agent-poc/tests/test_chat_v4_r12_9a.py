@@ -12,6 +12,7 @@ from jw_chat_agent_poc.service.v4.clinical_query_policy import (
 )
 from jw_chat_agent_poc.service.v4.contracts import PlannerOutput, SourceResult, ToolQueries
 from jw_chat_agent_poc.service.v4.deterministic_render import render_deterministic_facts
+from jw_chat_agent_poc.service.v4 import evidence_sets as v4_evidence_sets
 from jw_chat_agent_poc.service.v4.inspection import build_inspection_detail
 from jw_chat_agent_poc.service.v4.lossless_contracts import (
     CoverageLedger,
@@ -206,6 +207,52 @@ def test_r129a_ct_relevance_is_display_status_not_record_deletion() -> None:
         "직접 관련 여부 미확인",
     ]
     assert "missing_required_ingredient_token" not in str(result.records)
+
+
+def test_r129a_duplicate_ct_query_id_does_not_double_coverage_counts() -> None:
+    record = {
+        "nct_id": "NCT00000001",
+        "brief_title": "Pitavastatin Ezetimibe Bioequivalence",
+        "relevance_status": "직접 관련 여부 미확인",
+    }
+    manifest = {
+        "query_id": "ctq:stable",
+        "records_received": 23,
+        "records_unique": 23,
+        "records_relevant": 23,
+        "records_direct_relevance_confirmed": 14,
+        "records_direct_relevance_unconfirmed": 9,
+        "records_excluded_by_relevance": 0,
+    }
+    call = {
+        "tool": "clinicaltrials_v2_lossless_search",
+        "status": "live",
+        "render_data": {
+            "payload": {"studies": [record]},
+            "query_manifest": manifest,
+            "coverage": {
+                "total_reported": 23,
+                "records_received": 23,
+                "records_unique": 23,
+                "records_relevant": 23,
+                "records_excluded_by_relevance": 0,
+                "pagination_complete": True,
+            },
+        },
+    }
+    result = SourceResult(
+        source="clinicaltrials",
+        query="리바로젯 제네릭 임상현황",
+        status="ok",
+        payload={"calls": [call]},
+    )
+    clinical = v4_evidence_sets._clinical_set((result, result), date(2026, 8, 15))
+
+    assert clinical.coverage.total_reported == 23
+    assert clinical.coverage.records_received == 23
+    assert len(clinical.query_manifest) == 1
+    assert clinical.query_manifest[0]["records_direct_relevance_confirmed"] == 14
+    assert clinical.query_manifest[0]["records_direct_relevance_unconfirmed"] == 9
 
 
 def test_r129a_nested_empty_values_and_known_enums_are_publicly_sanitized() -> None:
