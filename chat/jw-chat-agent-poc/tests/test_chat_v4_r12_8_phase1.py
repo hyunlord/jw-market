@@ -206,6 +206,30 @@ def test_q5_axis_only_followup_inherits_full_entity_set_and_period() -> None:
     )
 
 
+def test_q5_axis_only_patient_followup_keeps_only_hira_source() -> None:
+    state = SessionState(
+        canonical_entities=("E10", "E11", "E12", "E13", "E14"),
+        primary_entity="E10",
+        referenced_entity_set=("E10", "E11", "E12", "E13", "E14"),
+        record_type="patient_count",
+        time_window=("2022", "2023", "2024", "2025"),
+    )
+
+    bound = _bind_session_state_contract(
+        _plan("연령별로 다시 알려줘"),
+        "연령별로 다시 알려줘",
+        state,
+    )
+
+    assert bound.answer_sources == ("hira",)
+    assert bound.tool_queries.hira
+    assert all(
+        not queries
+        for source, queries in bound.tool_queries.items()
+        if source != "hira"
+    )
+
+
 def test_q1_session_state_remembers_planned_kcd_codes_and_interpreted_period() -> None:
     plan = _plan(
         "당뇨병 환자수 알려줘",

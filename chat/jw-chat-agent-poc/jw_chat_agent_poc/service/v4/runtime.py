@@ -1766,6 +1766,10 @@ _RECORD_TYPE_QUERY_LABELS = {
     "safety": "안전성",
     "label": "허가사항",
 }
+_AXIS_FOLLOWUP_SOURCE_BY_RECORD_TYPE = {
+    "patient_count": "hira",
+    "market_metric": "mart",
+}
 _STATUS_QUERY_LABELS = {
     "active": "진행 중",
     "completed": "완료",
@@ -1794,18 +1798,30 @@ def _bind_session_state_contract(
     if not constraints:
         return plan
     resolved_question = _append_missing_constraints(plan.resolved_question, constraints)
+    axis_source = (
+        _AXIS_FOLLOWUP_SOURCE_BY_RECORD_TYPE.get(state.record_type or "")
+        if _axis_followup_label(question) is not None
+        else None
+    )
     updates = {
-        source: tuple(
-            _append_missing_constraints(query, constraints)
-            for query in source_queries
+        source: (
+            tuple(
+                _append_missing_constraints(query, constraints)
+                for query in source_queries
+            )
+            if axis_source is None or source == axis_source
+            else ()
         )
         for source, source_queries in plan.tool_queries.items()
     }
+    plan_updates: dict[str, Any] = {
+        "resolved_question": resolved_question,
+        "tool_queries": plan.tool_queries.model_copy(update=updates),
+    }
+    if axis_source is not None:
+        plan_updates["answer_sources"] = (axis_source,)
     return plan.model_copy(
-        update={
-            "resolved_question": resolved_question,
-            "tool_queries": plan.tool_queries.model_copy(update=updates),
-        }
+        update=plan_updates
     )
 
 
