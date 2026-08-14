@@ -51,6 +51,13 @@ class RetrievalEvent(BaseModel):
 
 
 def classify_retrieval_status(result: SourceResult) -> RetrievalStatus:
+    failure_reason = str(result.failure_reason or "")
+    if failure_reason in {"RATE_LIMITED", "QUOTA_EXCEEDED"}:
+        return "quota"
+    if failure_reason == "TIMEOUT":
+        return "timeout"
+    if failure_reason in {"AUTH_FAILED", "UPSTREAM_5XX", "NETWORK"}:
+        return "upstream"
     notice = str(result.notice or "")
     if result.status == "empty" and notice:
         signaled = classify_failure_signals((result.status,), notice)
@@ -143,6 +150,7 @@ def retrieval_event_from_result(
         else None
     )
     status = classify_retrieval_status(result)
+    reason_code = str(result.failure_reason or status)
     stable_input = "\x1f".join(
         (
             result.source,
@@ -161,7 +169,7 @@ def retrieval_event_from_result(
         deadline_at=deadline_at,
         completed_at=completed,
         received_count=_received_count(result.payload) if status == "ok" else 0,
-        reason_code=status,
+        reason_code=reason_code,
         exposure_layer=_exposure_layer(status),
         public_notice=(
             str(result.notice).strip()
@@ -185,11 +193,24 @@ def public_retrieval_notice(
             "조회가 완료되지 않아 확인할 수 없습니다."
         )
     if event.status == "quota":
+        if event.tool == "web":
+            return (
+                f"{prefix or '웹 검색 '}사용량 한도 초과로 "
+                "외부 조회가 실패해 확인할 수 없습니다."
+            )
+        if event.tool in {"nedrug", "patent"}:
+            return "식품의약품안전처 조회 한도 초과로 확인할 수 없습니다."
         return (
             f"{prefix}제공자 사용량 한도 초과로 외부 조회가 실패해 "
             "확인할 수 없습니다."
         )
     if event.status == "upstream":
+        if event.reason_code == "AUTH_FAILED":
+            return f"{prefix}외부 조회 인증에 실패해 확인할 수 없습니다."
+        if event.reason_code == "UPSTREAM_5XX":
+            return f"{prefix}상류 서비스 오류로 조회에 실패해 확인할 수 없습니다."
+        if event.reason_code == "NETWORK":
+            return f"{prefix}외부 서비스 연결에 실패해 확인할 수 없습니다."
         return f"{prefix}외부 조회가 실패해 확인할 수 없습니다."
     if event.status == "parse_error":
         return f"{prefix}응답은 받았으나 검증 가능한 레코드로 변환하지 못했습니다."

@@ -93,6 +93,9 @@ def build_inspection_detail(
         "schema": "r12.5.inspect.v1",
         "question": _sanitize(plan.resolved_question),
         "expansion": _sanitize_value(dict(expansion or {})),
+        "query_scope": _sanitize_value(
+            plan.query_scope.model_dump(mode="json") if plan.query_scope else {}
+        ),
         "calls": calls,
     }
 

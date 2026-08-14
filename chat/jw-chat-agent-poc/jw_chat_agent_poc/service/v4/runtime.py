@@ -83,6 +83,7 @@ from jw_chat_agent_poc.service.v4.source_tiers import (
 )
 from jw_chat_agent_poc.service.v4.surface_binding import sanitize_bound_surface
 from jw_chat_agent_poc.service.v4.time_context import current_kst_date
+from jw_chat_agent_poc.service.v4.query_scope import apply_source_call_cap
 
 
 _PUBLIC_PROGRESS_SOURCE = {
@@ -98,6 +99,83 @@ _GROUNDING_EXECUTOR = ThreadPoolExecutor(
 _GROUNDING_SLOTS = threading.BoundedSemaphore(value=2)
 ProgressCallback = Callable[[dict[str, Any]], None]
 _PROGRESS_URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
+
+
+def _query_scope_notice(plan: Any) -> str | None:
+    scope = getattr(plan, "query_scope", None)
+    if scope is None:
+        return None
+    labels = {
+        "mart": "시장 데이터",
+        "nedrug": "의약품 정보",
+        "hira": "HIRA",
+        "openfda": "FDA",
+        "clinicaltrials": "임상시험",
+        "web": "웹 검색",
+        "patent": "특허",
+    }
+    notices: list[str] = []
+    for source, omitted in scope.omitted_queries.items():
+        omitted_count = len(omitted)
+        if omitted_count == 0:
+            continue
+        requested = int(scope.requested_calls.get(source, 0))
+        executed = int(scope.executed_calls.get(source, 0))
+        notices.append(
+            f"{labels.get(source, source)} 조회는 요청 {requested}건 중 "
+            f"{executed}건을 실행했습니다. 나머지 {omitted_count}건은 "
+            "이번 답변의 조회 상한으로 제외했습니다."
+        )
+        preview = tuple(str(query) for query in omitted[:5])
+        if preview:
+            remainder = omitted_count - len(preview)
+            suffix = f" · 외 {remainder}건" if remainder > 0 else ""
+            notices.append(f"제외 질의: {' · '.join(preview)}{suffix}")
+    return "\n".join(notices) if notices else None
+
+
+_AXIS_FOLLOWUP_LABELS = {
+    "연령": "연령별",
+    "성별": "성별",
+    "기관종별": "기관종별",
+    "요양기관종별": "요양기관종별",
+    "월별": "월별",
+    "연도별": "연도별",
+    "입원/외래": "입원/외래별",
+    "입원 외래": "입원/외래별",
+}
+
+
+def _axis_followup_label(question: str) -> str | None:
+    normalized = " ".join(question.split())
+    for marker, label in _AXIS_FOLLOWUP_LABELS.items():
+        if marker in normalized:
+            return label
+    return None
+
+
+def _session_inheritance_notice(
+    question: str,
+    state: SessionState | None,
+) -> str | None:
+    axis_label = _axis_followup_label(question)
+    if state is None or axis_label is None or not _should_inherit_session_contract(question, state):
+        return None
+    entities = tuple(
+        dict.fromkeys(
+            (
+                *state.referenced_entity_set,
+                *state.canonical_entities,
+                state.primary_entity or "",
+            )
+        )
+    )
+    inherited = tuple(value for value in entities if value) + tuple(
+        _public_period_label(value) for value in state.time_window if value
+    )
+    if not inherited:
+        return None
+    return f"앞선 질문의 {' · '.join(inherited)} 기준으로 {axis_label}을 조회했습니다."
 
 
 def _release_grounding_slot(_future: Future[tuple[CanonicalFact, ...]]) -> None:
@@ -195,7 +273,10 @@ class V4Runtime:
             question,
             observed_on=current_kst_date(),
         )
-        plan = parameter_expansion.plan
+        plan = apply_source_call_cap(parameter_expansion.plan)
+        parameter_expansion.trace["query_scope"] = (
+            plan.query_scope.model_dump(mode="json") if plan.query_scope else None
+        )
         clinical_query_anchor = _deterministic_clinical_query_anchor(
             question,
             session_state,
@@ -204,6 +285,10 @@ class V4Runtime:
             self._executor,
             plan,
             clinical_query_anchor=clinical_query_anchor,
+        )
+        plan = plan.model_copy(update={"query_scope": execution_plan.query_scope})
+        parameter_expansion.trace["query_scope"] = (
+            plan.query_scope.model_dump(mode="json") if plan.query_scope else None
         )
         _emit_progress(
             progress_callback,
@@ -546,6 +631,25 @@ class V4Runtime:
                 trace={},
             )
         gated = apply_v4_gates(plan.resolved_question, synthesis.text, results)
+        request_context_notices = tuple(
+            notice
+            for notice in (
+                _session_inheritance_notice(question, session_state),
+                _query_scope_notice(plan),
+            )
+            if notice
+        )
+        if request_context_notices:
+            existing_notice = str(deterministic_render.request_notice or "").strip()
+            deterministic_render = deterministic_render.model_copy(
+                update={
+                    "request_notice": "\n".join(
+                        notice
+                        for notice in (existing_notice, *request_context_notices)
+                        if notice
+                    )
+                }
+            )
         composition = compose_lossless_answer(
             deterministic_render,
             gated.text,
@@ -744,6 +848,8 @@ class V4Runtime:
                     "elapsed_ms": result.elapsed_ms,
                     "cache_hit": result.cache_hit,
                     "notice": result.notice,
+                    "failure_reason": result.failure_reason,
+                    "failure_detail": result.failure_detail,
                     "citations": [
                         citation.model_dump(mode="json")
                         for citation in result.citations
@@ -1321,9 +1427,11 @@ def _execution_plan(
     fanned_plan = fan_out_tier_zero_queries(plan)
     prepare_plan = getattr(executor, "prepare_plan", None)
     if not callable(prepare_plan):
-        return fanned_plan, _clinical_normalization_trace(plan, fanned_plan)
+        executable = apply_source_call_cap(fanned_plan)
+        return executable, _clinical_normalization_trace(plan, executable)
     prepared = prepare_plan(fanned_plan, clinical_query_anchor=clinical_query_anchor)
-    return prepared, _clinical_normalization_trace(plan, prepared)
+    executable = apply_source_call_cap(prepared)
+    return executable, _clinical_normalization_trace(plan, executable)
 
 
 def _linked_clinical_query_anchor(first_question: str, linked_question: str) -> str:
@@ -1693,6 +1801,8 @@ def _should_inherit_session_contract(question: str, state: SessionState) -> bool
         return False
     if _is_prior_result_reference(question):
         return True
+    if _axis_followup_label(question) is not None:
+        return True
     subject_match = _SUBJECT_BEFORE_INTENT_RE.match(question)
     if subject_match is not None:
         subject = subject_match.group("subject").casefold()
@@ -1734,9 +1844,12 @@ def _session_query_constraints(
     question: str,
 ) -> tuple[str, ...]:
     values: list[str] = []
-    primary = state.primary_entity or state.comparison_anchor
-    if primary:
-        values.append(primary)
+    if _axis_followup_label(question) is not None:
+        values.extend(state.referenced_entity_set or state.canonical_entities)
+    else:
+        primary = state.primary_entity or state.comparison_anchor
+        if primary:
+            values.append(primary)
     requested_record_type = _record_type(question)
     inherit_record_scope = (
         requested_record_type is None or requested_record_type == state.record_type

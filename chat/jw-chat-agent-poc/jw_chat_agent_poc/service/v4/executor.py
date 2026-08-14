@@ -4,6 +4,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
+import inspect
 import threading
 import time
 from typing import Any
@@ -263,6 +264,7 @@ class ParallelSourceExecutor:
                     query,
                     clinical_concept,
                     deadline,
+                    requested_answer_shape=plan.requested_answer_shape,
                     transport_event_callback=record_transport_event,
                 )
             finally:
@@ -474,6 +476,7 @@ class ParallelSourceExecutor:
         clinical_concept: ClinicalTrialConcept | None,
         deadline: float,
         *,
+        requested_answer_shape: Any | None = None,
         transport_event_callback: TransportEventCallback | None = None,
     ) -> SourceResult:
         started = time.monotonic()
@@ -488,6 +491,16 @@ class ParallelSourceExecutor:
             adapter = self._adapters[source]
             if source == "clinicaltrials" and clinical_concept is not None:
                 result = adapter(query, concept=clinical_concept)
+            elif (
+                source == "mart"
+                and requested_answer_shape is not None
+                and _accepts_period_bounds(adapter)
+            ):
+                result = adapter(
+                    query,
+                    period_from=requested_answer_shape.period_from,
+                    period_to=requested_answer_shape.period_to,
+                )
             elif getattr(adapter, "supports_transport_event_callback", False):
                 result = adapter(
                     query,
@@ -506,6 +519,18 @@ class ParallelSourceExecutor:
         return result.model_copy(
             update={"elapsed_ms": (time.monotonic() - started) * 1000}
         )
+
+
+def _accepts_period_bounds(adapter: Any) -> bool:
+    try:
+        parameters = inspect.signature(adapter).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    names = {parameter.name for parameter in parameters}
+    return (
+        {"period_from", "period_to"}.issubset(names)
+        or any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters)
+    )
 
 
 def _merge_transport_event(

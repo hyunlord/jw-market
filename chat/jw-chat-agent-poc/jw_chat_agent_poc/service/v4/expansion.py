@@ -6,8 +6,13 @@ from datetime import date
 import re
 from typing import Any
 
-from jw_chat_agent_poc.orchestrator.hira_disease import hira_disease_anchor_brand
 from jw_chat_agent_poc.service.v4.contracts import PlannerOutput, SourceResult
+from jw_chat_agent_poc.service.v4.query_scope import (
+    configured_entity_limit,
+    disease_brand_set,
+    disease_kcd_codes,
+    strip_mapped_disease_names,
+)
 
 
 _KCD_RANGE_RE = re.compile(
@@ -61,12 +66,25 @@ def expand_parameter_axes(
     *,
     observed_on: date,
 ) -> ExpansionOutcome:
-    codes = _kcd_codes(question)
-    years = _years(question, observed_on)
+    interpreted = " ".join(
+        (
+            question,
+            plan.resolved_question,
+            *plan.expanded_intents,
+            *plan.requested_answer_shape.entities,
+        )
+    )
+    codes = (
+        _kcd_codes(question)
+        or _kcd_codes(interpreted)
+        or disease_kcd_codes(interpreted)
+    )
+    codes = codes[: configured_entity_limit()]
+    years = _years(interpreted, observed_on)
     updates: dict[str, tuple[str, ...]] = {}
     entity_expansion: dict[str, Any] = {"status": "not_applicable"}
     if codes:
-        base = _query_subject(question, codes, years) or "환자수"
+        base = strip_mapped_disease_names(_query_subject(question, codes, years)) or "환자수"
         if years:
             updates["hira"] = tuple(
                 f"{code} {base} {year}년" for code in codes for year in years
@@ -83,26 +101,38 @@ def expand_parameter_axes(
                     for year in years
                 )
             )
-    anchor_brand = (
-        hira_disease_anchor_brand(question)
+    anchor_brands, brand_source = (
+        disease_brand_set(interpreted)
         if plan.tool_queries.patent and "특허" in question
-        else None
+        else ((), None)
     )
-    if anchor_brand:
-        patent_queries = (f"{anchor_brand} 특허현황",)
+    anchor_brands = anchor_brands[: configured_entity_limit()]
+    if anchor_brands:
+        patent_queries = tuple(f"{brand} 특허현황" for brand in anchor_brands)
         updates["patent"] = patent_queries
+        updates["mart"] = tuple(f"{brand} 내부 시장 데이터" for brand in anchor_brands)
         entity_expansion = {
             "status": "expanded",
-            "source": "hira_disease_anchor_brand",
-            "entities": [anchor_brand],
-            "requests": {"patent": list(patent_queries)},
+            "source": "query_expansion_data",
+            "source_detail": brand_source,
+            "entities": list(anchor_brands),
+            "requests": {
+                "patent": list(patent_queries),
+                "mart": list(updates["mart"]),
+            },
         }
     plan_updates: dict[str, Any] = {}
     if updates:
         plan_updates["tool_queries"] = plan.tool_queries.model_copy(update=updates)
-    if anchor_brand:
+    if anchor_brands:
         plan_updates["requested_answer_shape"] = plan.requested_answer_shape.model_copy(
-            update={"entities": (anchor_brand,)}
+            update={
+                "entities": tuple(
+                    dict.fromkeys(
+                        (*plan.requested_answer_shape.entities, *anchor_brands)
+                    )
+                )
+            }
         )
     expanded = (
         plan.model_copy(update=plan_updates)

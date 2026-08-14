@@ -119,12 +119,24 @@ def test_a_disease_patent_expansion_binds_deterministic_product_before_first_wav
     second = expand_parameter_axes(plan, question, observed_on=date(2026, 8, 13))
 
     assert first == second
-    assert first.plan.tool_queries.patent == ("헴리브라 특허현황",)
+    assert first.plan.tool_queries.patent == (
+        "헴리브라 특허현황",
+        "록타비안 특허현황",
+        "헴제닉스 특허현황",
+    )
     assert first.trace["entity_expansion"] == {
         "status": "expanded",
-        "source": "hira_disease_anchor_brand",
-        "entities": ["헴리브라"],
-        "requests": {"patent": ["헴리브라 특허현황"]},
+        "source": "query_expansion_data",
+        "source_detail": "PL-approved disease treatment set (2026-08-14)",
+        "entities": ["헴리브라", "록타비안", "헴제닉스"],
+        "requests": {
+            "patent": ["헴리브라 특허현황", "록타비안 특허현황", "헴제닉스 특허현황"],
+            "mart": [
+                "헴리브라 내부 시장 데이터",
+                "록타비안 내부 시장 데이터",
+                "헴제닉스 내부 시장 데이터",
+            ],
+        },
     }
 
 
@@ -134,8 +146,16 @@ def test_a_disease_patent_expansion_uses_patent_query_when_web_is_primary() -> N
 
     expanded = expand_parameter_axes(plan, question, observed_on=date(2026, 8, 13))
 
-    assert expanded.plan.tool_queries.patent == ("헴리브라 특허현황",)
-    assert expanded.trace["entity_expansion"]["entities"] == ["헴리브라"]
+    assert expanded.plan.tool_queries.patent == (
+        "헴리브라 특허현황",
+        "록타비안 특허현황",
+        "헴제닉스 특허현황",
+    )
+    assert expanded.trace["entity_expansion"]["entities"] == [
+        "헴리브라",
+        "록타비안",
+        "헴제닉스",
+    ]
 
 
 def test_a_expanded_disease_product_reaches_mfds_as_product_and_ingredient(

@@ -2700,7 +2700,7 @@ def test_planner_limits_first_wave_queries_with_env_defaulting_to_one(monkeypatc
 
 @pytest.mark.parametrize(
     ("configured", "expected"),
-    (("0", 1), ("-1", 1), ("bogus", 1), ("99", 2)),
+    (("0", 1), ("-1", 1), ("bogus", 1), ("99", 3)),
 )
 def test_planner_clamps_source_query_limit_to_supported_range(
     monkeypatch,

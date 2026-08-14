@@ -16,6 +16,7 @@ from jw_chat_agent_poc.service.v4.contracts import (
     SOURCE_NAMES,
     ClinicalTrialConcept,
     PlannerOutput,
+    QueryScope,
     RequestedAnswerShape,
     SourceName,
     SourceResult,
@@ -34,6 +35,10 @@ from jw_chat_agent_poc.service.v4.session_state import SessionState
 from jw_chat_agent_poc.service.v4.time_context import (
     as_of_date_instruction,
     current_kst_date as _current_kst_date,
+)
+from jw_chat_agent_poc.service.v4.query_scope import (
+    SOURCE_CALL_LIMIT,
+    configured_entity_limit,
 )
 
 
@@ -114,13 +119,13 @@ class V4Planner:
                 else:
                     raw = self._client.complete(attempt_messages, budget_s=remaining)
                 plan = _parse_plan(raw)
-                plan = _limit_first_wave_queries(plan)
                 direct_sources = _direct_answer_sources(question)
                 if direct_sources:
                     plan = plan.model_copy(update={"answer_sources": direct_sources})
                 plan = _lock_exact_anchor(question, plan)
                 plan = _anchor_relative_years(question, plan, observed_on)
                 plan = _attach_lossless_contracts(question, plan)
+                plan = _limit_first_wave_queries(plan)
                 return PlannerOutcome(
                     plan=plan,
                     trace={
@@ -349,6 +354,9 @@ def _planner_messages(
                 "For clinical trials, populate clinical_query_specs with searchable concepts rather than "
                 "document filler phrases: ingredients, brands, intervention/condition search area, both/any "
                 "matching, countries, statuses, and the corresponding source_queries. "
+                "Populate requested_answer_shape.entities with every distinct entity resolved from the "
+                "question and recent-turn context. When the interpretation names KCD codes or products, "
+                "preserve the complete set in that structured field. "
                 "Set answer_sources to the smallest source list that directly answers the user's question; "
                 "these sources form the evidence quorum while all seven sources still run. "
                 "Return JSON only, with no markdown. Set needs_second_hop only when first-hop entities are "
@@ -430,19 +438,31 @@ def _limit_first_wave_queries(plan: PlannerOutput) -> PlannerOutput:
         limit = int(os.environ.get("CHAT_V4_MAX_SOURCE_QUERIES", "1"))
     except ValueError:
         limit = 1
-    limit = max(1, min(limit, 2))
+    entity_count = min(
+        len(plan.requested_answer_shape.entities),
+        configured_entity_limit(),
+    )
+    limit = max(1, min(max(limit, entity_count), SOURCE_CALL_LIMIT))
+    requested_calls: dict[SourceName, int] = {}
+    executed_calls: dict[SourceName, int] = {}
+    omitted_queries: dict[SourceName, tuple[str, ...]] = {}
+    limited_queries: dict[SourceName, tuple[str, ...]] = {}
+    for source, queries in plan.tool_queries.items():
+        unique = tuple(dict.fromkeys(queries))
+        selected = unique if source == "clinicaltrials" else unique[:limit]
+        requested_calls[source] = len(unique)
+        executed_calls[source] = len(selected)
+        if len(selected) < len(unique):
+            omitted_queries[source] = unique[len(selected) :]
+        limited_queries[source] = selected
     return plan.model_copy(
         update={
-            "tool_queries": ToolQueries(
-                **{
-                    source: (
-                        tuple(dict.fromkeys(queries))
-                        if source == "clinicaltrials"
-                        else queries[:limit]
-                    )
-                    for source, queries in plan.tool_queries.items()
-                }
-            )
+            "tool_queries": ToolQueries(**limited_queries),
+            "query_scope": QueryScope(
+                requested_calls=requested_calls,
+                executed_calls=executed_calls,
+                omitted_queries=omitted_queries,
+            ),
         }
     )
 
@@ -502,13 +522,34 @@ def _attach_lossless_contracts(question: str, plan: PlannerOutput) -> PlannerOut
 
     queries = tuple(value[0] for value in grouped.values())
     concepts = tuple(value[1] for value in grouped.values())
+    deterministic_shape = _requested_answer_shape(question)
+    supplied_shape = plan.requested_answer_shape
+    merged_shape = supplied_shape.model_copy(
+        update={
+            "entities": tuple(
+                dict.fromkeys((*supplied_shape.entities, *deterministic_shape.entities))
+            ),
+            "measure_or_attribute": tuple(
+                dict.fromkeys(
+                    (
+                        *supplied_shape.measure_or_attribute,
+                        *deterministic_shape.measure_or_attribute,
+                    )
+                )
+            ),
+            "time_horizon": supplied_shape.time_horizon or deterministic_shape.time_horizon,
+            "granularity": supplied_shape.granularity or deterministic_shape.granularity,
+            "period_from": supplied_shape.period_from or deterministic_shape.period_from,
+            "period_to": supplied_shape.period_to or deterministic_shape.period_to,
+        }
+    )
     return plan.model_copy(
         update={
             "tool_queries": plan.tool_queries.model_copy(
                 update={"clinicaltrials": queries or plan.tool_queries.clinicaltrials}
             ),
             "clinical_query_specs": concepts,
-            "requested_answer_shape": _requested_answer_shape(question),
+            "requested_answer_shape": merged_shape,
         }
     )
 
@@ -564,12 +605,34 @@ def _requested_answer_shape(question: str) -> RequestedAnswerShape:
     elif any(marker in lowered for marker in ("월별", "월간")):
         granularity = "month"
 
+    period_from, period_to = _requested_period_bounds(question)
     return RequestedAnswerShape(
         entities=tuple(dict.fromkeys(entities)),
         measure_or_attribute=tuple(dict.fromkeys(attributes)),
         time_horizon=horizon,
         granularity=granularity,
+        period_from=period_from,
+        period_to=period_to,
     )
+
+
+def _requested_period_bounds(question: str) -> tuple[str | None, str | None]:
+    today = _current_kst_date()
+    recent = _RELATIVE_YEAR_RE.search(question)
+    if recent:
+        months = max(1, min(120, int(recent.group("count")) * 12))
+        end_index = today.year * 12 + today.month - 1
+        start_index = end_index - months + 1
+        return (
+            f"{start_index // 12:04d}-{start_index % 12 + 1:02d}",
+            f"{today.year:04d}-{today.month:02d}",
+        )
+    explicit_years = tuple(int(value) for value in re.findall(r"(?<!\d)(20\d{2})\s*년", question))
+    if explicit_years:
+        start_year, end_year = min(explicit_years), max(explicit_years)
+        end_month = today.month if end_year == today.year else 12
+        return f"{start_year:04d}-01", f"{end_year:04d}-{end_month:02d}"
+    return None, None
 
 
 def _fallback_plan(

@@ -71,6 +71,14 @@ class RequestedAnswerShape(_StrictModel):
     measure_or_attribute: tuple[str, ...] = ()
     time_horizon: str | None = None
     granularity: str | None = None
+    period_from: str | None = None
+    period_to: str | None = None
+
+
+class QueryScope(_StrictModel):
+    requested_calls: dict[SourceName, int] = Field(default_factory=dict)
+    executed_calls: dict[SourceName, int] = Field(default_factory=dict)
+    omitted_queries: dict[SourceName, tuple[str, ...]] = Field(default_factory=dict)
 
 
 class PlannerOutput(_StrictModel):
@@ -87,6 +95,7 @@ class PlannerOutput(_StrictModel):
     requested_answer_shape: RequestedAnswerShape = Field(
         default_factory=RequestedAnswerShape
     )
+    query_scope: QueryScope | None = None
 
     @field_validator("answer_sources")
     @classmethod
@@ -169,6 +178,8 @@ class SourceResult(_StrictModel):
     notice: str | None = None
     cache_hit: bool = False
     evidence: EvidenceEnvelope | None = None
+    failure_reason: str | None = None
+    failure_detail: dict[str, Any] = Field(default_factory=dict)
 
 
 class GatedAnswer(_StrictModel):
