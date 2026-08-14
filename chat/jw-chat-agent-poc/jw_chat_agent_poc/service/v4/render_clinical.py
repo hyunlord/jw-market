@@ -78,6 +78,11 @@ def render_clinical(
             "최종 갱신일",
             lambda payload: display(payload.get("last_update_date")),
         ),
+        (
+            "relevance_status",
+            "직접 관련성",
+            lambda payload: display(payload.get("relevance_status")),
+        ),
     )
     included = tuple(
         spec
@@ -132,11 +137,7 @@ def _coverage_surface(
         before=coverage.total_reported,
         after=coverage.records_after_status_filter,
     )
-    relevance_excluded = _excluded(
-        coverage.records_excluded_by_relevance,
-        before=coverage.records_unique,
-        after=coverage.records_relevant,
-    )
+    direct_confirmed, direct_unconfirmed = _direct_relevance_counts(evidence_set)
     funnel_parts = [f"원천 검색 {total}건"]
     if coverage.records_after_status_filter is not None:
         funnel_parts.append(
@@ -146,10 +147,15 @@ def _coverage_surface(
         (
             f"수신 {coverage.records_received}건",
             f"중복 제거 {coverage.records_unique}건",
-            f"관련성 확인 {relevant}건 ({relevance_excluded}건 제외)",
+            f"표시 대상 {relevant}건 (폐기 0건)",
             f"상세 표시 {rendered}건",
         )
     )
+    if direct_confirmed is not None or direct_unconfirmed:
+        funnel_parts.append(
+            "직접 관련 확인 "
+            f"{direct_confirmed or 0}건 · 직접 관련 여부 미확인 {direct_unconfirmed}건"
+        )
     lines = [
         "## 조사 범위와 완전성",
         _scope_statement(
@@ -164,6 +170,22 @@ def _coverage_surface(
     if not coverage.pagination_complete:
         lines.append("페이지 수집이 완료되지 않아 전체 현황으로 볼 수 없습니다.")
     return "\n".join(lines)
+
+
+def _direct_relevance_counts(evidence_set: EvidenceSet) -> tuple[int | None, int]:
+    confirmed = 0
+    unconfirmed = 0
+    found = False
+    for manifest in evidence_set.query_manifest:
+        confirmed_value = manifest.get("records_direct_relevance_confirmed")
+        unconfirmed_value = manifest.get("records_direct_relevance_unconfirmed")
+        if isinstance(confirmed_value, int) and not isinstance(confirmed_value, bool):
+            confirmed += confirmed_value
+            found = True
+        if isinstance(unconfirmed_value, int) and not isinstance(unconfirmed_value, bool):
+            unconfirmed += unconfirmed_value
+            found = True
+    return (confirmed if found else None), unconfirmed
 
 
 def _scope_statement(

@@ -729,7 +729,7 @@ def test_d_direct_confirmation_is_inline_and_keeps_source_scoped_relations() -> 
     assert "식품의약품안전처 의약품 특허목록" in surface
 
 
-def test_d_repeated_clinical_predicates_keep_every_record_plus_relation_lines() -> None:
+def test_d_repeated_clinical_predicates_keep_table_records_plus_relation_lines() -> None:
     records = tuple(
         EvidenceRecord(
             evidence_id=f"ct:NCT0000000{index}",
@@ -766,7 +766,9 @@ def test_d_repeated_clinical_predicates_keep_every_record_plus_relation_lines() 
 
     assert surface.count("## 임상시험 상세") == 1
     assert "| NCT ID | 간략 시험명 | 상태 | 단계 | 스폰서 |" in surface
-    assert surface.count("은(는) 상태") == 4
+    assert "narrative:field-restatement" not in {
+        node.block_id for node in rendered.nodes
+    }
     assert all(f"NCT0000000{index}" in surface for index in range(1, 5))
     assert "[직접 확인]" not in surface
     assert not summary.startswith("## ")
@@ -777,7 +779,7 @@ def test_d_repeated_clinical_predicates_keep_every_record_plus_relation_lines() 
     assert "후기 단계(3상 이상)" in summary
 
 
-def test_d_distinct_clinical_predicates_remain_as_record_sentences() -> None:
+def test_d_distinct_clinical_predicates_remain_bound_without_body_dump() -> None:
     payloads = (
         {
             "nct_id": "NCT00000021",
@@ -819,16 +821,18 @@ def test_d_distinct_clinical_predicates_remain_as_record_sentences() -> None:
         (evidence,),
         observed_on=date(2026, 8, 13),
     )
-    restatement = next(
-        node.text
-        for node in rendered.nodes
-        if node.block_id == "narrative:field-restatement"
-    )
+    assert "narrative:field-restatement" not in {
+        node.block_id for node in rendered.nodes
+    }
+    bound_ids = {
+        argument["record_id"]
+        for claim in rendered.structured_claims
+        for argument in claim.get("arguments", ())
+    }
+    assert bound_ids.issuperset(record.evidence_id for record in records)
 
-    assert restatement.count("은(는) 상태") == 3
 
-
-def test_d_three_repeated_predicates_do_not_replace_individual_records() -> None:
+def test_d_three_repeated_predicates_keep_records_in_table_without_body_dump() -> None:
     records = tuple(
         EvidenceRecord(
             evidence_id=f"ct:NCT0000003{index}",
@@ -859,14 +863,11 @@ def test_d_three_repeated_predicates_do_not_replace_individual_records() -> None
         (evidence,),
         observed_on=date(2026, 8, 13),
     )
-    restatement = next(
-        node.text
-        for node in rendered.nodes
-        if node.block_id == "narrative:field-restatement"
-    )
-
-    assert restatement.count("은(는) 상태") == 4
-    assert all(f"NCT0000003{index}" in restatement for index in range(1, 5))
+    surface = "\n".join(node.text for node in rendered.nodes)
+    assert "narrative:field-restatement" not in {
+        node.block_id for node in rendered.nodes
+    }
+    assert all(f"NCT0000003{index}" in surface for index in range(1, 5))
 
 
 def test_d_compacted_summary_surfaces_only_approved_relation_operators() -> None:

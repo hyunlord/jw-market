@@ -296,6 +296,11 @@ def _micro_narratives(
             field
             for field in NARRATIVE_FIELDS
             if narrative_field_value(record, field) is not None
+            and not (
+                field == "official_title"
+                and narrative_field_value(record, "brief_title")
+                == narrative_field_value(record, "official_title")
+            )
         )
         identity = record_identity(record, index)
         if identity is None:

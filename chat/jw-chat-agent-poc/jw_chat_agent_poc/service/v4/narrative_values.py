@@ -205,6 +205,8 @@ _PUBLIC_ENUMS: Final = {
     "ALL": "전체",
     "MALE": "남성",
     "FEMALE": "여성",
+    "DRUG": "의약품",
+    "INTERVENTIONAL": "중재 연구",
 }
 _NUMBER_RE: Final = re.compile(r"[-+]?\d[\d,]*(?:\.\d+)?%?")
 
@@ -282,11 +284,26 @@ def _mapping_narrative(value: Mapping[object, object]) -> str | None:
         ("type", "구분"),
     )
     parts = tuple(
-        f"{label} {public_enum_value(item)}"
+        f"{label} {rendered}"
         for key, label in preferred
-        if (item := value.get(key)) not in (None, "")
+        if (rendered := _nested_public_value(value.get(key))) is not None
     )
     return ", ".join(dict.fromkeys(parts)) or None
+
+
+def _nested_public_value(value: object) -> str | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, Mapping):
+        return _mapping_narrative(value)
+    if isinstance(value, (list, tuple, set)):
+        parts = tuple(
+            rendered
+            for item in value
+            if (rendered := _nested_public_value(item)) is not None
+        )
+        return ", ".join(dict.fromkeys(parts)) or None
+    return public_enum_value(value)
 
 
 def public_enum_value(value: object) -> str:

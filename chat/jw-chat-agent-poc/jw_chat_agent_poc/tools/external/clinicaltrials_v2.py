@@ -35,7 +35,10 @@ class ClinicalSearchResult:
     elapsed_ms: float
     total_unfiltered: int | None = None
     records_relevant: int | None = None
+    records_direct_relevance_confirmed: int | None = None
+    records_direct_relevance_unconfirmed: int = 0
     relevance_exclusions: tuple[dict[str, str], ...] = ()
+    relevance_assessments: tuple[dict[str, Any], ...] = ()
 
 
 class ClinicalTrialsV2Client:
@@ -123,20 +126,28 @@ class ClinicalTrialsV2Client:
                 )
             )
 
-        relevant_by_nct: dict[str, dict[str, Any]] = {}
-        relevance_exclusions: list[dict[str, str]] = []
+        relevance_assessments: list[dict[str, Any]] = []
+        direct_relevance_confirmed = 0
         for nct_id, record in unique_by_nct.items():
             decision = assess_clinical_relevance(record, compiled.concept)
             if decision.keep:
+                direct_relevance_confirmed += 1
+                record["relevance_status"] = "직접 관련 확인"
                 record["relevance_matched_tokens"] = list(decision.matched_tokens)
-                relevant_by_nct[nct_id] = record
-                continue
-            relevance_exclusions.append(
+            else:
+                record["relevance_status"] = "직접 관련 여부 미확인"
+            relevance_assessments.append(
                 {
                     "nct_id": nct_id,
+                    "status": record["relevance_status"],
                     "reason_code": decision.reason_code,
+                    "title": str(record.get("brief_title") or ""),
+                    "interventions": list(record.get("interventions") or ()),
+                    "sponsor": str(record.get("sponsor") or ""),
                 }
             )
+
+        direct_relevance_unconfirmed = len(unique_by_nct) - direct_relevance_confirmed
 
         pagination_complete = page_token is None and (
             total_reported is None or len(received) >= total_reported
@@ -166,17 +177,20 @@ class ClinicalTrialsV2Client:
             "records_after_status_filter": total_reported,
             "records_received": len(received),
             "records_unique": len(unique_by_nct),
-            "records_relevant": len(relevant_by_nct),
+            "records_relevant": len(unique_by_nct),
+            "records_direct_relevance_confirmed": direct_relevance_confirmed,
+            "records_direct_relevance_unconfirmed": direct_relevance_unconfirmed,
             "records_excluded_by_status": status_filtered_out,
-            "records_excluded_by_relevance": len(relevance_exclusions),
-            "relevance_exclusions": list(relevance_exclusions),
+            "records_excluded_by_relevance": 0,
+            "relevance_exclusions": [],
+            "relevance_assessments": list(relevance_assessments),
             "status_count_probe_error_type": status_probe_error,
             "page_count": page_count,
             "pagination_complete": pagination_complete,
             "partial_reason": partial_reason,
         }
         return ClinicalSearchResult(
-            records=tuple(relevant_by_nct.values()),
+            records=tuple(unique_by_nct.values()),
             total_reported=total_reported,
             records_received=len(received),
             records_unique=len(unique_by_nct),
@@ -186,8 +200,10 @@ class ClinicalTrialsV2Client:
             query_manifest=manifest,
             elapsed_ms=round((monotonic() - started) * 1000, 1),
             total_unfiltered=total_unfiltered,
-            records_relevant=len(relevant_by_nct),
-            relevance_exclusions=tuple(relevance_exclusions),
+            records_relevant=len(unique_by_nct),
+            records_direct_relevance_confirmed=direct_relevance_confirmed,
+            records_direct_relevance_unconfirmed=direct_relevance_unconfirmed,
+            relevance_assessments=tuple(relevance_assessments),
         )
 
     def _unfiltered_total(

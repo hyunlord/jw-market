@@ -113,7 +113,7 @@ def _study(
     }
 
 
-def test_b_client_audits_status_filter_and_records_relevance_exclusions() -> None:
+def test_b_client_audits_relevance_without_dropping_source_records() -> None:
     seen: list[dict[str, Any]] = []
     responses = iter(
         (
@@ -159,20 +159,17 @@ def test_b_client_audits_status_filter_and_records_relevance_exclusions() -> Non
     assert result.total_reported == 3
     assert result.records_received == 3
     assert result.records_unique == 3
-    assert result.records_relevant == 1
-    assert [record["nct_id"] for record in result.records] == ["NCT00000001"]
-    assert result.relevance_exclusions == (
-        {
-            "nct_id": "NCT06686615",
-            "reason_code": "missing_required_ingredient_token",
-        },
-        {
-            "nct_id": "NCT07036991",
-            "reason_code": "missing_required_ingredient_token",
-        },
-    )
-    assert "title" not in str(result.relevance_exclusions).casefold()
-    assert "url" not in str(result.relevance_exclusions).casefold()
+    assert result.records_relevant == 3
+    assert result.records_direct_relevance_confirmed == 1
+    assert result.records_direct_relevance_unconfirmed == 2
+    assert [record["nct_id"] for record in result.records] == [
+        "NCT00000001",
+        "NCT06686615",
+        "NCT07036991",
+    ]
+    assert result.relevance_exclusions == ()
+    assert result.query_manifest["records_excluded_by_relevance"] == 0
+    assert len(result.relevance_assessments) == 3
 
 
 def test_e_patent_adapter_uses_one_exact_kr_brand_query_for_combo_product(

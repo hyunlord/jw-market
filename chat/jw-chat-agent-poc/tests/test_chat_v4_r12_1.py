@@ -943,7 +943,7 @@ def test_lossless_clinical_spine_unions_queries_and_renders_every_record() -> No
     assert rendered.coverage.records_rendered == 3
     assert (
         "원천 검색 4건 → 수신 4건 → 중복 제거 3건 → "
-        "관련성 확인 3건 (0건 제외) → 상세 표시 3건"
+        "표시 대상 3건 (폐기 0건) → 상세 표시 3건"
     ) in rendered.text
     assert rendered.text.count("NCT00000001") >= 1
     assert rendered.text.count("NCT00000002") >= 1
@@ -1681,11 +1681,12 @@ def test_runtime_inject_mode_composes_deterministic_facts_before_commentary(
         synthesizer=Synthesizer(),
     ).answer("리바로젯 임상현황", conversation_id="lossless", turns=())
 
-    assert answer.text.startswith("- ClinicalTrials.gov의 NCT00000001")
+    assert answer.text.startswith("임상 포트폴리오 해설입니다.")
+    assert "- ClinicalTrials.gov의 NCT00000001" not in answer.text
     assert "NCT00000001" in answer.text
     assert "## 자동 해설" not in answer.text
-    assert answer.text.index("NCT00000001") < answer.text.index(
-        "임상 포트폴리오 해설입니다."
+    assert answer.text.index("임상 포트폴리오 해설입니다.") < answer.text.index(
+        "NCT00000001"
     )
     assert answer.text.index("임상 포트폴리오 해설입니다.") < answer.text.index(
         "## 조사 범위와 완전성"

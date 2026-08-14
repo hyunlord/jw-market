@@ -120,7 +120,12 @@ def render_deterministic_facts(
     )
     if any(not item.matched for item in verified_recomputations):
         raise LosslessInvariantError("narrative relation recomputation mismatch")
-    nodes = _insert_narrative_nodes(nodes, realization.nodes)
+    visible_narrative_nodes = tuple(
+        node
+        for node in realization.nodes
+        if node.block_id != "narrative:field-restatement"
+    )
+    nodes = _insert_narrative_nodes(nodes, visible_narrative_nodes)
     rendered_ids = tuple(
         dict.fromkeys(record_id for node in nodes for record_id in node.record_ids)
     )

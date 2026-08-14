@@ -1,0 +1,228 @@
+from __future__ import annotations
+
+from datetime import date
+from types import SimpleNamespace
+from typing import Any
+
+from jw_chat_agent_poc.service.v4.clinical import compile_clinical_query
+from jw_chat_agent_poc.service.v4.clinical_query_policy import (
+    prepare_resolved_clinical_requests,
+)
+from jw_chat_agent_poc.service.v4.contracts import PlannerOutput, SourceResult, ToolQueries
+from jw_chat_agent_poc.service.v4.deterministic_render import render_deterministic_facts
+from jw_chat_agent_poc.service.v4.inspection import build_inspection_detail
+from jw_chat_agent_poc.service.v4.lossless_contracts import (
+    CoverageLedger,
+    EvidenceRecord,
+    EvidenceSet,
+)
+from jw_chat_agent_poc.service.v4.narrative_values import narrative_field_value
+from jw_chat_agent_poc.tools.external.clinicaltrials_v2 import ClinicalTrialsV2Client
+
+
+class _Response:
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict[str, Any]:
+        return self._payload
+
+
+def _resolution() -> SimpleNamespace:
+    return SimpleNamespace(
+        canonical_brand="리바로젯",
+        molecule_en=("ezetimibe", "pitavastatin"),
+    )
+
+
+def _study(
+    nct_id: str,
+    *,
+    title: str,
+    interventions: tuple[str, ...],
+    sponsor: str,
+) -> dict[str, Any]:
+    return {
+        "protocolSection": {
+            "identificationModule": {
+                "nctId": nct_id,
+                "briefTitle": title,
+                "officialTitle": title,
+            },
+            "statusModule": {"overallStatus": "RECRUITING"},
+            "designModule": {
+                "studyType": "INTERVENTIONAL",
+                "phases": ["PHASE3"],
+            },
+            "armsInterventionsModule": {
+                "interventions": [
+                    {"type": "DRUG", "name": intervention, "otherNames": []}
+                    for intervention in interventions
+                ]
+            },
+            "sponsorCollaboratorsModule": {
+                "leadSponsor": {"name": sponsor}
+            },
+        }
+    }
+
+
+def _plan() -> PlannerOutput:
+    question = "리바로젯 제네릭 임상현황"
+    return PlannerOutput(
+        resolved_question=question,
+        expanded_intents=(question,),
+        tool_queries=ToolQueries(
+            mart=(question,),
+            nedrug=(question,),
+            hira=(question,),
+            openfda=(question,),
+            clinicaltrials=("ezetimibe AND pitavastatin",),
+            web=(question,),
+            patent=(question,),
+        ),
+        linking_plan="deterministic",
+    )
+
+
+def test_r129a_field_restatement_is_not_user_visible_but_record_stays_inspectable() -> None:
+    record = EvidenceRecord(
+        evidence_id="ct:NCT05705804",
+        source="clinicaltrials",
+        result_kind="structured_clinical_record",
+        payload={
+            "nct_id": "NCT05705804",
+            "brief_title": "Pitavastatin and Ezetimibe Trial",
+            "official_title": "Pitavastatin and Ezetimibe Trial",
+            "study_type": "INTERVENTIONAL",
+            "overall_status": "RECRUITING",
+            "interventions": [
+                {"name": "Pitavastatin", "type": "DRUG", "other_names": []}
+            ],
+            "primary_outcomes": [{"measure": "Change from baseline"}],
+            "sponsor": "Sponsor A",
+        },
+    )
+    evidence = EvidenceSet(
+        source="clinicaltrials",
+        retrieved_at="2026-08-15T00:00:00Z",
+        coverage=CoverageLedger(
+            total_reported=1,
+            records_received=1,
+            records_unique=1,
+            records_relevant=1,
+        ),
+        records=(record,),
+    )
+    rendered = render_deterministic_facts(
+        _plan(),
+        (evidence,),
+        observed_on=date(2026, 8, 15),
+    )
+    result = SourceResult(
+        source="clinicaltrials",
+        query="ezetimibe AND pitavastatin",
+        status="ok",
+        payload={"studies": [record.payload]},
+    )
+    detail = build_inspection_detail(
+        _plan(),
+        (result,),
+        (evidence,),
+        rendered,
+        answer_text=rendered.text,
+    )
+
+    assert "narrative:field-restatement" not in {
+        node.block_id for node in rendered.nodes
+    }
+    for forbidden in (
+        "공식 시험명",
+        "평가변수 평가변수",
+        "다른 명칭 []",
+        "구분 DRUG",
+        "INTERVENTIONAL",
+    ):
+        assert forbidden not in rendered.text
+    output_record = detail["calls"][0]["output"]["records"][0]
+    assert "NCT05705804" in output_record["identifiers"]
+    assert output_record["title"] == "Pitavastatin and Ezetimibe Trial"
+    assert output_record["interventions"] == ["Pitavastatin"]
+    assert output_record["sponsor"] == "Sponsor A"
+
+
+def test_r129a_ct_relevance_is_display_status_not_record_deletion() -> None:
+    response = _Response(
+        {
+            "totalCount": 3,
+            "studies": [
+                _study(
+                    "NCT00000001",
+                    title="Pitavastatin Ezetimibe Bioequivalence",
+                    interventions=("Pitavastatin", "Ezetimibe"),
+                    sponsor="Sponsor A",
+                ),
+                _study(
+                    "NCT00000002",
+                    title="K-924 Phase III",
+                    interventions=("K-924",),
+                    sponsor="Sponsor B",
+                ),
+                _study(
+                    "NCT00000003",
+                    title="Cardiovascular Study",
+                    interventions=("Other drug",),
+                    sponsor="Sponsor C",
+                ),
+            ],
+        }
+    )
+    concept = prepare_resolved_clinical_requests(
+        (("리바로젯", _resolution()),),
+        (),
+        scope_query="리바로젯 제네릭 임상현황",
+    )[0][1]
+    result = ClinicalTrialsV2Client(
+        get=lambda *_args, **_kwargs: response,
+        timeout_s=5,
+    ).search(compile_clinical_query(concept))
+
+    assert result.records_received == 3
+    assert result.records_unique == 3
+    assert len(result.records) == 3
+    assert result.records_relevant == 3
+    assert result.records_direct_relevance_confirmed == 1
+    assert result.records_direct_relevance_unconfirmed == 2
+    assert result.query_manifest["records_excluded_by_relevance"] == 0
+    assert result.query_manifest["records_direct_relevance_unconfirmed"] == 2
+    assert [record["relevance_status"] for record in result.records] == [
+        "직접 관련 확인",
+        "직접 관련 여부 미확인",
+        "직접 관련 여부 미확인",
+    ]
+    assert "missing_required_ingredient_token" not in str(result.records)
+
+
+def test_r129a_nested_empty_values_and_known_enums_are_publicly_sanitized() -> None:
+    record = EvidenceRecord(
+        evidence_id="ct:NCT00000004",
+        source="clinicaltrials",
+        result_kind="structured_clinical_record",
+        payload={
+            "interventions": [
+                {"name": "Pitavastatin", "type": "DRUG", "other_names": []}
+            ],
+            "study_type": "INTERVENTIONAL",
+        },
+    )
+
+    interventions = narrative_field_value(record, "interventions")
+    assert interventions is not None
+    assert "다른 명칭" not in interventions
+    assert "[]" not in interventions
+    assert "DRUG" not in interventions
+    assert "의약품" in interventions
+    assert narrative_field_value(record, "study_type") == "중재 연구"

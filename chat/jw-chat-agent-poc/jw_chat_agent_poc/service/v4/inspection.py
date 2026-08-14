@@ -70,7 +70,11 @@ def build_inspection_detail(
                 "status": _public_status(result, returned),
                 "elapsed_seconds": round(max(result.elapsed_ms, 0.0) / 1000, 3),
                 "request_parameters": _request_parameters(result),
-                "output": _inspection_output(raw_records, returned),
+                "output": _inspection_output(
+                    raw_records,
+                    returned,
+                    source=result.source,
+                ),
                 "counts": {
                     "returned": returned,
                     "parsed": parsed,
@@ -278,14 +282,49 @@ def _request_parameters(result: SourceResult) -> dict[str, Any]:
 def _inspection_output(
     records: Sequence[Mapping[str, Any]],
     returned: int,
+    *,
+    source: str,
 ) -> dict[str, Any]:
     return {
         "returned": returned,
         "records": [
-            {"identifiers": sorted(_display_identifiers(record)) or ["식별자 없음"]}
+            _inspection_record(record, source=source)
             for record in records
         ],
     }
+
+
+def _inspection_record(record: Mapping[str, Any], *, source: str) -> dict[str, Any]:
+    output: dict[str, Any] = {
+        "identifiers": sorted(_display_identifiers(record)) or ["식별자 없음"]
+    }
+    if source != "clinicaltrials":
+        return output
+    title = str(record.get("brief_title") or record.get("official_title") or "").strip()
+    interventions = _inspection_text_list(record.get("interventions"), preferred_key="name")
+    sponsor = str(record.get("sponsor") or "").strip()
+    relevance_status = str(record.get("relevance_status") or "").strip()
+    if title:
+        output["title"] = _sanitize(title)
+    if interventions:
+        output["interventions"] = [_sanitize(item) for item in interventions]
+    if sponsor:
+        output["sponsor"] = _sanitize(sponsor)
+    if relevance_status:
+        output["relevance_status"] = _sanitize(relevance_status)
+    return output
+
+
+def _inspection_text_list(value: Any, *, preferred_key: str) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    output: list[str] = []
+    for item in value:
+        candidate = item.get(preferred_key) if isinstance(item, Mapping) else item
+        text = str(candidate or "").strip()
+        if text:
+            output.append(text)
+    return list(dict.fromkeys(output))
 
 
 def _display_identifiers(value: Any) -> set[str]:

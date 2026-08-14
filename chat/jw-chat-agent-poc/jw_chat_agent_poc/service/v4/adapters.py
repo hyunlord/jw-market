@@ -1133,7 +1133,7 @@ def _clinical_lossless_external_call(
         "pagination_complete": result.pagination_complete,
         "partial_reason": result.partial_reason,
     }
-    if result.records_relevant is not None or result.relevance_exclusions:
+    if result.records_relevant is not None:
         coverage.update(
             {
                 "records_relevant": (
@@ -1141,7 +1141,13 @@ def _clinical_lossless_external_call(
                     if result.records_relevant is not None
                     else len(result.records)
                 ),
-                "records_excluded_by_relevance": len(result.relevance_exclusions),
+                "records_excluded_by_relevance": 0,
+                "records_direct_relevance_confirmed": (
+                    result.records_direct_relevance_confirmed
+                ),
+                "records_direct_relevance_unconfirmed": (
+                    result.records_direct_relevance_unconfirmed
+                ),
             }
         )
     if "filter.overallStatus" in compiled.parameters:
@@ -1162,7 +1168,7 @@ def _clinical_lossless_external_call(
         status="live" if result.records else "no_data",
         summary_text=(
             "ClinicalTrials.gov API v2에서 "
-            f"관련성 확인 후 {len(result.records)}건을 채택했습니다."
+            f"{len(result.records)}건을 수신해 모두 표시 대상으로 보존했습니다."
             if result.records
             else "ClinicalTrials.gov API v2 조회 결과 중 관련 기록이 없습니다."
         ),

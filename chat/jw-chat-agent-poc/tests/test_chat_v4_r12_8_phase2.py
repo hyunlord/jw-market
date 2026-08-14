@@ -120,28 +120,6 @@ def test_d2_auxiliary_records_do_not_render_internal_body_cards() -> None:
     assert "| 출처 | 식별자 | 상태 | 요약 |" not in rendered.text
 
 
-def test_d2_primary_source_narrative_precedes_synthesis_commentary() -> None:
-    rendered = DeterministicRender(
-        profile="clinical_portfolio",
-        nodes=(
-            RenderNode(
-                block_id="narrative:field-restatement",
-                record_ids=("ct:NCT00000001",),
-                text="ClinicalTrials.gov에서 NCT00000001을 확인했습니다.",
-            ),
-        ),
-    )
-
-    composed = compose_lossless_answer(
-        rendered,
-        "특허와 매출을 먼저 설명합니다.",
-        synthesis_trace={},
-        mode="inject",
-    )
-
-    assert composed.text.startswith("ClinicalTrials.gov에서 NCT00000001")
-
-
 def test_d2_d4_inspection_contains_bounded_output_and_record_drop_ids() -> None:
     raw_records = [
         {"nct_id": "NCT00000001", "brief_title": "kept"},
@@ -187,8 +165,8 @@ def test_d2_d4_inspection_contains_bounded_output_and_record_drop_ids() -> None:
     call = detail["calls"][0]
 
     assert call["output"]["records"] == [
-        {"identifiers": ["NCT00000001", "kept"]},
-        {"identifiers": ["NCT00000002", "dropped"]},
+        {"identifiers": ["NCT00000001", "kept"], "title": "kept"},
+        {"identifiers": ["NCT00000002", "dropped"], "title": "dropped"},
     ]
     render_drop = next(item for item in call["drop_reasons"] if item["stage"] == "render")
     assert render_drop["count"] == 1
