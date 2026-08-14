@@ -30,7 +30,7 @@ _YEAR_RANGE_RE = re.compile(
     r"(?:부터|~|～|[-–—])\s*"
     r"(?P<end>(?:20)?\d{2})\s*년(?:도)?"
 )
-_RECENT_YEARS_RE = re.compile(r"최근\s*(?P<count>\d{1,2})\s*년")
+_RECENT_YEARS_RE = re.compile(r"최근\s*(?P<count>\d{1,2})\s*(?:개)?년")
 _PRODUCT_KEYS = frozenset(
     {
         "item_name",
@@ -80,7 +80,9 @@ def expand_parameter_axes(
         or disease_kcd_codes(interpreted)
     )
     codes = codes[: configured_entity_limit()]
-    years = _years(interpreted, observed_on)
+    # The user's relative period is authoritative when a planner also emits a
+    # stale calendar expansion such as "recent 5 years (2021-2025)".
+    years = _years(question, observed_on) or _years(interpreted, observed_on)
     updates: dict[str, tuple[str, ...]] = {}
     entity_expansion: dict[str, Any] = {"status": "not_applicable"}
     if codes:

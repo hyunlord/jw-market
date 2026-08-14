@@ -155,6 +155,26 @@ def test_q1_multi_year_cap_keeps_every_kcd_code_in_first_round() -> None:
     )
 
 
+def test_recent_years_in_user_question_override_stale_planner_calendar_years() -> None:
+    question = "질병코드 4단계 d693의 최근 5개년 환자 수"
+    expanded = expand_parameter_axes(
+        _plan(question).model_copy(
+            update={
+                "resolved_question": (
+                    "질병코드 D693의 최근 5개년(2021년~2025년) 환자 수"
+                )
+            }
+        ),
+        question,
+        observed_on=date(2026, 8, 14),
+    )
+
+    assert expanded.trace["axes"]["years"] == [2022, 2023, 2024, 2025, 2026]
+    assert tuple(
+        query.rsplit(" ", 1)[-1] for query in expanded.plan.tool_queries.hira
+    ) == tuple(f"{year}년" for year in (2022, 2023, 2024, 2025, 2026))
+
+
 def test_q1_multi_kcd_patient_gap_does_not_trigger_web_fill() -> None:
     plan = _plan(
         "당뇨병 환자수 알려줘",
