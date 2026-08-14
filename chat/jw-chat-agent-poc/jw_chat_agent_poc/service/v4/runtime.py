@@ -29,6 +29,7 @@ from jw_chat_agent_poc.service.v4.contracts import (
 )
 from jw_chat_agent_poc.service.v4.executor import ParallelSourceExecutor
 from jw_chat_agent_poc.service.v4.expansion import (
+    _kcd_codes,
     build_second_hop_expansion,
     expand_parameter_axes,
 )
@@ -1060,7 +1061,15 @@ def _derive_session_state(
     previous: SessionState | None,
 ) -> SessionState:
     previous = previous or SessionState()
-    entities = tuple(dict.fromkeys(_state_entities(results)))
+    interpreted_question = " ".join(
+        (
+            question,
+            plan.resolved_question,
+            *plan.requested_answer_shape.entities,
+        )
+    )
+    planned_entities = _kcd_codes(interpreted_question)
+    entities = tuple(dict.fromkeys((*planned_entities, *_state_entities(results))))
     explicit_entities = tuple(
         entity for entity in entities if entity.casefold() in question.casefold()
     )
@@ -1099,7 +1108,8 @@ def _derive_session_state(
         requested_grain=_requested_grain(question) or previous.requested_grain,
         referenced_entity_set=referenced,
         active_filters=_active_filters(question) or (() if topic_switched else previous.active_filters),
-        time_window=_time_window(question) or (() if topic_switched else previous.time_window),
+        time_window=_time_window(interpreted_question)
+        or (() if topic_switched else previous.time_window),
         comparison_anchor=primary_entity or previous.comparison_anchor,
         last_numeric_facts=numeric_facts or (() if topic_switched else previous.last_numeric_facts),
         last_source_record_ids=record_ids or (() if topic_switched else previous.last_source_record_ids),
@@ -1424,7 +1434,11 @@ def _execution_plan(
     *,
     clinical_query_anchor: str,
 ) -> tuple[Any, dict[str, Any]]:
-    fanned_plan = fan_out_tier_zero_queries(plan)
+    fanned_plan = (
+        plan
+        if getattr(plan, "query_scope", None) is not None
+        else fan_out_tier_zero_queries(plan)
+    )
     prepare_plan = getattr(executor, "prepare_plan", None)
     if not callable(prepare_plan):
         executable = apply_source_call_cap(fanned_plan)

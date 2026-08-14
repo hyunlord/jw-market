@@ -26,6 +26,7 @@ from jw_chat_agent_poc.service.v4.retrieval_events import (
 from jw_chat_agent_poc.service.v4.runtime import _query_scope_notice
 from jw_chat_agent_poc.service.v4.runtime import (
     _bind_session_state_contract,
+    _derive_session_state,
     _execution_plan,
     _session_inheritance_notice,
 )
@@ -86,6 +87,47 @@ def test_q1_disease_name_expands_to_data_backed_kcd_set() -> None:
     )
 
 
+def test_q1_hira_only_kcd_expansion_does_not_call_web() -> None:
+    expanded = expand_parameter_axes(
+        _plan("당뇨병 환자수 알려줘"),
+        "당뇨병 환자수 알려줘",
+        observed_on=date(2026, 8, 14),
+    )
+
+    assert expanded.plan.answer_sources == ("hira",)
+    assert expanded.plan.tool_queries.web == ()
+
+
+def test_q1_capped_kcd_plan_is_not_fanned_out_again_at_execution() -> None:
+    expanded = expand_parameter_axes(
+        _plan(
+            "당뇨병 환자수 알려줘",
+            entities=(
+                "E10",
+                "E11",
+                "E12",
+                "E13",
+                "E14",
+                "E10 (제1형 당뇨병)",
+                "E11 (제2형 당뇨병)",
+            ),
+        ),
+        "당뇨병 환자수 알려줘",
+        observed_on=date(2026, 8, 14),
+    )
+    capped = apply_source_call_cap(expanded.plan)
+
+    executable, _trace = _execution_plan(
+        object(),
+        capped,
+        clinical_query_anchor="당뇨병 환자수 알려줘",
+    )
+
+    assert executable.tool_queries.hira == tuple(
+        f"{code} 환자수" for code in ("E10", "E11", "E12", "E13", "E14")
+    )
+
+
 def test_q1_interpreted_context_drives_axis_only_followup() -> None:
     plan = _plan("연령별로 다시 알려줘", entities=("E10", "E11", "E12", "E13", "E14"))
     plan = plan.model_copy(
@@ -118,6 +160,26 @@ def test_q5_axis_only_followup_inherits_full_entity_set_and_period() -> None:
         "앞선 질문의 E10 · E11 · E12 · E13 · E14 · 2022년 · 2023년 · "
         "2024년 · 2025년 기준으로 연령별을 조회했습니다."
     )
+
+
+def test_q1_session_state_remembers_planned_kcd_codes_and_interpreted_period() -> None:
+    plan = _plan(
+        "당뇨병 환자수 알려줘",
+        entities=("E10", "E11", "E12", "E13", "E14"),
+    ).model_copy(
+        update={"resolved_question": "당뇨병 E10 E11 E12 E13 E14 최근 5년 환자수"}
+    )
+
+    state = _derive_session_state(
+        "당뇨병 환자수 알려줘",
+        plan,
+        (),
+        previous=None,
+    )
+
+    assert state.canonical_entities == ("E10", "E11", "E12", "E13", "E14")
+    assert state.referenced_entity_set == ("E10", "E11", "E12", "E13", "E14")
+    assert state.time_window == ("recent_5y",)
 
 
 def test_q1_disease_patent_expands_brand_set_without_overwrite() -> None:
