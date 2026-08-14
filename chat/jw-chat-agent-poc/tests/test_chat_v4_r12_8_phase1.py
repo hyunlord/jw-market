@@ -28,6 +28,7 @@ from jw_chat_agent_poc.service.v4.runtime import (
     _bind_session_state_contract,
     _derive_session_state,
     _execution_plan,
+    _gap_fill_request,
     _session_inheritance_notice,
 )
 from jw_chat_agent_poc.service.v4.session_state import SessionState
@@ -126,6 +127,49 @@ def test_q1_capped_kcd_plan_is_not_fanned_out_again_at_execution() -> None:
     assert executable.tool_queries.hira == tuple(
         f"{code} 환자수" for code in ("E10", "E11", "E12", "E13", "E14")
     )
+
+
+def test_q1_multi_year_cap_keeps_every_kcd_code_in_first_round() -> None:
+    expanded = expand_parameter_axes(
+        _plan(
+            "당뇨병 환자수 알려줘",
+            entities=("E10", "E11", "E12", "E13", "E14"),
+        ).model_copy(
+            update={"resolved_question": "당뇨병 E10 E11 E12 E13 E14 최근 5년 환자수"}
+        ),
+        "당뇨병 환자수 알려줘",
+        observed_on=date(2026, 8, 14),
+    )
+    capped = apply_source_call_cap(expanded.plan)
+
+    first_round = capped.tool_queries.hira[:5]
+
+    assert tuple(query.split()[0] for query in first_round) == (
+        "E10",
+        "E11",
+        "E12",
+        "E13",
+        "E14",
+    )
+
+
+def test_q1_multi_kcd_patient_gap_does_not_trigger_web_fill() -> None:
+    plan = _plan(
+        "당뇨병 환자수 알려줘",
+        entities=("E10", "E11", "E12", "E13", "E14"),
+    )
+    missing_future = SourceResult(
+        source="hira",
+        query="E10 환자수 2026년",
+        status="ok",
+        payload={
+            "period_coverage": {
+                "periods": [{"period": "2026", "status": "no_data"}],
+            }
+        },
+    )
+
+    assert _gap_fill_request(plan, (missing_future,)) is None
 
 
 def test_q1_interpreted_context_drives_axis_only_followup() -> None:

@@ -1926,6 +1926,14 @@ def _gap_fill_request(
     plan: Any,
     results: Sequence[SourceResult],
 ) -> dict[str, Any] | None:
+    interpreted = " ".join(
+        (
+            plan.resolved_question,
+            *plan.requested_answer_shape.entities,
+        )
+    )
+    if len(_kcd_codes(interpreted)) > 1:
+        return None
     for result in results:
         if result.source not in {"hira", "nedrug"} or result.source not in plan.answer_sources:
             continue
