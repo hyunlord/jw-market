@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 from collections.abc import Mapping, Sequence
@@ -37,6 +38,8 @@ from jw_chat_agent_poc.service.v4.time_context import (
     current_kst_date as _current_kst_date,
 )
 
+
+LOGGER = logging.getLogger(__name__)
 
 _INTERNAL_SURFACE_RE = re.compile(
     r"(?i:MCP(?:[^가-힣\n]{0,80})?(?:에서|returned|결과)|\btotalCount\b|"
@@ -206,10 +209,24 @@ class V4Synthesizer:
             observed_on=observed_on,
             deterministic_facts=deterministic_facts,
         )
-        messages, prompt_bound_trace = bound_synthesis_messages(
-            messages,
-            char_limit=SynthesisPolicy.from_env().prompt_char_limit,
-        )
+        try:
+            messages, prompt_bound_trace = bound_synthesis_messages(
+                messages,
+                char_limit=SynthesisPolicy.from_env().prompt_char_limit,
+            )
+        except Exception as exc:  # noqa: BLE001 - bounding is an optimisation, never a gate
+            # Bounding runs before the completion guard below. Letting it raise
+            # would cost the whole grounded surface, not just the commentary.
+            LOGGER.exception("v4 synthesis prompt bounding failed; sending unbounded prompt")
+            prompt_bound_trace = {
+                "applied": False,
+                "before_chars": sum(len(message.get("content", "")) for message in messages),
+                "after_chars": sum(len(message.get("content", "")) for message in messages),
+                "strategy": "unbounded_after_error",
+                "records_discarded": 0,
+                "inspection_retains_full_payload": True,
+                "error_type": type(exc).__name__,
+            }
         completion: CompletionResult | None = None
         error_type: str | None = None
         error_category: str | None = None

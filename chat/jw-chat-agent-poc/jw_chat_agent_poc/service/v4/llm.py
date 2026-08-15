@@ -39,8 +39,15 @@ class CompletionResult:
     model: str = "unknown"
 
 
-class CompletionTransportError(RuntimeError):
-    """Transport failure that retains any text already received from the stream."""
+class CompletionTransportError(RuntimeError, requests.RequestException):
+    """Transport failure that retains any text already received from the stream.
+
+    This stays a ``requests.RequestException`` on purpose. The streaming helper
+    below is shared by the planner and the synthesizer, and the planner recovers
+    from transport failures through ``except requests.RequestException``. Raising
+    a type outside that contract turns a recoverable upstream hiccup into an
+    unhandled 500 and loses the whole answer.
+    """
 
     def __init__(self, kind: str, *, partial: CompletionResult) -> None:
         super().__init__(kind)

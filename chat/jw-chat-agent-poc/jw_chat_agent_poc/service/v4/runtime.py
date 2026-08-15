@@ -643,28 +643,34 @@ class V4Runtime:
                 },
             )
         elif callable(synthesize_with_trace):
-            synthesis = _call_with_state(
-                synthesize_with_trace,
-                plan,
-                results,
-                selected_turns,
-                budget_s=synthesis_budget_s,
-                state=session_state,
-                optional_kwargs={"deterministic_facts": deterministic_facts},
-            )
-        else:
-            synthesis = SynthesisOutcome(
-                text=_call_with_state(
-                    self._synthesizer.synthesize,
+            try:
+                synthesis = _call_with_state(
+                    synthesize_with_trace,
                     plan,
                     results,
                     selected_turns,
                     budget_s=synthesis_budget_s,
                     state=session_state,
                     optional_kwargs={"deterministic_facts": deterministic_facts},
-                ),
-                trace={},
-            )
+                )
+            except Exception as exc:  # noqa: BLE001 - invariant 3: commentary may fail, facts may not
+                synthesis = _synthesis_failure_outcome(exc)
+        else:
+            try:
+                synthesis = SynthesisOutcome(
+                    text=_call_with_state(
+                        self._synthesizer.synthesize,
+                        plan,
+                        results,
+                        selected_turns,
+                        budget_s=synthesis_budget_s,
+                        state=session_state,
+                        optional_kwargs={"deterministic_facts": deterministic_facts},
+                    ),
+                    trace={},
+                )
+            except Exception as exc:  # noqa: BLE001 - invariant 3: commentary may fail, facts may not
+                synthesis = _synthesis_failure_outcome(exc)
         gated = apply_v4_gates(plan.resolved_question, synthesis.text, results)
         request_context_notices = tuple(
             notice
@@ -1380,6 +1386,25 @@ def build_default_runtime() -> V4Runtime:
         ),
         synthesizer=V4Synthesizer(synthesizer_client()),
         state_store=SessionStateStore.from_env(),
+    )
+
+
+def _synthesis_failure_outcome(exc: Exception) -> SynthesisOutcome:
+    """Invariant 3: a failed commentary stage must not cost the grounded facts.
+
+    The exception is logged with its traceback and its type is carried in the
+    trace so the inspection panel still reports what went wrong. Only the
+    user-facing surface is kept free of internal names.
+    """
+    LOGGER.exception("v4 synthesis step failed; answering from deterministic facts only")
+    return SynthesisOutcome(
+        text="해설은 생성하지 못했고 조회 결과만 표시합니다.",
+        trace={
+            "status": "fallback",
+            "fallback_reason": "synthesis_step_failed",
+            "error_type": type(exc).__name__,
+            "partial_generated": False,
+        },
     )
 
 
