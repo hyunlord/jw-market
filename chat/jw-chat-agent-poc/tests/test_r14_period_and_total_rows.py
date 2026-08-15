@@ -169,6 +169,56 @@ def test_the_answer_states_the_span_and_the_measure_it_used(schema):
     assert "12개월" in joined
 
 
+def test_the_published_evidence_block_states_the_span_too(schema):
+    """The document lane publishes _render_result, not the aggregate answer.
+    A market-scope reader sees this block, so the span must be in it."""
+    resolution = _plan(schema, "2025년 박카스디 매출 알려줘")
+    source = F.SqlFileSource(
+        logical_name="chso", file_name="CHSO.xlsx", sheet_name="Sell Out  Standard"
+    )
+    rendered = F._render_result(
+        source,
+        {"columns": ["c3", "total_value", "applied_rows"],
+         "rows": [["박카스디", 79286925800, 4]]},
+        schema,
+        period=resolution.period,
+        metric=resolution.metric,
+    )
+    assert "2025-01~2025-12" in rendered
+    assert "지표" in rendered
+    assert not re.search(r"(?<![A-Za-z])c\d{1,3}(?![A-Za-z0-9])", rendered.split("|")[0])
+
+
+def test_the_filter_description_never_exposes_internal_column_names(schema):
+    """The WHERE clause is written against query names (c3). Printing it
+    verbatim leaked them, and the total-row rule added ten more per aggregate."""
+    resolution = _plan(schema, "액티넘이엑스골드 2024년 매출 알려줘")
+    source = F.SqlFileSource(
+        logical_name="chso", file_name="CHSO.xlsx", sheet_name="Sell Out  Standard"
+    )
+    rendered = F._render_aggregate_answer(
+        "액티넘이엑스골드 2024년 매출 알려줘",
+        source,
+        resolution.plan["sql"],
+        {"columns": ["c3", "total_value", "applied_rows"],
+         "rows": [["액티넘이엑스골드", 672932000, 2]]},
+        schema,
+        period=resolution.period,
+        metric=resolution.metric,
+    )
+    assert not re.search(r"(?<![A-Za-z0-9_])c\d+(?![A-Za-z0-9_])", rendered)
+    assert "PRODUCT NAME KOR" in rendered
+
+
+def test_the_total_row_rule_is_not_spelled_out_in_the_filter_line(schema):
+    resolution = _plan(schema, "제조사별 매출 합계")
+    filtered = F._public_filter_text(
+        resolution.plan["sql"].split("WHERE", 1)[1], schema
+    )
+    assert "COALESCE" not in filtered
+    assert "TRIM" not in filtered
+
+
 def test_a_defaulted_measure_is_labelled_as_defaulted(schema):
     scope = F.MetricScope(
         family=F.METRIC_AMOUNT, label="금액", defaulted=True, columns=()

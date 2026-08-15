@@ -352,7 +352,13 @@ def query_uploaded_sql(
                 status="no_matching_rows",
                 trace=tuple(trace),
             )
-        context = _render_result(source, result, schema)
+        context = _render_result(
+            source,
+            result,
+            schema,
+            period=resolution.period,
+            metric=resolution.metric,
+        )
         answer = ""
         if aggregate:
             answer = _render_aggregate_answer(
@@ -795,6 +801,31 @@ def _scope_disclosure_lines(
     return lines
 
 
+def _public_filter_text(where_clause: str, schema: Mapping[str, Any]) -> str:
+    """Describe a WHERE clause using the reader's own column names.
+
+    The clause is written against internal query names (``c3``). Printing it
+    verbatim exposed them, and the total-row rule added roughly ten more on
+    every aggregate. Query names are replaced with the workbook's headers, and
+    the total-row clause is dropped because it is already stated in full on its
+    own disclosure line.
+    """
+
+    text = " ".join(where_clause.split())
+    text = _TOTAL_ROW_CLAUSE_RE.sub("", text)
+    text = re.sub(r"^\s*(?:AND|OR)\s+|\s+(?:AND|OR)\s*$", "", text, flags=re.IGNORECASE)
+    text = " ".join(text.split()).strip()
+    names = {
+        str(item.get("query_name") or ""): " ".join(str(item.get("source_name") or "").split())
+        for item in _schema_columns(schema)
+        if str(item.get("query_name") or "")
+    }
+    def _swap(match: re.Match[str]) -> str:
+        return names.get(match.group(0)) or match.group(0)
+    text = re.sub(r"(?<![A-Za-z0-9_])c\d+(?![A-Za-z0-9_])", _swap, text)
+    return text or "전체 행"
+
+
 def _render_aggregate_answer(
     question: str,
     source: SqlFileSource,
@@ -821,7 +852,11 @@ def _render_aggregate_answer(
         sql,
         re.IGNORECASE | re.DOTALL,
     )
-    filter_text = "전체 행" if where_match is None else " ".join(where_match.group(1).split())
+    filter_text = (
+        "전체 행"
+        if where_match is None
+        else _public_filter_text(where_match.group(1), schema)
+    )
     aggregate_functions = list(
         dict.fromkeys(
             value.upper()
@@ -1511,6 +1546,13 @@ _MAX_IDENTITY_PREDICATE_COLUMNS: Final = 12
 _TOTAL_ROW_EXCLUSION_RE: Final[re.Pattern[str]] = re.compile(
     r"COALESCE\(TRIM\(c\d+\), ''\) <> ''", re.IGNORECASE
 )
+# The whole parenthesised total-row rule, so it can be lifted out of the
+# human-facing filter description instead of being spelled out column by column.
+_TOTAL_ROW_CLAUSE_RE: Final[re.Pattern[str]] = re.compile(
+    r"\(\s*COALESCE\(TRIM\(c\d+\), ''\) <> ''"
+    r"(?:\s+OR\s+COALESCE\(TRIM\(c\d+\), ''\) <> '')*\s*\)",
+    re.IGNORECASE,
+)
 
 
 def _identity_dimension_columns(
@@ -2019,7 +2061,17 @@ def _render_result(
     source: SqlFileSource,
     result: Mapping[str, Any],
     schema: Mapping[str, Any],
+    *,
+    period: "PeriodScope | None" = None,
+    metric: "MetricScope | None" = None,
 ) -> str:
+    """Render the rows a file query returned, with the span they cover.
+
+    This is the block the document lane publishes as evidence, so the span and
+    measure have to be stated here too. Putting them only in the aggregate
+    answer left a market-scope reader a total with no period attached.
+    """
+
     columns = result.get("columns")
     rows = result.get("rows")
     safe_columns = _source_column_labels(columns, schema)
@@ -2028,6 +2080,7 @@ def _render_result(
         "## 업로드 파일 SQL 결과",
         f"파일: {source.file_name}",
         f"시트: {source.sheet_name}",
+        *_scope_disclosure_lines(period, metric),
     ]
     if not safe_rows:
         return "\n".join([*lines, "상태: 원천없음", "원천 조회 결과 0행"])
