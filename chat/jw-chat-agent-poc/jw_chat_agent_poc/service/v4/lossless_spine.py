@@ -20,6 +20,7 @@ from jw_chat_agent_poc.service.v4.lossless_contracts import (
     RenderNode,
 )
 from jw_chat_agent_poc.service.v4.source_labels import normalize_public_source_surface
+from jw_chat_agent_poc.service.v4.synthesis_policy import limit_evidence_sets_for_render
 
 
 LosslessMode = Literal["shadow", "inject"]
@@ -80,13 +81,33 @@ def build_lossless_render(
     results: Sequence[SourceResult],
     *,
     observed_on: date,
+    source_render_limit: int | None = None,
 ) -> tuple[tuple[EvidenceSet, ...], DeterministicRender]:
     evidence_sets = build_evidence_sets(plan, results, observed_on=observed_on)
-    return evidence_sets, render_deterministic_facts(
+    render_sets = evidence_sets
+    limit_trace: dict[str, Any] = {"applied": False, "sources": {}}
+    if source_render_limit is not None:
+        render_sets, limit_trace = limit_evidence_sets_for_render(
+            evidence_sets,
+            per_source_limit=source_render_limit,
+        )
+    rendered = render_deterministic_facts(
         plan,
-        evidence_sets,
+        render_sets,
         observed_on=observed_on,
     )
+    if limit_trace["applied"]:
+        notices = [
+            f"{source}: {counts['shown']}/{counts['total']} 표시, 나머지는 조회 상세에 보존"
+            for source, counts in limit_trace["sources"].items()
+        ]
+        existing = str(rendered.request_notice or "").strip()
+        rendered = rendered.model_copy(
+            update={
+                "request_notice": " · ".join(filter(None, (existing, *notices)))
+            }
+        )
+    return evidence_sets, rendered
 
 
 def compose_lossless_answer(
@@ -206,7 +227,7 @@ def compose_lossless_answer(
     trace["public_source_surface"] = {"rewritten": public_source_rewrites}
     trace["numeric_separator_repairs"] = numeric_separator_repairs
     narrative_character_count = _narrative_character_count(text)
-    narrative_character_floor = max(1500, rendered.coverage.records_rendered * 80)
+    narrative_character_floor = 1500
     narrative_minimum_required = rendered.coverage.records_rendered > 0
     trace["duplicate_leading_sentences_removed"] = duplicate_leading_sentences_removed
     trace["narrative_character_count"] = narrative_character_count
@@ -257,7 +278,7 @@ def _assemble_injected_answer(
         preamble,
         commentary_sections,
         fallback=fallback,
-        fallback_text="## 핵심 답\n자동 해설 생성 미완료",
+        fallback_text="## 핵심 답\n해설은 생성하지 못했고 조회 결과만 표시합니다.",
     )
 
     fact_coverage: list[str] = []

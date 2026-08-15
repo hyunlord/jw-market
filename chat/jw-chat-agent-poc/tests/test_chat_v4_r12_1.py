@@ -1060,7 +1060,7 @@ def test_lossless_timeout_composition_keeps_full_clinical_facts() -> None:
         mode="inject",
     )
 
-    assert "자동 해설 생성 미완료" in composed.text
+    assert "해설은 생성하지 못했고 조회 결과만 표시합니다." in composed.text
     assert "구체적인 답을 구성하지 못했습니다" not in composed.text
     assert all(f"NCT{index:08d}" in composed.text for index in range(1, 4))
     assert composed.fallback_detail_retention_rate == 1.0
@@ -1797,7 +1797,7 @@ def test_runtime_fallback_retains_full_clinical_facts(monkeypatch) -> None:
 
     assert "NCT00000001" in answer.text
     assert "Brief NCT00000001" in answer.text
-    assert "자동 해설 생성 미완료" in answer.text
+    assert "해설은 생성하지 못했고 조회 결과만 표시합니다." in answer.text
     assert "구체적인 답을 구성하지 못했습니다" not in answer.text
     assert answer.trace["lossless_spine"]["fallback_detail_retention_rate"] == 1.0
 

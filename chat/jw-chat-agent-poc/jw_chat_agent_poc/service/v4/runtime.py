@@ -88,6 +88,10 @@ from jw_chat_agent_poc.service.v4.source_tiers import (
 from jw_chat_agent_poc.service.v4.surface_binding import sanitize_bound_surface
 from jw_chat_agent_poc.service.v4.time_context import current_kst_date
 from jw_chat_agent_poc.service.v4.query_scope import apply_source_call_cap
+from jw_chat_agent_poc.service.v4.synthesis_policy import (
+    SynthesisPolicy,
+    prune_unsupported_source_queries,
+)
 
 
 _PUBLIC_PROGRESS_SOURCE = {
@@ -213,7 +217,8 @@ class V4Runtime:
         self._executor = executor
         self._synthesizer = synthesizer
         self._state_store = state_store
-        self._total_timeout_s = 150.0
+        self._synthesis_policy = SynthesisPolicy.from_env()
+        self._total_timeout_s = self._synthesis_policy.total_request_budget_s
         self._session_results: OrderedDict[str, tuple[SourceResult, ...]] = OrderedDict()
         self._session_results_lock = threading.Lock()
         self._max_session_results = 1024
@@ -279,6 +284,8 @@ class V4Runtime:
             observed_on=current_kst_date(),
         )
         plan = apply_source_call_cap(parameter_expansion.plan)
+        plan, pruning_trace = prune_unsupported_source_queries(plan)
+        parameter_expansion.trace["unsupported_source_pruning"] = pruning_trace
         parameter_expansion.trace["query_scope"] = (
             plan.query_scope.model_dump(mode="json") if plan.query_scope else None
         )
@@ -316,6 +323,8 @@ class V4Runtime:
             source: [] for source in SOURCE_NAMES
         }
         for source in SOURCE_NAMES:
+            if source_expected[source] == 0:
+                continue
             _emit_source_progress(
                 progress_callback,
                 source=source,
@@ -557,8 +566,10 @@ class V4Runtime:
             *supplemental_results,
         )
         for source in SOURCE_NAMES:
+            if source_expected[source] == 0:
+                continue
             missing_results = max(
-                1 if source_expected[source] == 0 else 0,
+                0,
                 source_expected[source] - len(source_results[source]),
             )
             for _ in range(missing_results):
@@ -587,6 +598,7 @@ class V4Runtime:
                 plan,
                 results,
                 observed_on=current_kst_date(),
+                source_render_limit=self._synthesis_policy.source_render_limit,
             )
         except LosslessInvariantError:
             LOGGER.exception("v4 lossless spine invariant failed")
@@ -613,13 +625,30 @@ class V4Runtime:
             "확인된 근거를 종합해 답변을 작성합니다",
         )
         synthesize_with_trace = getattr(self._synthesizer, "synthesize_with_trace", None)
-        if callable(synthesize_with_trace):
+        synthesis_budget_s = self._synthesis_policy.allocate_synthesis_budget(
+            remaining_s=_remaining(deadline)
+        )
+        if synthesis_budget_s is None:
+            synthesis = SynthesisOutcome(
+                text="해설은 생략하고 조회 결과만 표시합니다.",
+                trace={
+                    "status": "budget_skipped",
+                    "fallback_reason": "insufficient_remaining_budget",
+                    "partial_generated": False,
+                    "budget": {
+                        "remaining_s": _remaining(deadline),
+                        "minimum_s": self._synthesis_policy.min_synthesis_budget_s,
+                        "attempted": False,
+                    },
+                },
+            )
+        elif callable(synthesize_with_trace):
             synthesis = _call_with_state(
                 synthesize_with_trace,
                 plan,
                 results,
                 selected_turns,
-                budget_s=min(60.0, _remaining(deadline)),
+                budget_s=synthesis_budget_s,
                 state=session_state,
                 optional_kwargs={"deterministic_facts": deterministic_facts},
             )
@@ -630,7 +659,7 @@ class V4Runtime:
                     plan,
                     results,
                     selected_turns,
-                    budget_s=min(60.0, _remaining(deadline)),
+                    budget_s=synthesis_budget_s,
                     state=session_state,
                     optional_kwargs={"deterministic_facts": deterministic_facts},
                 ),

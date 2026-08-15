@@ -18,9 +18,17 @@ from jw_chat_agent_poc.service.v4.gates import (
     inspect_requested_hira_surface,
     render_mart_dimension_facts,
 )
-from jw_chat_agent_poc.service.v4.llm import CompletionResult, GenOSV4Client
+from jw_chat_agent_poc.service.v4.llm import (
+    CompletionResult,
+    CompletionTransportError,
+    GenOSV4Client,
+)
 from jw_chat_agent_poc.service.v4.reason_code_enforcement import typed_absence_record
 from jw_chat_agent_poc.service.v4.session_state import SessionState
+from jw_chat_agent_poc.service.v4.synthesis_policy import (
+    SynthesisPolicy,
+    bound_synthesis_messages,
+)
 from jw_chat_agent_poc.service.v4.source_labels import (
     SOURCE_LABELS as _PUBLIC_SOURCE,
 )
@@ -198,8 +206,14 @@ class V4Synthesizer:
             observed_on=observed_on,
             deterministic_facts=deterministic_facts,
         )
+        messages, prompt_bound_trace = bound_synthesis_messages(
+            messages,
+            char_limit=SynthesisPolicy.from_env().prompt_char_limit,
+        )
         completion: CompletionResult | None = None
         error_type: str | None = None
+        error_category: str | None = None
+        partial_generated = False
         try:
             completion = _complete_detailed(
                 self._client,
@@ -208,14 +222,34 @@ class V4Synthesizer:
                 max_tokens=synthesis_max_tokens,
             )
             answer = completion.text.strip()
+        except CompletionTransportError as exc:
+            completion = exc.partial
+            answer = _complete_sentence_prefix(completion.text)
+            partial_generated = bool(answer)
+            error_category = exc.kind
+            error_type = "transport"
+            if partial_generated:
+                answer = (
+                    f"{answer.rstrip()}\n\n"
+                    "해설 생성이 시간 내 완료되지 않아 일부만 표시합니다."
+                )
         except Exception as exc:  # noqa: BLE001 - a grounded fallback is preferable to a 500
             answer = ""
             error_type = type(exc).__name__
+            error_category = _completion_error_category(exc)
 
         fallback_reason: str | None = None
         if completion is not None and completion.finish_reason == "length":
-            answer = ""
+            answer = _complete_sentence_prefix(completion.text)
+            partial_generated = bool(answer)
+            if partial_generated:
+                answer = (
+                    f"{answer.rstrip()}\n\n"
+                    "해설 생성이 시간 내 완료되지 않아 일부만 표시합니다."
+                )
             fallback_reason = "length"
+        elif partial_generated:
+            fallback_reason = "partial_transport"
         elif not answer:
             fallback_reason = "empty_or_transport_error"
 
@@ -250,10 +284,7 @@ class V4Synthesizer:
                 answer = original_answer
 
         if not answer:
-            answer = _evidence_fallback(
-                usable,
-                question=plan.resolved_question,
-            )
+            answer = "해설은 생성하지 못했고 조회 결과만 표시합니다."
             answer = _append_comparison_observations(answer, usable)
         elif _RETRYABLE_INTERNAL_RE.search(answer):
             answer = _replace_internal_blocks(answer, usable)
@@ -333,11 +364,16 @@ class V4Synthesizer:
         return SynthesisOutcome(
             text=answer,
             trace={
-                "status": "fallback" if fallback_reason else "synthesized",
+                "status": (
+                    "partial"
+                    if partial_generated
+                    else "fallback" if fallback_reason else "synthesized"
+                ),
                 "finish_reason": completion.finish_reason if completion else None,
                 "usage": completion.usage if completion else {},
                 "elapsed_ms": completion.elapsed_ms if completion else None,
                 "prompt_chars": sum(len(message["content"]) for message in messages),
+                "prompt_bound": prompt_bound_trace,
                 "prompt_layout": {
                     "static_prefix_sha256": hashlib.sha256(
                         messages[0]["content"].encode()
@@ -377,6 +413,8 @@ class V4Synthesizer:
                 },
                 "fallback_reason": fallback_reason,
                 "error_type": error_type,
+                "error_category": error_category,
+                "partial_generated": partial_generated,
                 "serving_id": completion.serving_id if completion else "not_applicable",
                 "model": completion.model if completion else "not_applicable",
             },
@@ -415,6 +453,30 @@ def _complete_detailed(
         usage={},
         elapsed_ms=0.0,
     )
+
+
+def _complete_sentence_prefix(text: str) -> str:
+    cleaned = text.strip()
+    if not cleaned:
+        return ""
+    boundaries = tuple(
+        match.end()
+        for match in re.finditer(r"(?:[.!?。](?=\s|$)|(?:다|요|음|임)\.(?=\s|$))", cleaned)
+    )
+    return cleaned[: boundaries[-1]].strip() if boundaries else ""
+
+
+def _completion_error_category(exc: Exception) -> str:
+    name = type(exc).__name__.casefold()
+    if "readtimeout" in name:
+        return "read_timeout"
+    if "timeout" in name:
+        return "transport_timeout"
+    if "connection" in name:
+        return "connection_error"
+    if "http" in name:
+        return "upstream_http_error"
+    return "upstream_error"
 
 
 def _synthesis_messages(

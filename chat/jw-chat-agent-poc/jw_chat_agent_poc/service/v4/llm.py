@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from dataclasses import replace
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -18,6 +19,7 @@ from jw_chat_agent_poc.genos_config import (
     resolve_planner_genos_token,
 )
 from jw_chat_agent_poc.service.genos_client import GenosClient
+from jw_chat_agent_poc.service.v4.synthesis_policy import SynthesisPolicy
 
 
 LOGGER = logging.getLogger(__name__)
@@ -35,6 +37,15 @@ class CompletionResult:
     elapsed_ms: float
     serving_id: str = "unknown"
     model: str = "unknown"
+
+
+class CompletionTransportError(RuntimeError):
+    """Transport failure that retains any text already received from the stream."""
+
+    def __init__(self, kind: str, *, partial: CompletionResult) -> None:
+        super().__init__(kind)
+        self.kind = kind
+        self.partial = partial
 
 
 class GenOSV4Client:
@@ -129,6 +140,8 @@ def planner_client() -> GenOSV4Client:
 
 
 def synthesizer_client() -> GenOSV4Client:
+    policy = SynthesisPolicy.from_env()
+    default_budget = math.ceil(policy.max_synthesis_budget_s)
     serving_id = os.environ.get("GENOS_SYNTH_SERVING_ID")
     if serving_id is None:
         serving_id = os.environ.get("V4_SYNTHESIZER_SERVING_ID", "202")
@@ -152,8 +165,8 @@ def synthesizer_client() -> GenOSV4Client:
             "GENOS_SYNTH_MODEL",
             os.environ.get("V4_SYNTHESIZER_MODEL", SYNTHESIZER_MODEL),
         ),
-        timeout_s=int(os.environ.get("V4_SYNTHESIZER_TIMEOUT_S", "60")),
-        total_budget_s=int(os.environ.get("V4_SYNTHESIZER_BUDGET_S", "64")),
+        timeout_s=int(os.environ.get("V4_SYNTHESIZER_TIMEOUT_S", str(default_budget))),
+        total_budget_s=int(os.environ.get("V4_SYNTHESIZER_BUDGET_S", str(default_budget))),
         thinking_level=os.environ.get("V4_SYNTHESIZER_THINKING_LEVEL", "MEDIUM"),
     )
 
@@ -199,7 +212,17 @@ def _chat_completion_with_token_cap(
     try:
         for raw_line in response.iter_lines(decode_unicode=True):
             if time.monotonic() - started >= client.total_budget_s:
-                raise requests.Timeout("V4 synthesis budget exceeded")
+                raise CompletionTransportError(
+                    "budget_timeout",
+                    partial=_partial_completion(
+                        chunks,
+                        finish_reason=finish_reason,
+                        usage=usage,
+                        started=started,
+                        serving_id=serving_id,
+                        model=model,
+                    ),
+                )
             if not raw_line or not raw_line.startswith("data:"):
                 continue
             encoded = raw_line.removeprefix("data:").strip()
@@ -220,12 +243,69 @@ def _chat_completion_with_token_cap(
             token = client._extract_delta_from_data(data)  # noqa: SLF001 - transport-compatible parser
             if token:
                 chunks.append(token)
+    except CompletionTransportError:
+        raise
+    except requests.ReadTimeout as exc:
+        raise CompletionTransportError(
+            "read_timeout",
+            partial=_partial_completion(
+                chunks,
+                finish_reason=finish_reason,
+                usage=usage,
+                started=started,
+                serving_id=serving_id,
+                model=model,
+            ),
+        ) from exc
+    except requests.ConnectionError as exc:
+        raise CompletionTransportError(
+            "connection_error",
+            partial=_partial_completion(
+                chunks,
+                finish_reason=finish_reason,
+                usage=usage,
+                started=started,
+                serving_id=serving_id,
+                model=model,
+            ),
+        ) from exc
+    except requests.Timeout as exc:
+        raise CompletionTransportError(
+            "transport_timeout",
+            partial=_partial_completion(
+                chunks,
+                finish_reason=finish_reason,
+                usage=usage,
+                started=started,
+                serving_id=serving_id,
+                model=model,
+            ),
+        ) from exc
     finally:
         response.close()
     return CompletionResult(
         text="".join(chunks).strip(),
         finish_reason=finish_reason,
         usage=usage,
+        elapsed_ms=(time.monotonic() - started) * 1000,
+        serving_id=serving_id,
+        model=model,
+    )
+
+
+def _partial_completion(
+    chunks: Sequence[str],
+    *,
+    finish_reason: str | None,
+    usage: dict[str, object],
+    started: float,
+    serving_id: str,
+    model: str,
+) -> CompletionResult:
+    return CompletionResult(
+        text="".join(chunks).strip(),
+        finish_reason=finish_reason,
+        usage=dict(usage),
         elapsed_ms=(time.monotonic() - started) * 1000,
         serving_id=serving_id,
         model=model,

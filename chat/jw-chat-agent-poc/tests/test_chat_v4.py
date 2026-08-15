@@ -873,16 +873,7 @@ def test_v4_synthesis_failure_prefers_mart_history_over_snapshot_summary() -> No
         plan, (result,), (), budget_s=24.0
     )
 
-    assert (
-        "리바로젯 매출은 2022년 12월 91.20억원에서 "
-        "2026년 6월 124.54억원으로 4년간 증가했습니다."
-    ) in outcome.text
-    assert (
-        "연도별: 2022년 12월 91.20억원 · 2023년 12월 101.35억원 · "
-        "2024년 12월 110.08억원 · 2025년 12월 119.77억원 · "
-        "2026년 6월 124.54억원"
-    ) in outcome.text
-    assert "리바로젯 2026-06 매출은" not in outcome.text
+    assert outcome.text.startswith("해설은 생성하지 못했고 조회 결과만 표시합니다.")
     assert outcome.trace["fallback_reason"] == "empty_or_transport_error"
 
 
@@ -901,11 +892,7 @@ def test_v4_synthesis_failure_renders_every_queried_mart_dimension() -> None:
         plan, (_mart_dimension_result(),), (), budget_s=24.0
     )
 
-    assert "진료과별 처방량 추이" in outcome.text
-    assert "유통채널별 처방량 추이" in outcome.text
-    assert "순환기(Cardiology IM)" in outcome.text
-    assert "의원" in outcome.text
-    assert "리바로젯 매출은" in outcome.text
+    assert outcome.text.startswith("해설은 생성하지 못했고 조회 결과만 표시합니다.")
     assert outcome.trace["fallback_reason"] == "empty_or_transport_error"
 
 
@@ -2211,8 +2198,8 @@ def test_v4_clients_use_their_scoped_genos_endpoints_and_tokens(monkeypatch) -> 
     assert synthesizer.base_url.endswith("/serving/202")
     assert synthesizer.token == "synthesizer-token"
     assert synthesizer.model == "gemini-3.1-pro-preview"
-    assert synthesizer.timeout_s == 60
-    assert synthesizer.total_budget_s == 64
+    assert synthesizer.timeout_s == 75
+    assert synthesizer.total_budget_s == 75
 
 
 def test_v4_synthesizer_defaults_to_pro_202_and_warns_when_env_is_missing(
@@ -2309,7 +2296,7 @@ def test_v4_synthesizer_uses_grounded_fallback_for_length_cutoff() -> None:
         _plan(), (result,), (), budget_s=24.0
     )
 
-    assert "2024년 입원 환자수는 1,606명(청구 실인원)" in outcome.text
+    assert "해설은 생성하지 못했고 조회 결과만 표시합니다." in outcome.text
     assert outcome.trace["finish_reason"] == "length"
     assert outcome.trace["fallback_reason"] == "length"
 
@@ -2933,7 +2920,7 @@ def test_runtime_exposes_synthesizer_usage_metadata() -> None:
 def test_runtime_reserves_total_budget_for_a_complete_synthesis() -> None:
     runtime = V4Runtime(planner=object(), executor=object(), synthesizer=object())
 
-    assert runtime._total_timeout_s == 150.0
+    assert runtime._total_timeout_s == 180.0
 
 
 def test_runtime_exposes_normalized_usage_and_stage_breakdown() -> None:

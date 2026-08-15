@@ -210,7 +210,9 @@ def test_lossless_surface_omits_empty_fact_sections_and_uses_exact_fallback_copy
         mode="inject",
     )
 
-    assert composed.text.startswith("## 핵심 답\n자동 해설 생성 미완료")
+    assert composed.text.startswith(
+        "## 핵심 답\n해설은 생성하지 못했고 조회 결과만 표시합니다."
+    )
     assert "## 뉴스 맥락" not in composed.text
     assert "자동 해설 생성이 완료되지 않았습니다" not in composed.text
 
