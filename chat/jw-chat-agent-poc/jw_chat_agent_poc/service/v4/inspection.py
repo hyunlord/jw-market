@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import os
 import re
 from typing import Any
 from urllib.parse import urlparse
@@ -92,6 +93,7 @@ def build_inspection_detail(
                     if result.source == "document"
                     else {}
                 ),
+                "record_accounting": _record_accounting(evidence_records, rendered_ids),
                 "unused_count": max(returned - narrated, 0),
                 "dropped_count": max(returned - parsed, 0),
                 "drop_reasons": _drop_reasons(
@@ -489,6 +491,58 @@ def _drop_reasons(
             }
         )
     return reasons
+
+
+_DEFAULT_OMITTED_IDENTIFIER_LIMIT = 200
+
+
+def _omitted_identifier_limit() -> int:
+    raw = os.environ.get(
+        "CHAT_V4_INSPECTION_OMITTED_IDENTIFIER_LIMIT",
+        str(_DEFAULT_OMITTED_IDENTIFIER_LIMIT),
+    )
+    try:
+        value = int(raw)
+    except ValueError:
+        return _DEFAULT_OMITTED_IDENTIFIER_LIMIT
+    return value if value > 0 else _DEFAULT_OMITTED_IDENTIFIER_LIMIT
+
+
+def _record_accounting(
+    evidence_records: Sequence[Any],
+    rendered_ids: set[str],
+) -> dict[str, Any]:
+    """Per-lane ledger proving invariant 2 without shipping record payloads.
+
+    Invariant 2 allows a record to leave the answer surface as long as it is
+    still reachable in the inspection panel. Since R13-B' stopped transporting
+    record payloads, that claim became unverifiable from the client. The ledger
+    below closes twice — received == rendered + omitted, and
+    omitted == identified + unidentified — so a silently dropped record shows up
+    as an arithmetic break rather than an absence nobody can see.
+    """
+    limit = _omitted_identifier_limit()
+    omitted = [
+        record for record in evidence_records if record.evidence_id not in rendered_ids
+    ]
+    identifiers: list[str] = []
+    without_identifier = 0
+    for record in omitted:
+        display = sorted(_display_identifiers(record.payload))
+        if display:
+            identifiers.append(_sanitize(display[0]))
+        else:
+            # Counted, never invented.
+            without_identifier += 1
+    return {
+        "received": len(evidence_records),
+        "rendered": len(evidence_records) - len(omitted),
+        "omitted": len(omitted),
+        "omitted_identifiers": identifiers[:limit],
+        "omitted_identifiers_truncated": len(identifiers) > limit,
+        "omitted_without_identifier": without_identifier,
+        "identifier_limit": limit,
+    }
 
 
 def _bounded_drop_identifiers(

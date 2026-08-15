@@ -605,8 +605,15 @@ def test_r11b_reexamination_surface_ignores_mismatched_nedrug_evidence() -> None
         (),
     )
 
-    assert answer == model_answer
+    # R12.7d: the deterministic mart surface is now attached to every answer, so
+    # exact equality no longer holds. The behaviour this test exists for is that
+    # the mismatched nedrug reexamination window must not leak, and that the
+    # model's own answer is preserved untouched.
+    assert answer.startswith(model_answer)
     assert "2029-12-31" not in answer
+    assert "재심사" not in answer.removeprefix(model_answer)
+    # what was appended is the deterministic mart surface, nothing else
+    assert "## 동일 기간 브랜드 비교" in answer
 
 
 def test_r11b_reexamination_mixed_missing_records_do_not_preserve_overclaim() -> None:

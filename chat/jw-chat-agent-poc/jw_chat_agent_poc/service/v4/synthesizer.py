@@ -378,6 +378,14 @@ class V4Synthesizer:
             results=results,
         )
         answer = _finalize_answer(answer, usable)
+        # After _finalize_answer on purpose: that step truncates at a model-owned
+        # "## 출처" heading, which would swallow anything appended before it.
+        answer, market_surface_trace = _inject_deterministic_market_surface(
+            answer,
+            usable,
+            question=plan.resolved_question,
+        )
+        answer = _append_comparison_observations(answer, usable)
         return SynthesisOutcome(
             text=answer,
             trace={
@@ -391,6 +399,7 @@ class V4Synthesizer:
                 "elapsed_ms": completion.elapsed_ms if completion else None,
                 "prompt_chars": sum(len(message["content"]) for message in messages),
                 "prompt_bound": prompt_bound_trace,
+                "deterministic_market_surface": market_surface_trace,
                 "prompt_layout": {
                     "static_prefix_sha256": hashlib.sha256(
                         messages[0]["content"].encode()
@@ -1935,6 +1944,72 @@ def _coverage_notices(results: Sequence[SourceResult]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(notices))
 
 
+def _deterministic_market_blocks(
+    results: Sequence[SourceResult],
+    *,
+    question: str = "",
+) -> tuple[str, ...]:
+    """The deterministic mart surface: comparison table, dimension facts, history.
+
+    This is the single generator for that surface. Both the "synthesis produced
+    nothing" fallback and the always-on injection read from here, so the two
+    paths cannot drift apart the way they did in R12.7c.
+    """
+    blocks: list[str] = []
+    for result in results:
+        if result.source != "mart":
+            continue
+        entity_bundle = _entity_bundle_fallback(result.payload)
+        dimensions = render_mart_dimension_facts(
+            (result,),
+            question=question or result.query,
+        )
+        history = _mart_history_fallback(
+            result.payload,
+            question=question or result.query,
+        )
+        blocks.extend(block for block in (entity_bundle, dimensions, history) if block)
+    return tuple(blocks)
+
+
+def _inject_deterministic_market_surface(
+    answer: str,
+    results: Sequence[SourceResult],
+    *,
+    question: str,
+) -> tuple[str, dict[str, Any]]:
+    """Attach the deterministic mart surface to every answer, not just failures.
+
+    The constitution makes code responsible for the whole fact surface; the LLM
+    only adds commentary. Emitting the table only when synthesis failed inverted
+    that, so this runs on every path.
+
+    Blocks are appended rather than prepended so the model's direct answer stays
+    at the top. Tables are exempt from sentence-dedup (it skips lines starting
+    with "|" or "#"), so ordering cannot cost the table any rows; a prose
+    sentence the model duplicated verbatim is what collapses instead.
+    """
+    blocks = _deterministic_market_blocks(results, question=question)
+    pending = [block for block in blocks if block.strip() and block.strip() not in answer]
+    trace = {
+        "blocks_available": len(blocks),
+        "blocks_injected": len(pending),
+        "blocks_already_present": len(blocks) - len(pending),
+        "table_rows": sum(
+            1
+            for block in blocks
+            for line in block.splitlines()
+            if line.startswith("|") and not set(line) <= set("| -:")
+        ),
+        "records_discarded": 0,
+    }
+    if not pending:
+        return answer, trace
+    if not answer.strip():
+        return "\n\n".join(pending), trace
+    return "\n\n".join((answer.rstrip(), *pending)), trace
+
+
 def _evidence_fallback(
     results: Sequence[SourceResult],
     *,
@@ -1943,19 +2018,9 @@ def _evidence_fallback(
     paragraphs: list[str] = []
     for result in results:
         if result.source == "mart":
-            entity_bundle = _entity_bundle_fallback(result.payload)
-            dimensions = render_mart_dimension_facts(
-                (result,),
-                question=question or result.query,
-            )
-            history = _mart_history_fallback(
-                result.payload,
-                question=question or result.query,
-            )
-            if entity_bundle or dimensions or history:
-                paragraphs.extend(
-                    block for block in (entity_bundle, dimensions, history) if block
-                )
+            blocks = _deterministic_market_blocks((result,), question=question)
+            if blocks:
+                paragraphs.extend(blocks)
                 continue
         if result.source == "hira":
             patient_facts = _hira_patient_facts(result.payload)
