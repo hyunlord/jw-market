@@ -402,8 +402,8 @@ def test_web_augmentation_excludes_results_without_catalog_subject_match() -> No
     assert raw_result["excluded_items"] == [
         {
             "rank": 1,
-            "url": "https://example.org/movie",
-            "title": "천만 관객 돌파 영화",
+            "url": "",
+            "title": "",
             "reason_code": "web_subject_not_matched",
         }
     ]

@@ -149,6 +149,52 @@ def test_golden_projection_shape_restores_question_text_and_agent_flow() -> None
     }
 
 
+def test_projection_restores_saved_v4_progress_events_in_order() -> None:
+    progress_events = [
+        {
+            "name": "질문 해석",
+            "detail": "특허 현황을 확인합니다",
+            "recorded_at": "2026-08-14T00:00:00+00:00",
+        },
+        {
+            "name": "자료 수집",
+            "detail": "식품의약품안전처 의약품 특허목록 조회 완료(1.25초)",
+            "status": "done",
+            "raw_name": "v4_source:patent",
+        },
+    ]
+    turn = replace(
+        _turn(),
+        trace={"progress_events": progress_events},
+        timing={"total_elapsed_ms": 1234},
+    )
+
+    _, _, response_doc = build_projection_documents(
+        replace(_job(), turn=turn),
+        ActiveChatService(service_id=91, revision_id=181, publication_id=838, endpoint="endpoint"),
+        pod="pod",
+        ip="10.0.0.8",
+    )
+
+    flow = response_doc["data"]["data"]["agentFlowExecutedData"]
+    assert [node["nodeLabel"] for node in flow] == ["질문 접수", "질문 해석", "자료 수집"]
+    assert flow[1]["data"]["output"] == {
+        "detail": "특허 현황을 확인합니다",
+        "recorded_at": "2026-08-14T00:00:00+00:00",
+        "status": "done",
+    }
+    assert flow[2]["data"]["output"] == {
+        "detail": "식품의약품안전처 의약품 특허목록 조회 완료(1.25초)",
+        "recorded_at": "",
+        "status": "done",
+    }
+    assert flow[2]["data"]["state"] == {
+        "restored": True,
+        "schema": "r12.6.progress.v1",
+    }
+    assert "raw_name" not in flow[2]["data"]["output"]
+
+
 def test_long_source_conversation_id_is_preserved_separately_from_projection_key() -> None:
     source_id = "portal-conversation-20260803-" + "x" * 80
     turn = replace(

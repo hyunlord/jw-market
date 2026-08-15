@@ -4,6 +4,7 @@ from collections.abc import Mapping, Sequence
 from datetime import date
 
 from jw_chat_agent_poc.service.v4.lossless_contracts import EvidenceRecord, EvidenceSet, RenderNode
+from jw_chat_agent_poc.service.v4.narrative_values import public_enum_value
 from jw_chat_agent_poc.service.v4.render_common import display, list_display, table, text
 
 
@@ -26,7 +27,6 @@ ACTIVE_CLINICAL_STATUSES = {
     "ACTIVE_NOT_RECRUITING",
     "NOT_YET_RECRUITING",
 }
-MAX_CLINICAL_DETAIL_ROWS = 10
 _STATUS_PRIORITY = {
     "RECRUITING": 0,
     "NOT_YET_RECRUITING": 1,
@@ -57,14 +57,31 @@ def render_clinical(
 
     column_specs = (
         ("nct_id", "NCT ID", _nct_link),
-        ("brief_title", "간략 시험명", lambda payload: display(payload.get("brief_title"))),
-        ("overall_status", "상태", lambda payload: display(payload.get("overall_status"))),
-        ("phases", "단계", lambda payload: list_display(payload.get("phases"))),
+        (
+            "brief_title",
+            "간략 시험명",
+            lambda payload: public_enum_value(display(payload.get("brief_title"))),
+        ),
+        (
+            "overall_status",
+            "상태",
+            lambda payload: public_enum_value(payload.get("overall_status")),
+        ),
+        (
+            "phases",
+            "단계",
+            lambda payload: _public_list(payload.get("phases")),
+        ),
         ("sponsor", "스폰서", lambda payload: display(payload.get("sponsor"))),
         (
             "last_update_date",
             "최종 갱신일",
             lambda payload: display(payload.get("last_update_date")),
+        ),
+        (
+            "relevance_status",
+            "직접 관련성",
+            lambda payload: display(payload.get("relevance_status")),
         ),
     )
     included = tuple(
@@ -98,7 +115,8 @@ def render_clinical(
             if part
         ),
     )
-    return [scope, record_table], CLINICAL_REQUIRED_FIELDS
+    detail_node = _record_detail_node(selected)
+    return [scope, record_table, *([detail_node] if detail_node else [])], CLINICAL_REQUIRED_FIELDS
 
 
 def _coverage_surface(
@@ -119,11 +137,7 @@ def _coverage_surface(
         before=coverage.total_reported,
         after=coverage.records_after_status_filter,
     )
-    relevance_excluded = _excluded(
-        coverage.records_excluded_by_relevance,
-        before=coverage.records_unique,
-        after=coverage.records_relevant,
-    )
+    direct_confirmed, direct_unconfirmed = _direct_relevance_counts(evidence_set)
     funnel_parts = [f"원천 검색 {total}건"]
     if coverage.records_after_status_filter is not None:
         funnel_parts.append(
@@ -133,10 +147,15 @@ def _coverage_surface(
         (
             f"수신 {coverage.records_received}건",
             f"중복 제거 {coverage.records_unique}건",
-            f"관련성 확인 {relevant}건 ({relevance_excluded}건 제외)",
+            f"표시 대상 {relevant}건 (폐기 0건)",
             f"상세 표시 {rendered}건",
         )
     )
+    if direct_confirmed is not None or direct_unconfirmed:
+        funnel_parts.append(
+            "직접 관련 확인 "
+            f"{direct_confirmed or 0}건 · 직접 관련 여부 미확인 {direct_unconfirmed}건"
+        )
     lines = [
         "## 조사 범위와 완전성",
         _scope_statement(
@@ -151,6 +170,32 @@ def _coverage_surface(
     if not coverage.pagination_complete:
         lines.append("페이지 수집이 완료되지 않아 전체 현황으로 볼 수 없습니다.")
     return "\n".join(lines)
+
+
+def _direct_relevance_counts(evidence_set: EvidenceSet) -> tuple[int | None, int]:
+    statuses = [
+        str(record.payload.get("relevance_status") or "").strip()
+        for record in evidence_set.records
+    ]
+    if any(statuses):
+        return (
+            sum(status == "직접 관련 확인" for status in statuses),
+            sum(status == "직접 관련 여부 미확인" for status in statuses),
+        )
+
+    confirmed = 0
+    unconfirmed = 0
+    found = False
+    for manifest in evidence_set.query_manifest:
+        confirmed_value = manifest.get("records_direct_relevance_confirmed")
+        unconfirmed_value = manifest.get("records_direct_relevance_unconfirmed")
+        if isinstance(confirmed_value, int) and not isinstance(confirmed_value, bool):
+            confirmed += confirmed_value
+            found = True
+        if isinstance(unconfirmed_value, int) and not isinstance(unconfirmed_value, bool):
+            unconfirmed += unconfirmed_value
+            found = True
+    return (confirmed if found else None), unconfirmed
 
 
 def _scope_statement(
@@ -176,19 +221,7 @@ def _selection_notes(
     rendered: int,
     single: bool,
 ) -> str:
-    if single or total <= rendered:
-        return ""
-    joined = " ".join(query_spec).casefold()
-    generic = any(token in joined for token in _GENERIC_SIGNALS)
-    criterion = (
-        "제네릭·생동성 관련 시험 우선, 상태 우선순위와 최종 갱신일 순"
-        if generic
-        else "상태 우선순위와 최종 갱신일 순"
-    )
-    return (
-        f"{criterion}으로 {rendered}건을 표시했습니다. "
-        f"외 {total - rendered}건은 원천 집계에 포함되며 표에서는 생략했습니다."
-    )
+    return ""
 
 
 def _selected_records(
@@ -213,7 +246,106 @@ def _selected_records(
             text(payload.get("nct_id")),
         )
 
-    return sorted(records, key=sort_key)[:MAX_CLINICAL_DETAIL_ROWS]
+    return sorted(records, key=sort_key)
+
+
+def _record_detail_node(records: Sequence[EvidenceRecord]) -> RenderNode | None:
+    sections: list[str] = []
+    surface_fields: list[str] = []
+    for record in records:
+        payload = record.payload
+        details = (
+            ("적응증", "conditions", list_display(payload.get("conditions"), na="")),
+            ("개입약물", "interventions", list_display(payload.get("interventions"), na="")),
+            ("대상자수", "enrollment", _enrollment(payload.get("enrollment"))),
+            ("협력기관", "collaborators", list_display(payload.get("collaborators"), na="")),
+            ("국가", "countries", list_display(payload.get("countries"), na="")),
+            ("기관", "facilities", list_display(payload.get("facilities"), na="")),
+            ("1차 평가변수", "primary_outcomes", _outcome_text(payload.get("primary_outcomes"))),
+            ("2차 평가변수", "secondary_outcomes", _outcome_text(payload.get("secondary_outcomes"))),
+            ("간략 요약", "brief_summary", _bounded_text(payload.get("brief_summary"))),
+            ("선정·제외 기준", "eligibility_criteria", _bounded_text(payload.get("eligibility_criteria"))),
+            ("대상 성별", "sex", public_enum_value(payload.get("sex"))),
+            ("연령", "minimum_age", _age_range(payload)),
+            ("결과 게시", "has_results", _result_text(payload.get("has_results"))),
+        )
+        visible = [
+            (label, field, value)
+            for label, field, value in details
+            if value and _detail_field_present(payload, field)
+        ]
+        if not visible:
+            continue
+        nct_id = display(payload.get("nct_id"))
+        sections.append(
+            "\n".join((f"### {nct_id} 조회 상세", *(f"- {label}: {value}" for label, _field, value in visible)))
+        )
+        surface_fields.extend(field for _label, field, _value in visible)
+    if not sections:
+        return None
+    return RenderNode(
+        block_id="clinical:record-details",
+        record_ids=tuple(record.evidence_id for record in records),
+        surface_fields=tuple(dict.fromkeys(surface_fields)),
+        text="## 주요 임상시험 건별 상세\n" + "\n\n".join(sections),
+    )
+
+
+def _enrollment(value: object) -> str:
+    if isinstance(value, Mapping):
+        count = value.get("count")
+        count_text = f"{text(count)}명" if count not in (None, "") else ""
+        kind = public_enum_value(value.get("type")) if value.get("type") else ""
+        kind_text = f"({kind})" if kind else ""
+        return " ".join(part for part in (count_text, kind_text) if part)
+    return text(value)
+
+
+def _outcome_text(value: object) -> str:
+    if not isinstance(value, list):
+        return ""
+    output = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        measure = text(item.get("measure"))
+        time_frame = text(item.get("time_frame"))
+        if measure:
+            output.append(f"{measure} ({time_frame})" if time_frame else measure)
+    return "; ".join(output)
+
+
+def _bounded_text(value: object, limit: int = 1200) -> str:
+    raw = text(value)
+    return raw if len(raw) <= limit else raw[:limit] + "… [원문 있음]"
+
+
+def _detail_field_present(payload: Mapping[str, object], field: str) -> bool:
+    if field == "minimum_age":
+        return _has_value(payload.get("minimum_age")) or _has_value(
+            payload.get("maximum_age")
+        )
+    return _has_value(payload.get(field))
+
+
+def _age_range(payload: Mapping[str, object]) -> str:
+    return " ~ ".join(
+        part for part in (text(payload.get("minimum_age")), text(payload.get("maximum_age"))) if part
+    )
+
+
+def _result_text(value: object) -> str:
+    if value is True:
+        return "게시됨"
+    if value is False:
+        return "미게시"
+    return ""
+
+
+def _public_list(value: object) -> str:
+    if not isinstance(value, (list, tuple, set)):
+        return public_enum_value(value)
+    return ", ".join(public_enum_value(item) for item in value)
 
 
 def _is_generic_study(payload: Mapping[str, object]) -> bool:
@@ -228,9 +360,7 @@ def _is_generic_study(payload: Mapping[str, object]) -> bool:
 
 
 def _nct_link(payload: Mapping[str, object]) -> str:
-    nct_id = display(payload.get("nct_id"))
-    url = text(payload.get("url"))
-    return f"[{nct_id}]({url})" if url else nct_id
+    return display(payload.get("nct_id"))
 
 
 def _has_value(value: object) -> bool:

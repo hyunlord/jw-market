@@ -108,6 +108,9 @@ def normalize_clinical_study(
     sponsor_module = _mapping(protocol.get("sponsorCollaboratorsModule"))
     lead_sponsor = _mapping(sponsor_module.get("leadSponsor"))
     locations_module = _mapping(protocol.get("contactsLocationsModule"))
+    outcomes_module = _mapping(protocol.get("outcomesModule"))
+    description_module = _mapping(protocol.get("descriptionModule"))
+    eligibility_module = _mapping(protocol.get("eligibilityModule"))
 
     nct_id = _text(identification.get("nctId") or study.get("NCTId")).upper()
     raw_phases = _string_list(design.get("phases") or study.get("phases"))
@@ -116,6 +119,19 @@ def normalize_clinical_study(
         name
         for item in _mapping_list(arms.get("interventions"))
         if (name := _text(item.get("name")))
+    ]
+    intervention_details = [
+        {
+            "type": _text(item.get("type")) or None,
+            "name": _text(item.get("name")) or None,
+            "description": _text(item.get("description")) or None,
+            "other_names": _string_list(item.get("otherNames")),
+        }
+        for item in _mapping_list(arms.get("interventions"))
+        if any(
+            _text(item.get(key))
+            for key in ("type", "name", "description")
+        )
     ]
     comparators = [
         label
@@ -127,6 +143,16 @@ def normalize_clinical_study(
         country
         for item in _mapping_list(locations_module.get("locations"))
         if (country := _text(item.get("country")))
+    ]
+    facilities = [
+        facility
+        for item in _mapping_list(locations_module.get("locations"))
+        if (facility := _text(item.get("facility")))
+    ]
+    collaborators = [
+        name
+        for item in _mapping_list(sponsor_module.get("collaborators"))
+        if (name := _text(item.get("name")))
     ]
     enrollment = _mapping(design.get("enrollmentInfo"))
     enrollment_value = {
@@ -145,8 +171,10 @@ def normalize_clinical_study(
         "overall_status": _text(status.get("overallStatus") or study.get("overallStatus")),
         "conditions": _string_list(conditions.get("conditions")),
         "interventions": list(dict.fromkeys(interventions)),
+        "intervention_details": intervention_details,
         "comparators": list(dict.fromkeys(comparators)),
         "sponsor": _text(lead_sponsor.get("name")),
+        "collaborators": list(dict.fromkeys(collaborators)),
         "enrollment": enrollment_value,
         "start_date": _date_value(status.get("startDateStruct") or status.get("startDate")),
         "primary_completion_date": _date_value(status.get("primaryCompletionDateStruct")),
@@ -156,6 +184,15 @@ def normalize_clinical_study(
             or status.get("studyFirstPostDateStruct")
         ),
         "countries": list(dict.fromkeys(countries)),
+        "facilities": list(dict.fromkeys(facilities)),
+        "primary_outcomes": _outcomes(outcomes_module.get("primaryOutcomes")),
+        "secondary_outcomes": _outcomes(outcomes_module.get("secondaryOutcomes")),
+        "brief_summary": _text(description_module.get("briefSummary")),
+        "detailed_description": _text(description_module.get("detailedDescription")),
+        "eligibility_criteria": _text(eligibility_module.get("eligibilityCriteria")),
+        "sex": _text(eligibility_module.get("sex")),
+        "minimum_age": _text(eligibility_module.get("minimumAge")),
+        "maximum_age": _text(eligibility_module.get("maximumAge")),
         "has_results": study.get("hasResults") if isinstance(study.get("hasResults"), bool) else None,
         "matched_query": list(dict.fromkeys(str(value) for value in matched_queries if str(value))),
         "url": f"https://clinicaltrials.gov/study/{nct_id}" if nct_id else "",
@@ -187,14 +224,25 @@ def normalize_clinical_detail(
         "overall_status": _text(detail.get("overall_status") or detail.get("status")),
         "conditions": _string_list(detail.get("conditions")),
         "interventions": _string_list(detail.get("interventions")),
+        "intervention_details": _mapping_list(detail.get("intervention_details")),
         "comparators": _string_list(detail.get("comparators")),
         "sponsor": _text(detail.get("sponsor")),
+        "collaborators": _string_list(detail.get("collaborators")),
         "enrollment": enrollment,
         "start_date": _date_value(detail.get("start_date")),
         "primary_completion_date": _date_value(detail.get("primary_completion_date")),
         "completion_date": _date_value(detail.get("completion_date")),
         "last_update_date": _date_value(detail.get("last_update_date")),
         "countries": _string_list(detail.get("countries")),
+        "facilities": _string_list(detail.get("facilities")),
+        "primary_outcomes": _mapping_list(detail.get("primary_outcomes")),
+        "secondary_outcomes": _mapping_list(detail.get("secondary_outcomes")),
+        "brief_summary": _text(detail.get("brief_summary")),
+        "detailed_description": _text(detail.get("detailed_description")),
+        "eligibility_criteria": _text(detail.get("eligibility_criteria")),
+        "sex": _text(detail.get("sex")),
+        "minimum_age": _text(detail.get("minimum_age")),
+        "maximum_age": _text(detail.get("maximum_age")),
         "has_results": (
             detail.get("has_results")
             if isinstance(detail.get("has_results"), bool)
@@ -312,6 +360,18 @@ def _string_list(value: object) -> list[str]:
     if not isinstance(value, (list, tuple)):
         return []
     return list(dict.fromkeys(_text(item) for item in value if _text(item)))
+
+
+def _outcomes(value: object) -> list[dict[str, str | None]]:
+    return [
+        {
+            "measure": _text(item.get("measure")) or None,
+            "description": _text(item.get("description")) or None,
+            "time_frame": _text(item.get("timeFrame")) or None,
+        }
+        for item in _mapping_list(value)
+        if any(_text(item.get(key)) for key in ("measure", "description", "timeFrame"))
+    ]
 
 
 def _date_value(value: object) -> str:

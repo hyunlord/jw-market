@@ -239,11 +239,17 @@ from jw_chat_agent_poc.service.routing_boundaries_legacy import (
     legacy_market_shortcut_decision as _legacy_market_shortcut_decision,
 )
 from jw_chat_agent_poc.service.file_search_client import (
+    UploadedFileSearchResult,
     UploadedFileOverview,
     fetch_uploaded_file_overviews,
     fetch_uploaded_file_schema_columns,
     has_active_uploaded_file,
     search_uploaded_files,
+)
+from jw_chat_agent_poc.service.v4.document_lane import (
+    build_document_source_result,
+    is_document_overview_question,
+    render_document_overview,
 )
 from jw_chat_agent_poc.service.file_brief import render_uploaded_file_machine_brief
 from jw_chat_agent_poc.service.file_llm_brief import (
@@ -291,6 +297,7 @@ from jw_chat_agent_poc.service.sse_presenter import (
     SSE_PRESENTER_ENV,
     selected_sse_presenter,
 )
+from jw_chat_agent_poc.service.trace_transport import trace_for_transport
 from jw_chat_agent_poc.service.startup_warmup import (
     DisabledStartupWarmup,
     StartupWarmup,
@@ -433,13 +440,54 @@ def _run_v4_final_answer(
     question: str,
     conversation_id: str | None,
     progress_callback: Callable[[dict[str, str]], None] | None = None,
+    file_context: str | None = None,
 ) -> FinalAnswer:
-    answer = _get_v4_runtime().answer(
-        question,
-        conversation_id=conversation_id,
-        turns=_v4_recent_turns(store, history_store, conversation_id),
-        progress_callback=progress_callback,
+    delegated_context, source_items, has_active_file, deterministic_answer, sql_trace = (
+        _delegated_file_context(question, conversation_id, file_context)
     )
+    uploaded = UploadedFileSearchResult(
+        file_context=delegated_context or "",
+        file_sources=tuple(
+            dict.fromkeys(
+                str(item.get("file_name") or "").strip()
+                for item in source_items
+                if str(item.get("file_name") or "").strip()
+            )
+        ),
+        errors=(),
+        file_source_items=source_items,
+        has_active_file=has_active_file,
+        deterministic_answer=deterministic_answer,
+        sql_trace=sql_trace,
+    )
+    document_result = (
+        build_document_source_result(question, uploaded)
+        if has_active_file or delegated_context
+        else None
+    )
+    explicit_file_request = has_file_reference(question)
+    file_answer = _v4_file_scope_answer_from_retrieval(
+        question,
+        conversation_id,
+        uploaded,
+        document_result=document_result,
+    ) if explicit_file_request else None
+    if file_answer is not None:
+        if file_answer.conversation_id:
+            store.conversations.record_exchange(
+                file_answer.conversation_id,
+                question,
+                file_answer.text,
+            )
+        return file_answer
+    runtime_kwargs: dict[str, Any] = {
+        "conversation_id": conversation_id,
+        "turns": _v4_recent_turns(store, history_store, conversation_id),
+        "progress_callback": progress_callback,
+    }
+    if document_result is not None:
+        runtime_kwargs["supplemental_results"] = (document_result,)
+    answer = _get_v4_runtime().answer(question, **runtime_kwargs)
     if answer.conversation_id:
         store.conversations.record_exchange(
             answer.conversation_id,
@@ -453,7 +501,119 @@ def _run_v4_final_answer(
         trace=answer.trace,
         sources=answer.sources,
         conversation_id=answer.conversation_id,
+        file_sources=tuple(_project_public_file_sources(source_items)),
     )
+
+
+def _v4_file_scope_answer(
+    question: str,
+    conversation_id: str | None,
+    file_context: str | None,
+) -> FinalAnswer | None:
+    delegated_context, source_items, has_active_file, deterministic_answer, sql_trace = (
+        _delegated_file_context(question, conversation_id, file_context)
+    )
+    uploaded = UploadedFileSearchResult(
+        file_context=delegated_context or "",
+        file_sources=tuple(
+            dict.fromkeys(
+                str(item.get("file_name") or "").strip()
+                for item in source_items
+                if str(item.get("file_name") or "").strip()
+            )
+        ),
+        errors=(),
+        file_source_items=source_items,
+        has_active_file=has_active_file,
+        deterministic_answer=deterministic_answer,
+        sql_trace=sql_trace,
+    )
+    document_result = build_document_source_result(question, uploaded) if delegated_context else None
+    return _v4_file_scope_answer_from_retrieval(
+        question,
+        conversation_id,
+        uploaded,
+        document_result=document_result,
+    )
+
+
+def _v4_file_scope_answer_from_retrieval(
+    question: str,
+    conversation_id: str | None,
+    uploaded: UploadedFileSearchResult,
+    *,
+    document_result: Any | None,
+) -> FinalAnswer | None:
+    delegated_context = uploaded.file_context or None
+    source_items = uploaded.file_source_items
+    has_active_file = uploaded.has_active_file
+    deterministic_answer = uploaded.deterministic_answer
+    sql_trace = uploaded.sql_trace
+    if has_active_file or delegated_context:
+        file_result = _attach_file_context(
+            _file_scoped_result(question),
+            delegated_context,
+            source_items,
+        )
+        if deterministic_answer:
+            file_result["deterministic_file_answer"] = deterministic_answer
+        if document_result is not None and is_document_overview_question(question):
+            file_answer = FinalAnswer(
+                text=render_document_overview(document_result),
+                charts=[],
+                timing={"deterministic_file_render": True, "synthesis_llm_calls": 0},
+                trace={},
+                sources=("document",),
+                conversation_id=conversation_id,
+                file_sources=tuple(source_items),
+            )
+        else:
+            file_answer = _deterministic_mixed_file_answer(file_result, conversation_id)
+        public_sources = _project_public_file_sources(file_answer.file_sources)
+        records = tuple(
+            {
+                "record_id": "FILE-"
+                + hashlib.sha256(
+                    "|".join(
+                        str(source.get(field) or "")
+                        for field in ("file_name", "i_page", "sheet_name")
+                    ).encode("utf-8")
+                ).hexdigest()[:16],
+                **source,
+                "narrative_used": True,
+            }
+            for source in public_sources
+        )
+        trace = {
+            **file_answer.trace,
+            "file_scope": {
+                "status": "ACTIVE_FILE" if has_active_file else "DIRECT_FILE_CONTEXT",
+                "records": records,
+                "search_context_received": bool(delegated_context),
+                "sql_trace_count": len(sql_trace),
+                "session_isolation": "chat_id+app_session_id",
+            },
+        }
+        return replace(file_answer, trace=trace, file_sources=public_sources)
+    if has_file_reference(question):
+        text = "이 세션에서 조회 가능한 업로드 문서를 확인하지 못했습니다. 파일을 업로드한 뒤 다시 질문해 주세요."
+        return FinalAnswer(
+            text=text,
+            charts=[],
+            timing={"deterministic_file_render": True, "synthesis_llm_calls": 0},
+            trace={
+                "file_scope": {
+                    "status": "NO_ACTIVE_FILE",
+                    "records": (),
+                    "search_context_received": False,
+                    "sql_trace_count": len(sql_trace),
+                    "session_isolation": "chat_id+app_session_id",
+                }
+            },
+            sources=(),
+            conversation_id=conversation_id,
+        )
+    return None
 
 
 SESSION_STORE_MAX_ENV = "SESSION_STORE_MAX"
@@ -903,6 +1063,7 @@ def create_app(
                         history,
                         request.question,
                         request.conversation_id,
+                        file_context=request.file_context,
                     )
                     result = {
                         "question": request.question,
@@ -962,6 +1123,7 @@ def create_app(
                         history,
                         request.question,
                         request.conversation_id,
+                        file_context=request.file_context,
                     )
                     item = {"question": request.question}
                 else:
@@ -996,7 +1158,7 @@ def create_app(
         return ChatAnswer(
             text=final_answer.text,
             charts=final_answer.charts,
-            trace=final_answer.trace,
+            trace=trace_for_transport(final_answer.trace),
             sources=final_answer.sources,
             conversation_id=final_answer.conversation_id,
             file_sources=list(_project_public_file_sources(final_answer.file_sources)),
@@ -3426,7 +3588,7 @@ def _sse_events_from_final_answer(
         text=final_answer.text,
         charts=final_answer.charts,
         timing=final_answer.timing,
-        trace=final_answer.trace,
+        trace=trace_for_transport(final_answer.trace),
         streamed_prefix=streamed_prefix,
     )
 

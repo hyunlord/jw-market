@@ -33,7 +33,7 @@ def source_tier(plan: PlannerOutput, source: str) -> int:
     if source in plan.answer_sources:
         return 0
     if source in {"web"}:
-        return 2
+        return 1
     return 1
 
 

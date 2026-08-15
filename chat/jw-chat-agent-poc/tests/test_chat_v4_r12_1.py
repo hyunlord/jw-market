@@ -452,7 +452,7 @@ def test_clinical_client_discloses_safety_cap_without_silent_truncation() -> Non
 def test_clinical_normalizer_preserves_all_named_fields_without_inference() -> None:
     record = normalize_clinical_study(_study("NCT00000001"), matched_queries=("q1",))
 
-    assert record == {
+    expected = {
         "nct_id": "NCT00000001",
         "brief_title": "Brief NCT00000001",
         "official_title": "Official NCT00000001",
@@ -473,6 +473,11 @@ def test_clinical_normalizer_preserves_all_named_fields_without_inference() -> N
         "matched_query": ["q1"],
         "url": "https://clinicaltrials.gov/study/NCT00000001",
     }
+    assert {key: record[key] for key in expected} == expected
+    assert "primary_outcomes" in record
+    assert "secondary_outcomes" in record
+    assert "brief_summary" in record
+    assert "eligibility_criteria" in record
     assert "success" not in record
     assert "approval" not in record
 
@@ -938,7 +943,7 @@ def test_lossless_clinical_spine_unions_queries_and_renders_every_record() -> No
     assert rendered.coverage.records_rendered == 3
     assert (
         "원천 검색 4건 → 수신 4건 → 중복 제거 3건 → "
-        "관련성 확인 3건 (0건 제외) → 상세 표시 3건"
+        "표시 대상 3건 (폐기 0건) → 상세 표시 3건"
     ) in rendered.text
     assert rendered.text.count("NCT00000001") >= 1
     assert rendered.text.count("NCT00000002") >= 1
@@ -1027,10 +1032,9 @@ def test_clinical_portfolio_keeps_full_table_and_major_cards_above_twelve() -> N
         observed_on=date(2026, 8, 12),
     )
 
-    assert rendered.coverage.records_rendered == 10
-    assert sum(f"NCT{index:08d}" in rendered.text for index in range(1, 14)) == 10
-    assert "외 3건" in rendered.text
-    assert "### NCT" not in rendered.text
+    assert rendered.coverage.records_rendered == 13
+    assert sum(f"NCT{index:08d}" in rendered.text for index in range(1, 14)) == 13
+    assert "외 3건" not in rendered.text
 
 
 def test_lossless_timeout_composition_keeps_full_clinical_facts() -> None:
@@ -1677,10 +1681,16 @@ def test_runtime_inject_mode_composes_deterministic_facts_before_commentary(
         synthesizer=Synthesizer(),
     ).answer("리바로젯 임상현황", conversation_id="lossless", turns=())
 
-    assert answer.text.startswith("## 핵심 답\n임상 포트폴리오 해설입니다.")
+    assert answer.text.startswith("임상 포트폴리오 해설입니다.")
+    assert "- ClinicalTrials.gov의 NCT00000001" not in answer.text
     assert "NCT00000001" in answer.text
     assert "## 자동 해설" not in answer.text
-    assert answer.text.index("## 핵심 답") < answer.text.index("## 조사 범위와 완전성")
+    assert answer.text.index("임상 포트폴리오 해설입니다.") < answer.text.index(
+        "NCT00000001"
+    )
+    assert answer.text.index("임상 포트폴리오 해설입니다.") < answer.text.index(
+        "## 조사 범위와 완전성"
+    )
     assert answer.trace["lossless_spine"]["answer_mutation"] is True
     assert answer.trace["lossless_spine"]["records_rendered"] == 1
 
@@ -2086,7 +2096,8 @@ def test_exact_nct_detail_builds_one_evidence_record_and_single_record_render() 
     assert evidence_set.records[0].payload["nct_id"] == "NCT05151731"
     assert rendered.profile == "single_record_detail"
     assert "NCT05151731" in rendered.text
-    assert "PHASE3" in rendered.text
+    assert "3상" in rendered.text
+    assert "PHASE3" not in rendered.text
     assert "A randomized pitavastatin trial" in rendered.text
 
 

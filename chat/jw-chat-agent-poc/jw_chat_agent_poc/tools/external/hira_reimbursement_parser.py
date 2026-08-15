@@ -18,7 +18,7 @@ _POPUP_CALL_RE: Final[re.Pattern[str]] = re.compile(
     r"viewInsuAdtCrtr\(\s*\d+\s*,\s*'(?P<date>\d{8})'\s*,\s*"
     r"'(?P<sno>\d+)'\s*,\s*'(?P<registration>\d+)'\s*,\s*'\d+'\s*\)"
 )
-_COMPOUND_PRODUCT_SUFFIX_RE: Final[str] = r"(?:주(?:사)?|피하주사)"
+_COMPOUND_PRODUCT_SUFFIX_RE: Final[str] = r"(?:프리필드시린지|피하주사|주사|캡슐|정|주)"
 _DETAIL_CONTAINER_TOKENS: Final[frozenset[str]] = frozenset(
     {"bbs_view_cont", "board-view", "board_view", "view-content", "view_cont", "viewcont"}
 )

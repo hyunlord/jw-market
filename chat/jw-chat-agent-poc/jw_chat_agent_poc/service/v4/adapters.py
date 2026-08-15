@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+from hashlib import sha256
 import json
 import logging
 import os
@@ -37,6 +38,10 @@ from jw_chat_agent_poc.service.v4.retrieval_events import (
     classify_failure_signals,
     failure_status_from_value,
 )
+from jw_chat_agent_poc.service.v4.query_scope import (
+    classify_upstream_failure,
+    redact_failure_body,
+)
 from jw_chat_agent_poc.service.v4.time_context import current_kst_date
 
 
@@ -58,8 +63,11 @@ LIMIT 1
 """
 _NCT_RE = re.compile(r"\bNCT\d{8}\b", re.IGNORECASE)
 _HIRA_CODE_RE = re.compile(r"(?<![A-Za-z0-9])([A-Za-z]\d{2}(?:\.?\d)?)(?![A-Za-z0-9])")
-_RECENT_YEAR_RE = re.compile(r"최근\s*(\d{1,2})\s*년")
+_RECENT_YEAR_RE = re.compile(r"최근\s*(\d{1,2})\s*(?:개)?년(?:도)?")
 _YEAR_RE = re.compile(r"20\d{2}")
+_SHORT_KOREAN_YEAR_RE = re.compile(r"(?<!\d)(\d{2})\s*(?:년도|년)")
+_LATEST_HIRA_YEAR_RE = re.compile(r"최근\s*년도|최신|가장\s*최근")
+_HIRA_YEAR_DISCOVERY_WINDOW = 3
 _DISEASE_ALIASES = {
     "당뇨망막병증": ("H360", "diabetic retinopathy"),
     "당뇨병성 망막병증": ("H360", "diabetic retinopathy"),
@@ -75,6 +83,7 @@ _INGREDIENT_ALIASES = {
 _REIMBURSEMENT_ALIASES = {
     "aflibercept": "아일리아",
     "애플리버셉트": "아일리아",
+    "엠파글리플로진": "Empagliflozin",
 }
 _REIMBURSEMENT_TERMS = re.compile(
     r"(?:요양)?급여\s*(?:적용)?기준(?:\s*및\s*방법)?|건강보험|약제|고시",
@@ -145,6 +154,14 @@ class _FailedHiraYearCall:
     render_data: dict[str, Any]
     safe_url: str | None = None
     elapsed_ms: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _HiraStatRoute:
+    tool: str | None
+    label: str
+    requested_label: str | None = None
+    scope_notice: str | None = None
 
 
 def _decimal_value(value: Any) -> Decimal | None:
@@ -535,9 +552,77 @@ def _hira_query_kind(query: str) -> str:
         for token in ("환자", "통계", "추이", "시계열", "연도별", "연도 별")
     ):
         return "patient"
-    if "급여" in query:
+    if _REIMBURSEMENT_TERMS.search(query) and "요양급여비용" not in query.replace(" ", ""):
         return "reimbursement"
     return "patient" if code else "lookup"
+
+
+def _hira_stat_routes(query: str) -> tuple[_HiraStatRoute, ...]:
+    normalized = re.sub(r"\s+", "", query)
+    if "5세구간" in normalized:
+        return (_HiraStatRoute(
+            tool="hira_disease_hospitalization_outpatient_stats",
+            label="입원/외래",
+            requested_label="성별·연령5세구간별",
+            scope_notice=(
+                "요청하신 성별·연령5세구간별 집계는 현재 지원되지 않아, "
+                "입원/외래 기준 데이터로 답변합니다."
+            ),
+        ),)
+    if "진료년월" in normalized or "월별" in normalized:
+        return (_HiraStatRoute(
+            tool="hira_disease_hospitalization_outpatient_stats",
+            label="입원/외래",
+            requested_label="진료년월별",
+            scope_notice=(
+                "요청하신 진료년월별 집계는 현재 지원되지 않아, "
+                "입원/외래 기준 데이터로 답변합니다."
+            ),
+        ),)
+    routes: list[_HiraStatRoute] = []
+    if "입원" in normalized or "외래" in normalized:
+        routes.append(_HiraStatRoute(
+            tool="hira_disease_hospitalization_outpatient_stats", label="입원/외래"
+        ))
+    if "요양기관소재지" in normalized or "소재지별" in normalized:
+        routes.append(_HiraStatRoute(
+            tool="hira_disease_area_stats",
+            label="요양기관소재지별",
+        ))
+    if "요양기관종별" in normalized or "기관종별" in normalized:
+        routes.append(_HiraStatRoute(
+            tool="hira_disease_institution_class_stats",
+            label="요양기관종별",
+        ))
+    if "10세구간" in normalized or "성별" in normalized or "연령" in normalized:
+        routes.append(_HiraStatRoute(
+            tool="hira_disease_gender_age_stats",
+            label="성별·연령10세구간별",
+        ))
+    return tuple(routes) or (_HiraStatRoute(
+        tool="hira_disease_hospitalization_outpatient_stats", label="입원/외래"
+    ),)
+
+
+def _hira_stat_route(query: str) -> _HiraStatRoute:
+    """Compatibility wrapper for callers that request one route."""
+    return _hira_stat_routes(query)[0]
+
+
+def _hira_age_label(value: str) -> str:
+    match = re.fullmatch(r"(\d+)[_-](\d+)세", value.strip())
+    return f"{match.group(1)}~{match.group(2)}세" if match else value
+
+
+def _normalize_hira_axis_labels(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _hira_age_label(str(item)) if key.casefold() in {"age", "agecd", "agegroup"} else _normalize_hira_axis_labels(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_normalize_hira_axis_labels(item) for item in value]
+    return value
 
 
 def _requested_hira_years(
@@ -547,12 +632,32 @@ def _requested_hira_years(
 ) -> tuple[str, ...] | None:
     """Return the complete calendar range requested by the V4 HIRA query."""
     year_now = current_year or current_kst_date().year
-    named = tuple(dict.fromkeys(_YEAR_RE.findall(query)))
+    named = tuple(
+        dict.fromkeys(
+            [
+                *_YEAR_RE.findall(query),
+                *(
+                    f"20{match}"
+                    for match in _SHORT_KOREAN_YEAR_RE.findall(query)
+                ),
+            ]
+        )
+    )
+    had_explicit_year = bool(named)
+    named = tuple(year for year in named if int(year) <= year_now)
     if len(named) >= 2:
         first, last = sorted((int(min(named)), int(max(named))))
         return tuple(str(year) for year in range(first, last + 1))
     if named:
         return named
+    if had_explicit_year:
+        return ()
+    if "재작년" in query:
+        return None
+    if "작년" in query:
+        return (str(year_now - 1),)
+    if "올해" in query:
+        return (str(year_now),)
     recent = _RECENT_YEAR_RE.search(query)
     if recent:
         count = max(1, min(10, int(recent.group(1))))
@@ -560,6 +665,123 @@ def _requested_hira_years(
     if "추이" in query or "시계열" in query or re.search(r"(?:연도|년도|해)\s*(?:별|마다)", query):
         return tuple(str(year) for year in range(year_now - 4, year_now + 1))
     return None
+
+
+def _hira_discovery_years(*, current_year: int | None = None) -> tuple[str, ...]:
+    year_now = current_year or current_kst_date().year
+    return tuple(
+        str(year)
+        for year in range(
+            year_now,
+            year_now - _HIRA_YEAR_DISCOVERY_WINDOW,
+            -1,
+        )
+    )
+
+
+def _hira_period_row_count(call: Any) -> int:
+    render_data = getattr(call, "render_data", None)
+    items = render_data.get("items") if isinstance(render_data, Mapping) else None
+    return len(items) if isinstance(items, list) else 0
+
+
+def _hira_year_coverage(
+    years: Sequence[str],
+    calls: Sequence[Any],
+    *,
+    requested_axis: str,
+    actual_axis: str,
+    tool: str,
+    selected_years: Sequence[str],
+    selection_mode: str,
+) -> dict[str, Any]:
+    return {
+        "requested_periods": list(years),
+        "provided_periods": list(selected_years),
+        "requested_axis": requested_axis,
+        "actual_axis": actual_axis,
+        "tool": tool,
+        "selection_mode": selection_mode,
+        "periods": [
+            {
+                "period": year,
+                "status": _hira_period_status(call),
+                "availability_status": (
+                    "AVAILABLE" if _hira_period_status(call) == "ok" else "EMPTY"
+                ),
+                "received_count": _hira_period_row_count(call),
+                "elapsed_ms": getattr(call, "elapsed_ms", None),
+            }
+            for year, call in zip(years, calls, strict=True)
+        ],
+    }
+
+
+def _hira_year_notice(
+    years: Sequence[str],
+    calls: Sequence[Any],
+    selected_years: Sequence[str],
+    *,
+    latest_selection: bool,
+    unresolved_expression: bool,
+) -> str | None:
+    if not years:
+        return "요청 연도가 현재 연도보다 미래여서 조회하지 않았습니다."
+    if latest_selection and selected_years:
+        prefix = (
+            "연도 표현을 해석하지 못해 "
+            if unresolved_expression
+            else ""
+        )
+        return f"{prefix}최신 제공 연도 {selected_years[-1]}년 데이터를 사용합니다."
+    if latest_selection:
+        ordered = sorted(int(year) for year in years)
+        return f"탐색한 {ordered[0]}~{ordered[-1]}년은 아직 미제공입니다."
+
+    provided = [
+        year
+        for year, call in zip(years, calls, strict=True)
+        if _hira_period_status(call) == "ok"
+    ]
+    if tuple(provided) == tuple(years):
+        return None
+
+    def period_label(values: Sequence[str]) -> str:
+        if not values:
+            return ""
+        if len(values) == 1:
+            return values[0]
+        numeric = sorted(int(value) for value in values)
+        if numeric == list(range(min(numeric), max(numeric) + 1)):
+            return f"{min(numeric)}~{max(numeric)}"
+        return "·".join(values)
+
+    empty = [
+        year
+        for year, call in zip(years, calls, strict=True)
+        if _hira_period_status(call) == "no_data"
+    ]
+    failed = [
+        year
+        for year, call in zip(years, calls, strict=True)
+        if _hira_period_status(call) == "error"
+    ]
+    provided_label = (
+        f"{period_label(provided)}년 제공"
+        if provided
+        else "제공 연도 없음"
+    )
+    parts = [f"요청 {period_label(years)}년 중 {provided_label}"]
+    if empty:
+        parts.append(f"{period_label(empty)}년은 아직 미제공")
+    if failed:
+        parts.append(f"{period_label(failed)}년은 조회 실패")
+    return " · ".join(parts) + "입니다."
+
+
+def _join_notices(*notices: str | None) -> str | None:
+    values = tuple(notice.strip() for notice in notices if notice and notice.strip())
+    return "\n".join(dict.fromkeys(values)) or None
 
 
 def _ingredient_query(query: str) -> str:
@@ -911,7 +1133,7 @@ def _clinical_lossless_external_call(
         "pagination_complete": result.pagination_complete,
         "partial_reason": result.partial_reason,
     }
-    if result.records_relevant is not None or result.relevance_exclusions:
+    if result.records_relevant is not None:
         coverage.update(
             {
                 "records_relevant": (
@@ -919,7 +1141,13 @@ def _clinical_lossless_external_call(
                     if result.records_relevant is not None
                     else len(result.records)
                 ),
-                "records_excluded_by_relevance": len(result.relevance_exclusions),
+                "records_excluded_by_relevance": 0,
+                "records_direct_relevance_confirmed": (
+                    result.records_direct_relevance_confirmed
+                ),
+                "records_direct_relevance_unconfirmed": (
+                    result.records_direct_relevance_unconfirmed
+                ),
             }
         )
     if "filter.overallStatus" in compiled.parameters:
@@ -940,7 +1168,7 @@ def _clinical_lossless_external_call(
         status="live" if result.records else "no_data",
         summary_text=(
             "ClinicalTrials.gov API v2에서 "
-            f"관련성 확인 후 {len(result.records)}건을 채택했습니다."
+            f"{len(result.records)}건을 수신해 모두 표시 대상으로 보존했습니다."
             if result.records
             else "ClinicalTrials.gov API v2 조회 결과 중 관련 기록이 없습니다."
         ),
@@ -999,6 +1227,40 @@ def build_source_adapters() -> dict[SourceName, Any]:
                 ),
                 notice or "",
             )
+        failure_reason = None
+        failure_detail: dict[str, Any] = {}
+        if status != "ok" and calls:
+            raw_failure = " ".join(
+                str(value)
+                for call, payload in zip(calls, payloads, strict=True)
+                for value in (
+                    getattr(call, "status", ""),
+                    getattr(call, "summary_text", ""),
+                    payload.get("render_data", ""),
+                )
+            )
+            status_match = re.search(r"(?:HTTP\s*)?(\d{3})", raw_failure, re.IGNORECASE)
+            http_status = int(status_match.group(1)) if status_match else None
+            failure_reason = classify_upstream_failure(
+                http_status=http_status,
+                body=raw_failure,
+            )
+            failure_detail = {
+                "http_status": http_status,
+                "observed_at": started_at.isoformat(),
+                "source": source,
+                "body_length": len(raw_failure),
+                "body_sha256": sha256(raw_failure.encode("utf-8")).hexdigest(),
+                "body_redacted": redact_failure_body(raw_failure),
+            }
+            if failure_reason == "RATE_LIMITED":
+                status = "quota"
+            elif failure_reason == "QUOTA_EXCEEDED":
+                status = "quota"
+            elif failure_reason == "TIMEOUT":
+                status = "timeout"
+            elif failure_reason in {"AUTH_FAILED", "UPSTREAM_5XX", "NETWORK"}:
+                status = "upstream"
         return SourceResult(
             source=source,
             query=query,
@@ -1016,6 +1278,8 @@ def build_source_adapters() -> dict[SourceName, Any]:
                 for call in usable
             ),
             notice=notice,
+            failure_reason=failure_reason,
+            failure_detail=failure_detail,
         )
 
     def resolved(query: str):
@@ -1070,9 +1334,15 @@ def build_source_adapters() -> dict[SourceName, Any]:
         )
         return result if _mart_payload_ok(result) else None
 
-    def mart(query: str) -> SourceResult:
+    def mart(
+        query: str,
+        *,
+        period_from: str | None = None,
+        period_to: str | None = None,
+    ) -> SourceResult:
         started_at = datetime.now(UTC)
         payloads: list[dict[str, Any]] = []
+        period_clamp_notices: list[str] = []
         has_general_payload = False
         route = general_view.route(query)
         if route in {GeneralRoute.GENERAL_ONLY, GeneralRoute.DUAL}:
@@ -1102,10 +1372,23 @@ def build_source_adapters() -> dict[SourceName, Any]:
                         has_general_payload = True
                 continue
             strategic = (
-                _strategic_mart_calls(layer, str(item.canonical_brand), query)
+                _strategic_mart_calls(
+                    layer,
+                    str(item.canonical_brand),
+                    query,
+                    period_from=period_from,
+                    period_to=period_to,
+                )
                 if layer is not None
                 else []
             )
+            if period_to and (
+                clamp_notice := _mart_period_clamp_notice_for_calls(
+                    period_to,
+                    strategic,
+                )
+            ):
+                period_clamp_notices.append(clamp_notice)
             if _needs_deep_analysis(query):
                 deep_analysis = _load_canonical_deep_analysis(
                     str(item.canonical_brand),
@@ -1142,7 +1425,11 @@ def build_source_adapters() -> dict[SourceName, Any]:
                 )
                 for label in source_labels
             ),
-            notice=None if payloads else "mart read-only adapters returned no rows",
+            notice=(
+                " ".join(dict.fromkeys(period_clamp_notices))
+                if period_clamp_notices
+                else None if payloads else "mart read-only adapters returned no rows"
+            ),
         )
 
     def nedrug(query: str) -> SourceResult:
@@ -1188,36 +1475,122 @@ def build_source_adapters() -> dict[SourceName, Any]:
         query_kind = _hira_query_kind(base)
         code = _hira_code(base)
         if query_kind == "patient" and code:
-            calls = [external.hira_disease_name_code(code)]
-            years = _requested_hira_years(base) or ("2024",)
+            routes = _hira_stat_routes(base)
+            if any(route.tool is None for route in routes):
+                route = next(route for route in routes if route.tool is None)
+                return SourceResult(
+                    source="hira",
+                    query=query,
+                    status="scope_limit",
+                    payload={
+                        "calls": [],
+                        "requested_axis": route.label,
+                    },
+                    evidence=_evidence_envelope(
+                        "hira",
+                        query,
+                        {"calls": [], "requested_axis": route.label},
+                    ),
+                    notice=route.scope_notice,
+                )
+            disease_call = external.hira_disease_name_code(code)
+            requested_years = _requested_hira_years(base)
+            latest_selection = requested_years is None
+            years = (
+                requested_years
+                if requested_years is not None
+                else _hira_discovery_years()
+            )
+            unresolved_expression = bool(
+                re.search(r"(?:년|년도|올해|작년|최근|최신)", base)
+                and not _LATEST_HIRA_YEAR_RE.search(base)
+                and "재작년" in base
+            )
 
-            def fetch_hira_year(disease_code: str, year: str) -> ExternalCall:
-                call = external.hira_disease_hospitalization_outpatient_stats(
-                    disease_code,
-                    year,
+            def fetch_hira_year(
+                disease_code: str,
+                year: str,
+                route: _HiraStatRoute,
+            ) -> ExternalCall:
+                fetch = getattr(external, route.tool)
+                call = fetch(disease_code, year)
+                render_data = (
+                    _normalize_hira_render_data(call.render_data)
+                    if route.tool == "hira_disease_hospitalization_outpatient_stats"
+                    else _normalize_hira_axis_labels(call.render_data)
                 )
                 return replace(
                     call,
-                    render_data=_normalize_hira_render_data(call.render_data),
+                    render_data={
+                        **render_data,
+                        "requested_axis": route.label,
+                        "original_requested_axis": route.requested_label,
+                        "requested_year": year,
+                    },
                 )
 
-            calls.extend(
-                _parallel_hira_year_calls(
-                    fetch_hira_year,
+            calls: list[ExternalCall] = [disease_call]
+            axis_coverages: list[dict[str, Any]] = []
+            axis_notices: list[str] = []
+            any_selected = False
+            for route in routes:
+                year_calls = _parallel_hira_year_calls(
+                    lambda disease_code, year, current=route: fetch_hira_year(
+                        disease_code, year, current
+                    ),
                     code,
                     years,
                 )
-            )
+                available = [
+                    (year, call)
+                    for year, call in zip(years, year_calls, strict=True)
+                    if _hira_period_status(call) == "ok"
+                ]
+                selected = available[:1] if latest_selection else available
+                selected_years = tuple(year for year, _call in selected)
+                any_selected = any_selected or bool(selected)
+                calls.extend(call for _year, call in selected)
+                axis_coverages.append(
+                    _hira_year_coverage(
+                        years,
+                        year_calls,
+                        requested_axis=route.requested_label or route.label,
+                        actual_axis=route.label,
+                        tool=route.tool,
+                        selected_years=selected_years,
+                        selection_mode=(
+                            "latest_available" if latest_selection else "requested_range"
+                        ),
+                    )
+                )
+                if route.scope_notice:
+                    year_label = "·".join(selected_years or years)
+                    axis_notices.append(
+                        f"요청하신 {route.requested_label} 집계는 현재 지원되지 않아, "
+                        f"입원/외래 기준 {year_label}년 데이터로 답변합니다."
+                    )
+                availability_notice = _hira_year_notice(
+                    years,
+                    year_calls,
+                    selected_years,
+                    latest_selection=latest_selection,
+                    unresolved_expression=unresolved_expression,
+                )
+                if availability_notice:
+                    axis_notices.append(availability_notice)
             result = external_calls("hira", query, calls)
-            coverage = {
-                "requested_periods": list(years),
-                "periods": [
-                    {"period": year, "status": _hira_period_status(call)}
-                    for year, call in zip(years, calls[1:], strict=True)
-                ],
-            }
             return result.model_copy(
-                update={"payload": {**result.payload, "period_coverage": coverage}}
+                update={
+                    "payload": {
+                        **result.payload,
+                        "period_coverage": axis_coverages[0],
+                        "axis_coverage": axis_coverages,
+                    },
+                    "notice": _join_notices(
+                        *axis_notices,
+                        result.notice if not any_selected else None,
+                    ),
+                }
             )
 
         if query_kind == "reimbursement":
@@ -1406,11 +1779,12 @@ def build_source_adapters() -> dict[SourceName, Any]:
             else ""
         )
         kr_calls = (
-            [external.mfds_patent(molecules[0], item_name=canonical_brand)]
+            [external.mfds_patent("", item_name=canonical_brand)]
             if canonical_brand
             else [external.mfds_patent(molecule) for molecule in molecules]
         )
-        us_calls = [external.mfds_fda_orangebook(molecule) for molecule in molecules]
+        us_query = " AND ".join(molecule.title() for molecule in molecules)
+        us_calls = [external.mfds_fda_orangebook(us_query)] if us_query else []
         news_calls = [
             _v4_web_search(
                 external,
@@ -1429,6 +1803,7 @@ def build_source_adapters() -> dict[SourceName, Any]:
             kr_calls=tuple(asdict(call) for call in kr_calls),
             us_calls=tuple(asdict(call) for call in us_calls),
             news_calls=tuple(asdict(call) for call in news_calls),
+            required_ingredients=molecules,
             entity_tokens=tuple(
                 dict.fromkeys(
                     (
@@ -1479,12 +1854,88 @@ def build_source_adapters() -> dict[SourceName, Any]:
     }
 
 
-def _strategic_mart_calls(layer, brand: str, query: str) -> list[dict[str, Any]]:
+def _month_span(period_from: str | None, period_to: str | None) -> int | None:
+    if not period_from or not period_to:
+        return None
+    if not re.fullmatch(r"20\d{2}-(?:0[1-9]|1[0-2])", period_from):
+        return None
+    if not re.fullmatch(r"20\d{2}-(?:0[1-9]|1[0-2])", period_to):
+        return None
+    start_year, start_month = (int(value) for value in period_from.split("-"))
+    end_year, end_month = (int(value) for value in period_to.split("-"))
+    months = (end_year - start_year) * 12 + end_month - start_month + 1
+    return min(60, months) if months > 0 else None
+
+
+def _mart_month_key(value: str | None) -> tuple[int, int] | None:
+    match = re.fullmatch(
+        r"(20\d{2})-(0[1-9]|1[0-2])(?:-[0-3]\d)?",
+        str(value or ""),
+    )
+    if match is None:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
+def _mart_available_period(scope: Mapping[str, Any]) -> str | None:
+    render_data = scope.get("render_data")
+    if not isinstance(render_data, Mapping):
+        return None
+    period = str(render_data.get("period") or "").strip()
+    return period if _mart_month_key(period) is not None else None
+
+
+def _clamp_mart_period(
+    requested: str,
+    available: str | None,
+) -> tuple[str, bool]:
+    requested_key = _mart_month_key(requested)
+    available_key = _mart_month_key(available)
+    if requested_key is None or available_key is None or requested_key <= available_key:
+        return requested, False
+    return "latest", True
+
+
+def _mart_period_clamp_notice(requested: str, available: str) -> str:
+    return (
+        f"요청한 종료 기간 {requested}은 데이터마트 최신 가용 기간 "
+        f"{available}을 넘어, 최신 가용 기간 기준으로 조정했습니다."
+    )
+
+
+def _mart_period_clamp_notice_for_calls(
+    requested: str,
+    calls: Sequence[Mapping[str, Any]],
+) -> str | None:
+    available = next(
+        (
+            period
+            for call in calls
+            if (period := _mart_available_period(call)) is not None
+        ),
+        None,
+    )
+    _, clamped = _clamp_mart_period(requested, available)
+    if not clamped or available is None:
+        return None
+    return _mart_period_clamp_notice(requested, available)
+
+
+def _strategic_mart_calls(
+    layer,
+    brand: str,
+    query: str,
+    *,
+    period_from: str | None = None,
+    period_to: str | None = None,
+) -> list[dict[str, Any]]:
     lowered = query.casefold()
     recent_year_match = _RECENT_YEAR_RE.search(query)
     recent_years = int(recent_year_match.group(1)) if recent_year_match else None
-    metric_period = "latest" if recent_years else requested_period(query) or "latest"
-    relative_history_points = min(60, recent_years * 12 + 1) if recent_years else None
+    structured_history_points = _month_span(period_from, period_to)
+    relative_history_points = structured_history_points or (
+        min(60, recent_years * 12 + 1) if recent_years else None
+    )
     calls: list[dict[str, Any]] = []
     try:
         scope = layer.market_scope(brand)
@@ -1493,6 +1944,10 @@ def _strategic_mart_calls(layer, brand: str, query: str) -> list[dict[str, Any]]
     if _mart_payload_ok(scope):
         calls.append(scope)
     market = _mart_market_id(scope)
+    metric_period, period_clamped = _clamp_mart_period(
+        period_to or ("latest" if recent_years else requested_period(query) or "latest"),
+        _mart_available_period(scope),
+    )
 
     metric_package = (
         ("sales", 60),
@@ -1521,10 +1976,20 @@ def _strategic_mart_calls(layer, brand: str, query: str) -> list[dict[str, Any]]
     try:
         top_brands = layer.top_brands(brand, limit=8, metric="sales", market=market)
         calls.append(top_brands)
-    except (LookupError, ValueError):
-        pass
+    except (LookupError, ValueError) as exc:
+        LOGGER.info(
+            "v4 mart optional top-brands lookup failed brand=%s error_type=%s",
+            brand,
+            type(exc).__name__,
+        )
 
-    bundle_period = f"최근 {recent_years}년" if recent_years else metric_period
+    bundle_period = (
+        "latest"
+        if period_clamped
+        else f"{period_from}~{period_to}"
+        if period_from and period_to
+        else f"최근 {recent_years}년" if recent_years else metric_period
+    )
     bundle = _entity_bundle_call(layer, brand, market, top_brands, bundle_period)
     if bundle is not None:
         calls.append(bundle)
@@ -1569,8 +2034,13 @@ def _strategic_mart_calls(layer, brand: str, query: str) -> list[dict[str, Any]]
                     metric=breakdown_metric,
                 )
             )
-        except (LookupError, ValueError):
-            pass
+        except (LookupError, ValueError) as exc:
+            LOGGER.info(
+                "v4 mart optional dimension lookup failed brand=%s dimension=%s error_type=%s",
+                brand,
+                dimension,
+                type(exc).__name__,
+            )
         if not trend_requested:
             continue
         try:
@@ -1588,8 +2058,13 @@ def _strategic_mart_calls(layer, brand: str, query: str) -> list[dict[str, Any]]
                     fallback_brand=brand,
                 )
             )
-        except (LookupError, ValueError):
-            pass
+        except (LookupError, ValueError) as exc:
+            LOGGER.info(
+                "v4 mart optional dimension trend failed brand=%s dimension=%s error_type=%s",
+                brand,
+                dimension,
+                type(exc).__name__,
+            )
     return calls
 
 

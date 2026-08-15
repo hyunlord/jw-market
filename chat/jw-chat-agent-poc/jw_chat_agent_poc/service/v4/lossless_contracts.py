@@ -84,6 +84,12 @@ class DeterministicRender(_StrictModel):
     structured_recomputations: tuple[dict[str, Any], ...] = ()
     structured_claims_truncated: int = 0
     unnarrated_record_count: int = 0
+    narrated_record_ids: tuple[str, ...] = ()
+    unnarrated_records: tuple[dict[str, str], ...] = ()
+    record_field_usage: tuple[dict[str, Any], ...] = ()
+    average_narrated_field_count: float = 0.0
+    loaded_field_narrative_use_rate: float = 0.0
+    identifier_only_sentence_count: int = 0
 
 
 class CompositionResult(_StrictModel):

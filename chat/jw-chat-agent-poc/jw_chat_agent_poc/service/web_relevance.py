@@ -10,6 +10,19 @@ from jw_chat_agent_poc.resolver import BrandResolver
 
 LOGGER = logging.getLogger(__name__)
 WEB_SUBJECT_NOT_MATCHED = "web_subject_not_matched"
+WEB_MEDICAL_DOMAIN_NOT_MATCHED = "web_medical_domain_not_matched"
+_DISEASE_CODE_RE = re.compile(r"(?<![0-9A-Za-z])([A-Za-z]\d{2}(?:\.?\d)?)(?![0-9A-Za-z])")
+_MEDICAL_DOMAIN_TERMS = (
+    "환자",
+    "상병",
+    "진료",
+    "급여",
+    "질병",
+    "입원",
+    "외래",
+    "내원",
+    "의료",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,28 +47,41 @@ def filter_web_results(
     identity_values: Sequence[object] = (),
 ) -> WebRelevanceDecision:
     subject_terms = web_subject_terms(question, identity_values=identity_values)
+    disease_codes = tuple(
+        dict.fromkeys(
+            _normalized_match_text(match.group(1))
+            for match in _DISEASE_CODE_RE.finditer(question)
+        )
+    )
     accepted: list[tuple[int, Mapping[str, object]]] = []
     excluded: list[WebRelevanceExclusion] = []
     for rank, item in enumerate(items, start=1):
         basis = _normalized_match_text(
             f"{item.get('title') or ''} {item.get('snippet') or item.get('content') or ''}"
         )
-        if not subject_terms or any(term in basis for term in subject_terms):
+        subject_matched = not subject_terms or any(term in basis for term in subject_terms)
+        medical_domain_matched = not disease_codes or any(
+            term in basis for term in _MEDICAL_DOMAIN_TERMS
+        )
+        if subject_matched and medical_domain_matched:
             accepted.append((rank, item))
             continue
+        reason_code = (
+            WEB_MEDICAL_DOMAIN_NOT_MATCHED
+            if subject_matched and not medical_domain_matched
+            else WEB_SUBJECT_NOT_MATCHED
+        )
         exclusion = WebRelevanceExclusion(
             rank=rank,
-            url=str(item.get("url") or "").strip(),
-            title=str(item.get("title") or "").strip(),
-            reason_code=WEB_SUBJECT_NOT_MATCHED,
+            url="",
+            title="",
+            reason_code=reason_code,
         )
         excluded.append(exclusion)
         LOGGER.info(
-            "web result excluded reason_code=%s rank=%d url=%s title=%s",
+            "web result excluded reason_code=%s rank=%d",
             exclusion.reason_code,
             exclusion.rank,
-            exclusion.url,
-            exclusion.title,
         )
     return WebRelevanceDecision(tuple(accepted), tuple(excluded), subject_terms)
 
@@ -86,6 +112,7 @@ def web_subject_terms(
             )
     for value in identity_values:
         _append_term(terms, value)
+    terms.extend(match.group(1) for match in _DISEASE_CODE_RE.finditer(question))
 
     normalized = (
         _normalized_match_text(term)
@@ -108,6 +135,7 @@ def _normalized_match_text(value: str) -> str:
 
 __all__ = [
     "WEB_SUBJECT_NOT_MATCHED",
+    "WEB_MEDICAL_DOMAIN_NOT_MATCHED",
     "WebRelevanceDecision",
     "WebRelevanceExclusion",
     "filter_web_results",

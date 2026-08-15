@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import re
 from typing import Any, Literal
 
 from jw_chat_agent_poc.service.v4.source_labels import patent_lane_label
@@ -36,6 +37,7 @@ def build_patent_lane_payload(
     us_calls: Sequence[Mapping[str, Any]],
     news_calls: Sequence[Mapping[str, Any]],
     entity_tokens: Sequence[str] = (),
+    required_ingredients: Sequence[str] = (),
 ) -> dict[str, dict[str, Any]]:
     (
         kr_records,
@@ -55,6 +57,15 @@ def build_patent_lane_payload(
         _,
         _,
     ) = _patent_records(us_calls, lane="us_secondary")
+    us_relevance_exclusions = sum(
+        not _contains_required_ingredients(record, required_ingredients)
+        for record in us_records
+    )
+    us_records = [
+        record
+        for record in us_records
+        if _contains_required_ingredients(record, required_ingredients)
+    ]
     relevance_tokens, company_tokens = _relevance_tokens(
         entity_tokens,
         (*kr_records, *us_records),
@@ -72,8 +83,18 @@ def build_patent_lane_payload(
         records_received=news_received,
     )
     news_lane["relevance_decisions"] = relevance_decisions
-    return {
-        "kr_primary": _lane(
+    us_lane = _lane(
+        scope="US_REFERENCE_ONLY",
+        authority="FDA Orange Book",
+        role="미국 등재 특허의 보조 근거이며 국내 특허 상태와 혼합하지 않음",
+        records=us_records,
+        records_received=us_received,
+        source_limit=us_source_limit,
+        source_limit_reached=us_source_limit_reached,
+        identifier_exclusions=us_identifier_exclusions,
+    )
+    us_lane["relevance_exclusions"] = us_relevance_exclusions
+    kr_lane = _lane(
             scope="KR_PRIMARY",
             authority=patent_lane_label("kr_primary"),
             role="국내 특허 상태의 1차 근거",
@@ -84,19 +105,29 @@ def build_patent_lane_payload(
             identifier_exclusions=kr_identifier_exclusions,
             product_patent_rows=kr_product_patent_rows,
             non_product_exclusions=kr_non_product_exclusions,
-        ),
-        "us_secondary": _lane(
-            scope="US_REFERENCE_ONLY",
-            authority="FDA Orange Book",
-            role="미국 등재 특허의 보조 근거이며 국내 특허 상태와 혼합하지 않음",
-            records=us_records,
-            records_received=us_received,
-            source_limit=us_source_limit,
-            source_limit_reached=us_source_limit_reached,
-            identifier_exclusions=us_identifier_exclusions,
-        ),
+        )
+    kr_lane["product_patent_edges"] = _product_patent_edges(kr_calls)
+    kr_lane["pms_periods"] = _product_pms_periods(kr_calls)
+    return {
+        "kr_primary": kr_lane,
+        "us_secondary": us_lane,
         "news": news_lane,
     }
+
+
+def _contains_required_ingredients(
+    record: Mapping[str, Any],
+    required_ingredients: Sequence[str],
+) -> bool:
+    required = tuple(
+        value.casefold()
+        for value in (_text(ingredient) for ingredient in required_ingredients)
+        if value
+    )
+    if len(required) < 2:
+        return True
+    ingredient = _text(record.get("ingredient")).casefold()
+    return all(value in ingredient for value in required)
 
 
 def _patent_records(
@@ -175,6 +206,10 @@ def _patent_record(
         status = item.get("DOMESTIC_PATENT_STATUS")
         expiration_date = item.get("DOMESTIC_END_DATE")
         owner = item.get("PATENTEE")
+        product_item_seq = item.get("ITEM_SEQ")
+        product_item_name = item.get("ITEM_NAME")
+        pms_period_start, pms_period_end = _pms_period(item.get("PMS_END_DATE"))
+        authority = "KR_LISTED_PATENT"
     else:
         product = item.get("PRT_NAME")
         ingredient = item.get("INGR_NAME")
@@ -190,9 +225,16 @@ def _patent_record(
         owner = item.get("KOR_APPLICANT")
         patent_type = item.get("PATENT_GB_CODE")
         page_group = ""
+        product_item_seq = ""
+        product_item_name = product
+        pms_period_start = ""
+        pms_period_end = ""
+        authority = "US_ORANGE_BOOK"
+    extinction_reason = _extinction_reason(status)
     return {
         "lane": lane,
         "jurisdiction": "KR" if lane == "kr_primary" else "US",
+        "authority": authority,
         "source": str(call.get("source") or call.get("tool") or ""),
         "tool": str(call.get("tool") or ""),
         "product": _text(product),
@@ -203,11 +245,81 @@ def _patent_record(
         "page_group": _text(page_group),
         "listed_status": _text(status),
         "status": _text(status),
+        "extinction_reason": extinction_reason,
+        "event_type": _patent_event_type(extinction_reason),
+        "listed_end_date": _text(expiration_date),
         "expiration_date": _text(expiration_date),
+        "product_item_seq": _text(product_item_seq),
+        "product_item_name": _text(product_item_name),
+        "pms_period_start": pms_period_start,
+        "pms_period_end": pms_period_end,
         "owner": _text(owner),
         "url": _text(call.get("safe_url")),
         "source_record": dict(item),
     }
+
+
+def _extinction_reason(value: Any) -> str:
+    match = re.search(r"소멸\s*\(([^)]+)\)", _text(value))
+    return match.group(1).strip() if match else ""
+
+
+def _patent_event_type(reason: str) -> str:
+    normalized = "".join(reason.split())
+    if normalized == "존속기간만료":
+        return "PATENT_TERM_EXPIRED"
+    if normalized == "무효":
+        return "PATENT_INVALIDATED"
+    if normalized == "등록료불납":
+        return "PATENT_LAPSED_NONPAYMENT"
+    return "UNKNOWN"
+
+
+def _pms_period(value: Any) -> tuple[str, str]:
+    match = re.fullmatch(
+        r"\s*(\d{4}-\d{2}-\d{2})\s*[~～]\s*(\d{4}-\d{2}-\d{2})\s*",
+        _text(value),
+    )
+    return match.groups() if match else ("", "")
+
+
+def _product_patent_edges(
+    calls: Sequence[Mapping[str, Any]],
+) -> list[dict[str, str]]:
+    edges: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for call in calls:
+        for item in _items(call):
+            if _text(item.get("PAGE_GB_NM")) != "제품특허":
+                continue
+            key = (_text(item.get("ITEM_SEQ")), _text(item.get("DOMESTIC_PATENT_NO")))
+            if not all(key) or key in seen:
+                continue
+            seen.add(key)
+            edges.append({"product_item_seq": key[0], "patent_no": key[1]})
+    return edges
+
+
+def _product_pms_periods(
+    calls: Sequence[Mapping[str, Any]],
+) -> list[dict[str, str]]:
+    periods: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for call in calls:
+        for item in _items(call):
+            item_seq = _text(item.get("ITEM_SEQ"))
+            start, end = _pms_period(item.get("PMS_END_DATE"))
+            if not item_seq or not start or not end or item_seq in seen:
+                continue
+            seen.add(item_seq)
+            periods.append(
+                {
+                    "product_item_seq": item_seq,
+                    "pms_period_start": start,
+                    "pms_period_end": end,
+                }
+            )
+    return periods
 
 
 def _news_records(
@@ -222,6 +334,8 @@ def _news_records(
             received.append(
                 {
                     "lane": "news",
+                    "authority": "NEWS",
+                    "jurisdiction": "N/A",
                     "source": str(call.get("source") or call.get("tool") or ""),
                     "tool": str(call.get("tool") or ""),
                     "title": _text(item.get("title")),

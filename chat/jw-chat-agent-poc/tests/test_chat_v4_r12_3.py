@@ -176,7 +176,16 @@ def test_a_t2_enumerates_every_supported_field_before_applying_cap() -> None:
     t2_claims = tuple(
         item for item in realization.claims if item.claim.claim_type == "T2"
     )
-    assert {item.claim.operator_id for item in t2_claims} == ALLOWED_T2_OPERATORS
+    assert {item.claim.operator_id for item in t2_claims} == {
+        "COUNT",
+        "GROUP_COUNT",
+        "COMMON_VALUE",
+        "ORDER_BY_TIME",
+        "SIMULTANEITY",
+        "COMPARE_NUMERIC",
+        "RANGE",
+    }
+    assert {item.claim.operator_id for item in t2_claims} <= ALLOWED_T2_OPERATORS
     assert {
         item.recomputation.field_path
         for item in t2_claims
@@ -240,7 +249,8 @@ def test_a_t2_groups_partial_fields_over_only_the_bound_records() -> None:
         "COMPLETED": 1,
         "RECRUITING": 1,
     }
-    assert "상태가 제공된 레코드 기준" in status_group.text
+    assert "상태가 제공된 총 2건" in status_group.text
+    assert "공동 최다" in status_group.text
     assert verify_recomputation(status_group.recomputation, (evidence,)).matched
 
 
@@ -306,7 +316,7 @@ def test_b_deterministic_render_adds_bound_micro_narrative_without_losing_record
     assert narrative_nodes
     assert all(node.record_ids for node in narrative_nodes)
     assert rendered.coverage.records_rendered == 2
-    assert "[직접 확인]" in rendered.text
+    assert "[직접 확인]" not in rendered.text
     assert any(
         item["claim_type"] == "T2" for item in rendered.structured_claims
     )
@@ -331,8 +341,8 @@ def test_b_micro_narrative_discloses_records_left_to_the_lossless_table() -> Non
         tuple(record.evidence_id for record in evidence.records),
     )
 
-    assert realization.unnarrated_record_count == 2
-    assert "나머지 2건은 아래 정본 표" in realization.nodes[0].text
+    assert realization.unnarrated_record_count == 0
+    assert "나머지 2건은 아래 정본 표" not in realization.nodes[0].text
 
 
 def test_b_micro_narrative_does_not_reference_a_table_for_unrendered_records() -> None:
@@ -364,7 +374,10 @@ def test_b_micro_narrative_does_not_reference_a_table_for_unrendered_records() -
         table_record_ids=(clinical.records[0].evidence_id,),
     )
 
-    assert realization.unnarrated_record_count == 2
+    assert realization.unnarrated_record_count == 9
+    assert {
+        item["reason_code"] for item in realization.unnarrated_records
+    } == {"public_identifier_missing"}
     assert "아래 정본 표" not in realization.nodes[0].text
 
 

@@ -240,8 +240,6 @@ def _explicit_scope(
         )
     countries = list(dict.fromkeys(countries))
     statuses = list(dict.fromkeys(statuses))
-    if not statuses:
-        statuses.extend(DEFAULT_ACTIVE_CLINICAL_STATUSES)
     return ClinicalTrialConcept(
         countries=tuple(countries),
         statuses=tuple(statuses),

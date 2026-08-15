@@ -42,7 +42,7 @@ def _prepared_parameters(question: str, resolution: SimpleNamespace) -> dict[str
     return compile_clinical_query(prepared[0][1]).parameters
 
 
-def test_a_combo_uses_and_and_default_active_statuses_deterministically() -> None:
+def test_a_combo_uses_and_without_an_implicit_status_filter_deterministically() -> None:
     question = "리바로젯 제네릭 임상현황"
 
     first = _prepared_parameters(question, _resolution())
@@ -50,21 +50,17 @@ def test_a_combo_uses_and_and_default_active_statuses_deterministically() -> Non
 
     assert first == second
     assert first["query.intr"] == "ezetimibe AND pitavastatin"
-    assert first["filter.overallStatus"] == "|".join(
-        DEFAULT_ACTIVE_CLINICAL_STATUSES
-    )
+    assert "filter.overallStatus" not in first
 
 
-def test_a_single_ingredient_keeps_a_single_intervention_term() -> None:
+def test_a_single_ingredient_keeps_a_single_intervention_term_without_status_filter() -> None:
     parameters = _prepared_parameters(
         "리바로 임상현황",
         _resolution("리바로", ("pitavastatin",)),
     )
 
     assert parameters["query.intr"] == "pitavastatin"
-    assert parameters["filter.overallStatus"] == "|".join(
-        DEFAULT_ACTIVE_CLINICAL_STATUSES
-    )
+    assert "filter.overallStatus" not in parameters
 
 
 def test_a_explicit_historical_scope_replaces_default_active_statuses() -> None:
@@ -117,11 +113,10 @@ def _study(
     }
 
 
-def test_b_client_audits_status_filter_and_records_relevance_exclusions() -> None:
+def test_b_client_audits_relevance_without_dropping_source_records() -> None:
     seen: list[dict[str, Any]] = []
     responses = iter(
         (
-            {"totalCount": 583, "studies": []},
             {
                 "totalCount": 3,
                 "studies": [
@@ -159,28 +154,22 @@ def test_b_client_audits_status_filter_and_records_relevance_exclusions() -> Non
     )
 
     assert "filter.overallStatus" not in seen[0]["params"]
-    assert seen[0]["params"]["pageSize"] == 1
-    assert seen[1]["params"]["filter.overallStatus"] == "|".join(
-        DEFAULT_ACTIVE_CLINICAL_STATUSES
-    )
-    assert result.total_unfiltered == 583
+    assert seen[0]["params"]["pageSize"] == 100
+    assert result.total_unfiltered == 3
     assert result.total_reported == 3
     assert result.records_received == 3
     assert result.records_unique == 3
-    assert result.records_relevant == 1
-    assert [record["nct_id"] for record in result.records] == ["NCT00000001"]
-    assert result.relevance_exclusions == (
-        {
-            "nct_id": "NCT06686615",
-            "reason_code": "missing_required_ingredient_token",
-        },
-        {
-            "nct_id": "NCT07036991",
-            "reason_code": "missing_required_ingredient_token",
-        },
-    )
-    assert "title" not in str(result.relevance_exclusions).casefold()
-    assert "url" not in str(result.relevance_exclusions).casefold()
+    assert result.records_relevant == 3
+    assert result.records_direct_relevance_confirmed == 1
+    assert result.records_direct_relevance_unconfirmed == 2
+    assert [record["nct_id"] for record in result.records] == [
+        "NCT00000001",
+        "NCT06686615",
+        "NCT07036991",
+    ]
+    assert result.relevance_exclusions == ()
+    assert result.query_manifest["records_excluded_by_relevance"] == 0
+    assert len(result.relevance_assessments) == 3
 
 
 def test_e_patent_adapter_uses_one_exact_kr_brand_query_for_combo_product(
@@ -192,6 +181,7 @@ def test_e_patent_adapter_uses_one_exact_kr_brand_query_for_combo_product(
     from jw_chat_agent_poc.tools.external.client import ExternalCall
 
     kr_calls: list[tuple[str, str | None]] = []
+    us_calls: list[str] = []
 
     def call(tool: str, source: str) -> ExternalCall:
         return ExternalCall(
@@ -219,7 +209,8 @@ def test_e_patent_adapter_uses_one_exact_kr_brand_query_for_combo_product(
             kr_calls.append((ingredient, item_name))
             return call("mfds_patent", "식품의약품안전처")
 
-        def mfds_fda_orangebook(self, _ingredient: str) -> ExternalCall:
+        def mfds_fda_orangebook(self, ingredient: str) -> ExternalCall:
+            us_calls.append(ingredient)
             return call("mfds_fda_orangebook", "FDA Orange Book")
 
         def web_search(self, _query: str, *, topic: str = "general") -> ExternalCall:
@@ -244,7 +235,27 @@ def test_e_patent_adapter_uses_one_exact_kr_brand_query_for_combo_product(
 
     v4_adapters.build_source_adapters()["patent"]("리바로젯 특허현황")
 
-    assert kr_calls == [("ezetimibe", "리바로젯")]
+    assert kr_calls == [("", "리바로젯")]
+    assert us_calls == ["Ezetimibe AND Pitavastatin"]
+
+
+def test_e_orange_book_serialization_preserves_and_operator(monkeypatch) -> None:
+    from jw_chat_agent_poc.tools.external.client import ExternalApiClient, ExternalCall
+
+    client = ExternalApiClient(mode="fixture")
+    captured: dict[str, str] = {}
+
+    def capture(tool: str, params: dict[str, str], *, xml: bool = False) -> ExternalCall:
+        assert tool == "mfds_fda_orangebook"
+        assert xml is True
+        captured.update(params)
+        return ExternalCall(tool, "FDA Orange Book", "no_data", "", {"items": []})
+
+    monkeypatch.setattr(client, "_fixture_or_live", capture)
+
+    client.mfds_fda_orangebook("ezetimibe AND pitavastatin")
+
+    assert captured == {"ingr_name": "Ezetimibe AND Pitavastatin"}
 
 
 def _record(
@@ -306,19 +317,21 @@ def test_c_portfolio_renders_one_deterministic_table_capped_at_ten() -> None:
     nodes, _required = render_clinical(evidence, single=False)
     record_node = next(node for node in nodes if node.block_id == "clinical:records")
 
-    assert [node.block_id for node in nodes] == ["clinical:coverage", "clinical:records"]
-    assert len(record_node.record_ids) == 10
+    assert [node.block_id for node in nodes] == [
+        "clinical:coverage",
+        "clinical:records",
+        "clinical:record-details",
+    ]
+    assert len(record_node.record_ids) == 11
     assert record_node.record_ids[0] == "ct:NCT00000011"
     assert "NCT00000011" in record_node.text
-    assert "외 1건" in record_node.text
-    assert "제네릭·생동성 관련 시험 우선" in record_node.text
-    assert "진행 중·모집 중 시험 기준" in nodes[0].text
-    assert "완료·종료 시험 제외" in nodes[0].text
+    assert "외 1건" not in record_node.text
+    assert "제네릭·생동성 관련 시험 우선" not in record_node.text
     assert "원천 검색 583건" in nodes[0].text
     assert "활성 상태 기준 11건" in nodes[0].text
-    assert "상세 표시 10건" in nodes[0].text
+    assert "상세 표시 11건" in nodes[0].text
     assert "### NCT" not in record_node.text
-    assert record_node.text.count("\n|") == 12
+    assert record_node.text.count("\n|") == 13
 
 
 def test_c_single_record_detail_is_not_truncated() -> None:
@@ -402,6 +415,48 @@ def _patent_call(items: list[dict[str, Any]], *, limit: int = 500) -> dict[str, 
             "items": items,
         },
     }
+
+
+def _us_patent_item(product: str, ingredient: str, patent_no: str) -> dict[str, Any]:
+    return {
+        "PRT_NAME": product,
+        "INGR_NAME": ingredient,
+        "KOR_PAT_NO": patent_no,
+        "KOR_NAME_OF_INVENTION": f"US invention {patent_no}",
+        "KOR_STATUS": "등록",
+        "KOR_EXP_DATE": "2030-01-01",
+        "KOR_APPLICANT": "US applicant",
+    }
+
+
+def test_e_us_patent_lane_requires_every_combination_ingredient() -> None:
+    call = {
+        "source": "nedrug_mcp",
+        "tool": "mfds_fda_orangebook",
+        "render_data": {
+            "items": [
+                _us_patent_item("VYTORIN", "Ezetimibe,Simvastatin", "RE42461"),
+                _us_patent_item("LIVALO", "Pitavastatin Calcium", "8557993"),
+                _us_patent_item(
+                    "LIVALOZET",
+                    "Pitavastatin Calcium,Ezetimibe",
+                    "COMBO-1",
+                ),
+            ]
+        },
+    }
+
+    us = build_patent_lane_payload(
+        kr_calls=(),
+        us_calls=(call,),
+        news_calls=(),
+        required_ingredients=("Pitavastatin", "Ezetimibe"),
+    )["us_secondary"]
+
+    assert us["records_received"] == 3
+    assert us["records_unique"] == 1
+    assert [record["product"] for record in us["records"]] == ["LIVALOZET"]
+    assert us["relevance_exclusions"] == 2
 
 
 def test_e_patent_limit_is_env_driven_and_mcp_payload_is_not_resliced(
@@ -662,15 +717,15 @@ def test_e_patent_render_prioritizes_registered_and_caps_domestic_table() -> Non
     coverage = next(node.text for node in nodes if node.block_id == "patent:coverage")
     kr_node = next(node for node in nodes if node.block_id == "patent:kr-primary")
 
-    assert len(kr_node.record_ids) == 10
+    assert len(kr_node.record_ids) == 12
     assert kr_node.record_ids[:2] == ("patent:kr:12", "patent:kr:2")
     assert "특허구분" in kr_node.text
     assert "등록 상태 2건" in kr_node.text
-    assert "외 2건" in kr_node.text
+    assert "외 2건" not in kr_node.text
     assert "등록 우선" in kr_node.text
     assert (
         "국내 정본: 원천 수신 274건 → 제품특허 12건 → "
-        "고유 특허번호 12건 → 상세 표시 10건"
+        "고유 특허번호 12건 → 상세 표시 12건"
     ) in coverage
     assert "기타특허 262건은 등재특허가 아니어서 정본 표에서 제외" in coverage
     assert "모두 소멸" not in "\n".join(node.text for node in nodes)

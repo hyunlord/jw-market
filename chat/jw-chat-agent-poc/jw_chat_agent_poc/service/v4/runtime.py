@@ -19,6 +19,7 @@ from uuid import uuid4
 from jw_chat_agent_poc.service.conversation import ConversationTurn
 from jw_chat_agent_poc.service.v4.adapters import build_source_adapters
 from jw_chat_agent_poc.service.v4.claim_ir import classify_answer_claims
+from jw_chat_agent_poc.service.v4.charts import build_grounded_charts
 from jw_chat_agent_poc.service.v4.contracts import (
     SOURCE_NAMES,
     EvidenceEnvelope,
@@ -27,6 +28,11 @@ from jw_chat_agent_poc.service.v4.contracts import (
     V4Answer,
 )
 from jw_chat_agent_poc.service.v4.executor import ParallelSourceExecutor
+from jw_chat_agent_poc.service.v4.expansion import (
+    _kcd_codes,
+    build_second_hop_expansion,
+    expand_parameter_axes,
+)
 from jw_chat_agent_poc.service.v4.gates import (
     apply_v4_gates,
     is_typed_absence_record,
@@ -44,6 +50,10 @@ from jw_chat_agent_poc.service.v4.lossless_spine import (
     configured_request_satisfaction_mode,
     deterministic_fact_text,
 )
+from jw_chat_agent_poc.service.v4.narrative_realization import (
+    measure_final_narrative_surface,
+)
+from jw_chat_agent_poc.service.v4.inspection import build_inspection_detail
 from jw_chat_agent_poc.service.v4.planner import V4Planner
 from jw_chat_agent_poc.service.v4.clinical_query_policy import clinical_scope_suffix
 from jw_chat_agent_poc.service.v4.retrieval_events import (
@@ -58,6 +68,9 @@ from jw_chat_agent_poc.service.v4.semantic_realization import (
     realize_semantic_surface,
 )
 from jw_chat_agent_poc.service.v4.session_state import SessionState, SessionStateStore
+from jw_chat_agent_poc.service.v4.scope_provenance import (
+    build_scope_provenance_projection,
+)
 from jw_chat_agent_poc.service.v4.synthesizer import SynthesisOutcome, V4Synthesizer
 from jw_chat_agent_poc.service.v4.shadow import (
     CanonicalFact,
@@ -74,6 +87,7 @@ from jw_chat_agent_poc.service.v4.source_tiers import (
 )
 from jw_chat_agent_poc.service.v4.surface_binding import sanitize_bound_surface
 from jw_chat_agent_poc.service.v4.time_context import current_kst_date
+from jw_chat_agent_poc.service.v4.query_scope import apply_source_call_cap
 
 
 _PUBLIC_PROGRESS_SOURCE = {
@@ -89,6 +103,83 @@ _GROUNDING_EXECUTOR = ThreadPoolExecutor(
 _GROUNDING_SLOTS = threading.BoundedSemaphore(value=2)
 ProgressCallback = Callable[[dict[str, Any]], None]
 _PROGRESS_URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
+
+
+def _query_scope_notice(plan: Any) -> str | None:
+    scope = getattr(plan, "query_scope", None)
+    if scope is None:
+        return None
+    labels = {
+        "mart": "시장 데이터",
+        "nedrug": "의약품 정보",
+        "hira": "HIRA",
+        "openfda": "FDA",
+        "clinicaltrials": "임상시험",
+        "web": "웹 검색",
+        "patent": "특허",
+    }
+    notices: list[str] = []
+    for source, omitted in scope.omitted_queries.items():
+        omitted_count = len(omitted)
+        if omitted_count == 0:
+            continue
+        requested = int(scope.requested_calls.get(source, 0))
+        executed = int(scope.executed_calls.get(source, 0))
+        notices.append(
+            f"{labels.get(source, source)} 조회는 요청 {requested}건 중 "
+            f"{executed}건을 실행했습니다. 나머지 {omitted_count}건은 "
+            "이번 답변의 조회 상한으로 제외했습니다."
+        )
+        preview = tuple(str(query) for query in omitted[:5])
+        if preview:
+            remainder = omitted_count - len(preview)
+            suffix = f" · 외 {remainder}건" if remainder > 0 else ""
+            notices.append(f"제외 질의: {' · '.join(preview)}{suffix}")
+    return "\n".join(notices) if notices else None
+
+
+_AXIS_FOLLOWUP_LABELS = {
+    "연령": "연령별",
+    "성별": "성별",
+    "기관종별": "기관종별",
+    "요양기관종별": "요양기관종별",
+    "월별": "월별",
+    "연도별": "연도별",
+    "입원/외래": "입원/외래별",
+    "입원 외래": "입원/외래별",
+}
+
+
+def _axis_followup_label(question: str) -> str | None:
+    normalized = " ".join(question.split())
+    for marker, label in _AXIS_FOLLOWUP_LABELS.items():
+        if marker in normalized:
+            return label
+    return None
+
+
+def _session_inheritance_notice(
+    question: str,
+    state: SessionState | None,
+) -> str | None:
+    axis_label = _axis_followup_label(question)
+    if state is None or axis_label is None or not _should_inherit_session_contract(question, state):
+        return None
+    entities = tuple(
+        dict.fromkeys(
+            (
+                *state.referenced_entity_set,
+                *state.canonical_entities,
+                state.primary_entity or "",
+            )
+        )
+    )
+    inherited = tuple(value for value in entities if value) + tuple(
+        _public_period_label(value) for value in state.time_window if value
+    )
+    if not inherited:
+        return None
+    return f"앞선 질문의 {' · '.join(inherited)} 기준으로 {axis_label}을 조회했습니다."
 
 
 def _release_grounding_slot(_future: Future[tuple[CanonicalFact, ...]]) -> None:
@@ -134,8 +225,20 @@ class V4Runtime:
         conversation_id: str | None,
         turns: Sequence[ConversationTurn],
         progress_callback: ProgressCallback | None = None,
+        supplemental_results: Sequence[SourceResult] = (),
     ) -> V4Answer:
         started = time.monotonic()
+        progress_events: list[dict[str, Any]] = []
+        caller_progress_callback = progress_callback
+
+        def record_progress(event: dict[str, Any]) -> None:
+            stored_event = dict(event)
+            stored_event.setdefault("recorded_at", utc_now().isoformat())
+            progress_events.append(stored_event)
+            if caller_progress_callback is not None:
+                caller_progress_callback(event)
+
+        progress_callback = record_progress
         deadline = started + self._total_timeout_s
         deadline_at = utc_now() + timedelta(seconds=self._total_timeout_s)
         selected_turns = tuple(turns)[-10:]
@@ -170,6 +273,15 @@ class V4Runtime:
         plan = _bind_session_state_contract(plan, question, session_state)
         plan = _preserve_period_in_answer_queries(plan)
         plan = fan_out_tier_zero_queries(plan)
+        parameter_expansion = expand_parameter_axes(
+            plan,
+            question,
+            observed_on=current_kst_date(),
+        )
+        plan = apply_source_call_cap(parameter_expansion.plan)
+        parameter_expansion.trace["query_scope"] = (
+            plan.query_scope.model_dump(mode="json") if plan.query_scope else None
+        )
         clinical_query_anchor = _deterministic_clinical_query_anchor(
             question,
             session_state,
@@ -178,6 +290,10 @@ class V4Runtime:
             self._executor,
             plan,
             clinical_query_anchor=clinical_query_anchor,
+        )
+        plan = plan.model_copy(update={"query_scope": execution_plan.query_scope})
+        parameter_expansion.trace["query_scope"] = (
+            plan.query_scope.model_dump(mode="json") if plan.query_scope else None
         )
         _emit_progress(
             progress_callback,
@@ -286,8 +402,26 @@ class V4Runtime:
             )
             first_execution.trace.setdefault("session_result_reused", False)
         first_results = first_execution.results
-        linked_plan = (
-            _call_with_state(
+        deterministic_link = (
+            build_second_hop_expansion(
+                plan,
+                question,
+                first_results,
+                max_queries=3,
+            )
+            if (
+                not first_execution.trace["session_result_reused"]
+                and _needs_deterministic_expansion(plan, question)
+            )
+            else None
+        )
+        linked_plan = deterministic_link.plan if deterministic_link is not None else None
+        if linked_plan is None and (
+            plan.needs_second_hop
+            and not first_execution.trace["session_result_reused"]
+            and _remaining(deadline) > 1.0
+        ):
+            linked_plan = _call_with_state(
                 self._planner.link,
                 plan,
                 first_results,
@@ -295,13 +429,6 @@ class V4Runtime:
                 budget_s=min(7.0, _remaining(deadline)),
                 state=session_state,
             )
-            if (
-                plan.needs_second_hop
-                and not first_execution.trace["session_result_reused"]
-                and _remaining(deadline) > 1.0
-            )
-            else None
-        )
         if linked_plan is not None:
             _emit_progress(
                 progress_callback,
@@ -427,6 +554,7 @@ class V4Runtime:
             *linked_results,
             *gap_execution.results,
             *absence_execution.results,
+            *supplemental_results,
         )
         for source in SOURCE_NAMES:
             missing_results = max(
@@ -509,6 +637,25 @@ class V4Runtime:
                 trace={},
             )
         gated = apply_v4_gates(plan.resolved_question, synthesis.text, results)
+        request_context_notices = tuple(
+            notice
+            for notice in (
+                _session_inheritance_notice(question, session_state),
+                _query_scope_notice(plan),
+            )
+            if notice
+        )
+        if request_context_notices:
+            existing_notice = str(deterministic_render.request_notice or "").strip()
+            deterministic_render = deterministic_render.model_copy(
+                update={
+                    "request_notice": "\n".join(
+                        notice
+                        for notice in (existing_notice, *request_context_notices)
+                        if notice
+                    )
+                }
+            )
         composition = compose_lossless_answer(
             deterministic_render,
             gated.text,
@@ -555,9 +702,21 @@ class V4Runtime:
                     row.get("status") == "COMPLETE" for row in completion_rows
                 ),
                 requested_count=len(completion_rows),
+                protected_line_sha256=tuple(
+                    sha256(line.strip().encode("utf-8")).hexdigest()
+                    for node in deterministic_render.nodes
+                    if node.block_id == "narrative:field-restatement"
+                    for line in node.text.splitlines()
+                    if line.strip()
+                ),
             ),
         )
         final_text = semantic_surface.text
+        final_narrative_metrics = measure_final_narrative_surface(
+            final_text,
+            evidence_sets,
+            deterministic_render.record_field_usage,
+        )
         claim_ir_input_sha256 = sha256(final_text.encode("utf-8")).hexdigest()
         claim_ir_enabled = _claim_ir_shadow_enabled()
         if claim_ir_enabled:
@@ -680,6 +839,12 @@ class V4Runtime:
             "clinical_query_normalization": clinical_query_normalization,
             "planner_usage": planner_usage,
             "second_hop": linked_plan.model_dump(mode="json") if linked_plan else None,
+            "expansion": {
+                "parameter_axes": parameter_expansion.trace,
+                "second_hop": (
+                    deterministic_link.trace if deterministic_link is not None else None
+                ),
+            },
             "linked_clinical_query_normalization": linked_clinical_normalization,
             "tool_results": [
                 {
@@ -689,6 +854,8 @@ class V4Runtime:
                     "elapsed_ms": result.elapsed_ms,
                     "cache_hit": result.cache_hit,
                     "notice": result.notice,
+                    "failure_reason": result.failure_reason,
+                    "failure_detail": result.failure_detail,
                     "citations": [
                         citation.model_dump(mode="json")
                         for citation in result.citations
@@ -713,6 +880,7 @@ class V4Runtime:
             "gates": gated.trace,
             "lossless_spine": {
                 **composition.trace,
+                **final_narrative_metrics,
                 "build_error_type": lossless_error_type,
                 "evidence_sets": [
                     {
@@ -768,12 +936,54 @@ class V4Runtime:
                     deterministic_render.structured_claims_truncated
                 ),
                 "unnarrated_record_count": (
-                    deterministic_render.unnarrated_record_count
+                    final_narrative_metrics["unnarrated_record_count"]
+                ),
+                "narrated_record_count": final_narrative_metrics["narrated_record_count"],
+                "narrated_record_ids": final_narrative_metrics["narrated_record_ids"],
+                "unnarrated_records": final_narrative_metrics["unnarrated_records"],
+                "record_field_usage": final_narrative_metrics["record_field_usage"],
+                "average_narrated_field_count": (
+                    final_narrative_metrics["average_narrated_field_count"]
+                ),
+                "loaded_field_narrative_use_rate": (
+                    final_narrative_metrics["loaded_field_narrative_use_rate"]
+                ),
+                "identifier_only_sentence_count": (
+                    final_narrative_metrics["identifier_only_sentence_count"]
                 ),
                 "answer_mutation": composition.answer_mutated,
             },
             "typed_grounding_shadow": grounding_shadow,
+            "progress_events": progress_events,
+            "progress_restoration": {
+                "storage": "conversation_trace_json",
+                "event_count": len(progress_events),
+                "ddl_required": False,
+            },
         }
+        rendered_record_ids = tuple(
+            record_id
+            for node in deterministic_render.nodes
+            for record_id in node.record_ids
+        )
+        charts = build_grounded_charts(evidence_sets, rendered_record_ids)
+        trace["charts"] = {
+            "generated_count": len(charts),
+            "reason": "grounded_series" if charts else "fewer_than_two_grounded_points",
+        }
+        trace["inspection_detail"] = build_inspection_detail(
+            plan,
+            results,
+            evidence_sets,
+            deterministic_render,
+            expansion=trace["expansion"],
+            answer_text=composition.text,
+        )
+        trace["scope_provenance_projection"] = build_scope_provenance_projection(
+            evidence_sets,
+            deterministic_render.nodes,
+            strict=False,
+        )
         source_names = [
                 citation.source
                 for result in results
@@ -796,6 +1006,7 @@ class V4Runtime:
             self._state_store.save(session_id, next_state)
         return V4Answer(
             text=final_text,
+            charts=charts,
             sources=sources,
             trace=trace,
             timing=stage_timing,
@@ -844,6 +1055,14 @@ def _call_with_state(
     return function(*args, **kwargs)
 
 
+def _needs_deterministic_expansion(plan: Any, question: str) -> bool:
+    lowered = question.casefold()
+    return bool(
+        plan.needs_second_hop
+        or any(token in lowered for token in ("제네릭", "치료제", "동일 성분", "generic"))
+    )
+
+
 def _derive_session_state(
     question: str,
     plan: Any,
@@ -852,7 +1071,15 @@ def _derive_session_state(
     previous: SessionState | None,
 ) -> SessionState:
     previous = previous or SessionState()
-    entities = tuple(dict.fromkeys(_state_entities(results)))
+    interpreted_question = " ".join(
+        (
+            question,
+            plan.resolved_question,
+            *plan.requested_answer_shape.entities,
+        )
+    )
+    planned_entities = _kcd_codes(interpreted_question)
+    entities = tuple(dict.fromkeys((*planned_entities, *_state_entities(results))))
     explicit_entities = tuple(
         entity for entity in entities if entity.casefold() in question.casefold()
     )
@@ -891,7 +1118,8 @@ def _derive_session_state(
         requested_grain=_requested_grain(question) or previous.requested_grain,
         referenced_entity_set=referenced,
         active_filters=_active_filters(question) or (() if topic_switched else previous.active_filters),
-        time_window=_time_window(question) or (() if topic_switched else previous.time_window),
+        time_window=_time_window(interpreted_question)
+        or (() if topic_switched else previous.time_window),
         comparison_anchor=primary_entity or previous.comparison_anchor,
         last_numeric_facts=numeric_facts or (() if topic_switched else previous.last_numeric_facts),
         last_source_record_ids=record_ids or (() if topic_switched else previous.last_source_record_ids),
@@ -1216,12 +1444,18 @@ def _execution_plan(
     *,
     clinical_query_anchor: str,
 ) -> tuple[Any, dict[str, Any]]:
-    fanned_plan = fan_out_tier_zero_queries(plan)
+    fanned_plan = (
+        plan
+        if getattr(plan, "query_scope", None) is not None
+        else fan_out_tier_zero_queries(plan)
+    )
     prepare_plan = getattr(executor, "prepare_plan", None)
     if not callable(prepare_plan):
-        return fanned_plan, _clinical_normalization_trace(plan, fanned_plan)
+        executable = apply_source_call_cap(fanned_plan)
+        return executable, _clinical_normalization_trace(plan, executable)
     prepared = prepare_plan(fanned_plan, clinical_query_anchor=clinical_query_anchor)
-    return prepared, _clinical_normalization_trace(plan, prepared)
+    executable = apply_source_call_cap(prepared)
+    return executable, _clinical_normalization_trace(plan, executable)
 
 
 def _linked_clinical_query_anchor(first_question: str, linked_question: str) -> str:
@@ -1427,12 +1661,11 @@ def _emit_progress(
 
 
 def _expanded_intents_detail(intents: Sequence[str]) -> str:
-    visible = [value.strip() for value in intents if value.strip()][:5]
+    visible = [value.strip() for value in intents if value.strip()]
     detail = "\n".join(f"- {value}" for value in visible)
     if not detail:
         return "질문에 맞는 조회 경로를 구성했습니다"
-    remaining = max(0, len(intents) - len(visible))
-    return f"{detail}\n- 외 {remaining}개" if remaining else detail
+    return detail
 
 
 def _emit_source_progress(
@@ -1477,10 +1710,9 @@ def _source_progress_line(
 
 
 def _source_query_summary(queries: Sequence[str]) -> str:
-    first = _public_progress_query(queries[0]) if queries else "조회 내용 확인 불가"
-    remaining = max(0, len(queries) - 1)
-    suffix = f" 외 {remaining}건" if remaining else ""
-    return _one_line(first + suffix, limit=100)
+    if not queries:
+        return "조회 내용 확인 불가"
+    return "\n".join(f"· {_public_progress_query(query)}" for query in queries)
 
 
 def _public_progress_query(value: str) -> str:
@@ -1544,6 +1776,10 @@ _RECORD_TYPE_QUERY_LABELS = {
     "safety": "안전성",
     "label": "허가사항",
 }
+_AXIS_FOLLOWUP_SOURCE_BY_RECORD_TYPE = {
+    "patient_count": "hira",
+    "market_metric": "mart",
+}
 _STATUS_QUERY_LABELS = {
     "active": "진행 중",
     "completed": "완료",
@@ -1572,18 +1808,30 @@ def _bind_session_state_contract(
     if not constraints:
         return plan
     resolved_question = _append_missing_constraints(plan.resolved_question, constraints)
+    axis_source = (
+        _AXIS_FOLLOWUP_SOURCE_BY_RECORD_TYPE.get(state.record_type or "")
+        if _axis_followup_label(question) is not None
+        else None
+    )
     updates = {
-        source: tuple(
-            _append_missing_constraints(query, constraints)
-            for query in source_queries
+        source: (
+            tuple(
+                _append_missing_constraints(query, constraints)
+                for query in source_queries
+            )
+            if axis_source is None or source == axis_source
+            else ()
         )
         for source, source_queries in plan.tool_queries.items()
     }
+    plan_updates: dict[str, Any] = {
+        "resolved_question": resolved_question,
+        "tool_queries": plan.tool_queries.model_copy(update=updates),
+    }
+    if axis_source is not None:
+        plan_updates["answer_sources"] = (axis_source,)
     return plan.model_copy(
-        update={
-            "resolved_question": resolved_question,
-            "tool_queries": plan.tool_queries.model_copy(update=updates),
-        }
+        update=plan_updates
     )
 
 
@@ -1592,6 +1840,8 @@ def _should_inherit_session_contract(question: str, state: SessionState) -> bool
     if not normalized:
         return False
     if _is_prior_result_reference(question):
+        return True
+    if _axis_followup_label(question) is not None:
         return True
     subject_match = _SUBJECT_BEFORE_INTENT_RE.match(question)
     if subject_match is not None:
@@ -1634,9 +1884,12 @@ def _session_query_constraints(
     question: str,
 ) -> tuple[str, ...]:
     values: list[str] = []
-    primary = state.primary_entity or state.comparison_anchor
-    if primary:
-        values.append(primary)
+    if _axis_followup_label(question) is not None:
+        values.extend(state.referenced_entity_set or state.canonical_entities)
+    else:
+        primary = state.primary_entity or state.comparison_anchor
+        if primary:
+            values.append(primary)
     requested_record_type = _record_type(question)
     inherit_record_scope = (
         requested_record_type is None or requested_record_type == state.record_type
@@ -1699,6 +1952,14 @@ def _gap_fill_request(
     plan: Any,
     results: Sequence[SourceResult],
 ) -> dict[str, Any] | None:
+    interpreted = " ".join(
+        (
+            plan.resolved_question,
+            *plan.requested_answer_shape.entities,
+        )
+    )
+    if len(_kcd_codes(interpreted)) > 1:
+        return None
     for result in results:
         if result.source not in {"hira", "nedrug"} or result.source not in plan.answer_sources:
             continue

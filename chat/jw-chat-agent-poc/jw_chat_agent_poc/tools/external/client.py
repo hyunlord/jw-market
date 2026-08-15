@@ -37,6 +37,7 @@ MFDS_PATENT_QUERY_ALIASES = {
     "ezetimibe": "리바로젯",
 }
 MFDS_PATENT_INGREDIENT_ALIASES = {
+    "emicizumab": "에미시주맙",
     "pitavastatin": "Pitavastatin",
     "pitavastatin calcium": "Pitavastatin",
     "피타바스타틴": "Pitavastatin",
@@ -223,16 +224,22 @@ class ExternalApiClient:
         item_name: str | None = None,
     ) -> ExternalCall:
         resolved_item_name = item_name or MFDS_PATENT_QUERY_ALIASES.get(ingredient_en.lower())
-        params = (
-            {"item_name": resolved_item_name}
-            if resolved_item_name
-            else {"ingr_name": ingredient_en}
+        resolved_ingredient = MFDS_PATENT_INGREDIENT_ALIASES.get(
+            ingredient_en.casefold(),
+            ingredient_en,
         )
+        params: dict[str, str] = {}
+        if resolved_ingredient:
+            params["ingr_name"] = resolved_ingredient
+        if resolved_item_name:
+            params["item_name"] = resolved_item_name
         params["limit"] = str(_mfds_patent_result_limit())
         return self._fixture_or_live("mfds_patent", params, xml=True)
 
     def mfds_fda_orangebook(self, ingredient_en: str) -> ExternalCall:
-        return self._fixture_or_live("mfds_fda_orangebook", {"ingr_name": ingredient_en.title()}, xml=True)
+        ingredients = re.split(r"\s+AND\s+", ingredient_en, flags=re.IGNORECASE)
+        query = " AND ".join(ingredient.strip().title() for ingredient in ingredients)
+        return self._fixture_or_live("mfds_fda_orangebook", {"ingr_name": query}, xml=True)
 
     def hira_disease_name_code(self, sick_cd: str, *, sick_type: str | None = None) -> ExternalCall:
         disease_type = "SICK_CD" if is_hira_disease_code(sick_cd) else "SICK_NM"

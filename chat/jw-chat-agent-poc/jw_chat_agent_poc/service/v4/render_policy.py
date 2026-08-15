@@ -23,7 +23,9 @@ POLICY_REQUIRED_FIELDS = (
 
 
 def render_policy(evidence_set: EvidenceSet) -> tuple[list[RenderNode], tuple[str, ...]]:
-    records = list(evidence_set.records)
+    records = [record for record in evidence_set.records if _renderable_policy_record(record.payload)]
+    if not records:
+        return [], POLICY_REQUIRED_FIELDS
     nodes: list[RenderNode] = [
         RenderNode(
             block_id="policy:coverage",
@@ -37,59 +39,91 @@ def render_policy(evidence_set: EvidenceSet) -> tuple[list[RenderNode], tuple[st
         raw = text(payload.get("raw_text"))
         sections = _policy_sections(raw)
         prefix = f"policy:{index}"
-        info = table(
-            ("항목", "값"),
-            (
-                ("고시번호", display(payload.get("notice_number"))),
+        info_rows = tuple(
+            (label, value)
+            for label, value in (
+                ("고시번호", text(payload.get("notice_number"))),
                 ("시행일", effective_date(payload, raw)),
-                ("제목", display(payload.get("title"))),
-            ),
+                ("제목", text(payload.get("title"))),
+            )
+            if value
         )
-        nodes.extend(
+        record_nodes: list[RenderNode | None] = [
             (
                 RenderNode(
                     block_id=f"{prefix}:info",
                     record_ids=(record.evidence_id,),
                     surface_fields=("notice_no", "effective_date"),
-                    text=f"## 고시 정보\n{info}",
-                ),
-                _policy_node(prefix, "target", "투여대상", sections.get("target"), record.evidence_id),
-                _policy_node(prefix, "exclusions", "제외기준", sections.get("exclusions"), record.evidence_id),
-                _policy_node(
+                    text=f"## 고시 정보\n{table(('항목', '값'), info_rows)}",
+                )
+                if info_rows
+                else None
+            ),
+            _policy_node(prefix, "target", "투여대상", sections.get("target"), record.evidence_id),
+            _policy_node(prefix, "exclusions", "제외기준", sections.get("exclusions"), record.evidence_id),
+            _policy_node(
                     prefix,
                     "administration_frequency",
                     "투여 방법 및 횟수",
                     sections.get("administration_frequency"),
                     record.evidence_id,
-                ),
-                _policy_node(
+            ),
+            _policy_node(
                     prefix,
                     "revision_reason",
                     "개정 사유",
                     sections.get("revision_reason"),
                     record.evidence_id,
-                ),
+            ),
+            (
                 RenderNode(
                     block_id=f"{prefix}:raw",
                     record_ids=(record.evidence_id,),
                     surface_fields=("raw_text",),
-                    text="## 공식 원문 전문\n" + (raw or "조회 실패"),
-                ),
-            )
-        )
+                    text="## 공식 원문 전문\n" + raw,
+                )
+                if raw
+                else None
+            ),
+        ]
+        nodes.extend(node for node in record_nodes if node is not None)
     return nodes, POLICY_REQUIRED_FIELDS
+
+
+def _renderable_policy_record(payload: dict[str, object]) -> bool:
+    status = text(payload.get("status")).casefold()
+    if status in {
+        "no_data",
+        "empty",
+        "error",
+        "timeout",
+        "deadline_exceeded",
+        "quota",
+        "upstream",
+        "parse_error",
+        "unsupported",
+    }:
+        return False
+    return any(
+        text(payload.get(field))
+        for field in ("notice_number", "effective_date", "title", "raw_text")
+    )
+
+
 def _policy_node(
     prefix: str,
     field: str,
     heading: str,
     value: str | None,
     record_id: str,
-) -> RenderNode:
+) -> RenderNode | None:
+    if not value:
+        return None
     return RenderNode(
         block_id=f"{prefix}:{field}",
         record_ids=(record_id,),
         surface_fields=(field,),
-        text=f"## {heading}\n{value or '자동 분류 실패 · 공식 원문 표시'}",
+        text=f"## {heading}\n{value}",
     )
 
 

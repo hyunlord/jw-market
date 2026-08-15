@@ -11,6 +11,7 @@ SOURCE_LABELS = {
     "clinicaltrials": "ClinicalTrials.gov",
     "web": "웹 뉴스",
     "patent": "식품의약품안전처 의약품 특허목록",
+    "document": "업로드 문서",
     "patent:kr_primary": "식품의약품안전처 의약품 특허목록",
     "patent:us_secondary": "FDA Orange Book",
     "patent:news": "특허·분쟁 동향 (웹 뉴스)",
@@ -30,6 +31,7 @@ _SOURCE_ALIASES = {
         "patent",
         "mfds_patent",
     ),
+    "document": ("업로드 문서", "첨부 문서", "document"),
 }
 
 _INLINE_SOURCE_RE = re.compile(r"\[출처:\s*([^\]]+?)\s*\]")

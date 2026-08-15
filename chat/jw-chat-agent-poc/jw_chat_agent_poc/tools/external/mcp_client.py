@@ -68,15 +68,9 @@ class McpJsonClient:
         first_attempt_timeout_s: float | None = None,
     ) -> None:
         self.url = url
-        self.timeout_s = float(timeout_s)
-        self.connect_timeout_s = (
-            float(connect_timeout_s) if connect_timeout_s is not None else None
-        )
-        self.first_attempt_timeout_s = (
-            float(first_attempt_timeout_s)
-            if first_attempt_timeout_s is not None
-            else None
-        )
+        self.timeout_s = timeout_s
+        self.connect_timeout_s = connect_timeout_s
+        self.first_attempt_timeout_s = first_attempt_timeout_s
 
     def call_tool(self, name: str, arguments: dict[str, Any]) -> McpToolResult:
         result = self._post(
@@ -117,19 +111,14 @@ class McpJsonClient:
         max_attempts = _MCP_MAX_ATTEMPTS.get()
         for attempt in range(max_attempts):
             requested_timeout_s = (
-                self.first_attempt_timeout_s
-                if attempt == 0 and self.first_attempt_timeout_s is not None
-                else MCP_FIRST_ATTEMPT_TIMEOUT_S
+                self.first_attempt_timeout_s or MCP_FIRST_ATTEMPT_TIMEOUT_S
                 if attempt == 0
                 else self.timeout_s
             )
-            read_timeout_s = _remaining_timeout_s(requested_timeout_s)
-            request_timeout: float | tuple[float, float] = read_timeout_s
+            timeout_s = _remaining_timeout_s(requested_timeout_s)
+            request_timeout: float | tuple[float, float] = timeout_s
             if self.connect_timeout_s is not None:
-                request_timeout = (
-                    _remaining_timeout_s(self.connect_timeout_s),
-                    read_timeout_s,
-                )
+                request_timeout = (min(self.connect_timeout_s, timeout_s), timeout_s)
             try:
                 response = requests.post(
                     self.url,

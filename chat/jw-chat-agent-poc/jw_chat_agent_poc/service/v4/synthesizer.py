@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ from jw_chat_agent_poc.service.conversation import ConversationTurn
 from jw_chat_agent_poc.service.v4.comparison_facts import build_comparison_facts
 from jw_chat_agent_poc.service.v4.contracts import PlannerOutput, SourceResult
 from jw_chat_agent_poc.service.v4.gates import (
+    hira_row_axis_label,
     inspect_requested_hira_surface,
     render_mart_dimension_facts,
 )
@@ -52,6 +54,7 @@ _SOURCE_SCOPE = {
     "clinicaltrials": "GLOBAL",
     "web": "GLOBAL",
     "patent": "GLOBAL",
+    "document": "KR",
 }
 _FOOTNOTES = {
     "hira": "HIRA 환자수는 주상병 기준 청구 실인원이며 유병률과 다릅니다.",
@@ -88,8 +91,11 @@ _SYNTHESIS_SYSTEM_PROMPT = (
     "합산하거나 비율을 계산하지 않는다. study_classification에서 ADJACENT로 표시된 임상은 `참고: 인접 연구` "
     "구획에만 두고 인접 연구를 종합 인사이트에서 다시 요약하거나 해석하지 않는다. HIRA 환자수는 `환자수(명)` "
     "값만 사용한다. `명세서건수(건)`이나 `방문일수(일)`를 환자수로 바꾸어 쓰지 않고, 금액은 `(원)` 라벨이 "
-    "붙은 값과 단위를 그대로 쓴다. 반드시 `## 핵심 답`, `## 근거와 맥락`, `## 종합 인사이트`, "
-    "`## 미확인 요소`, `## 출처`의 마크다운 소제목으로 구성한다. 내용이 없는 소제목은 만들지 않는다. "
+    "붙은 값과 단위를 그대로 쓴다. 질문에 대한 답을 첫 문장에서 바로 제시한다. 출처별 소제목이나 "
+    "고정된 섹션 수를 강제하지 말고, 질문의 논리에 맞는 소제목만 한 번씩 사용한다. 확인되지 않은 내용이 "
+    "있을 때만 명시적인 확인 한계를 마지막에 둔다. 내용이 없는 소제목은 만들지 않는다. 같은 주어와 기간을 "
+    "되풀이하는 선두 문장을 만들지 않는다. 렌더 대상 레코드가 5건 이상이면 표를 제외한 서술을 1,500자 이상으로 "
+    "작성하되, 근거 없는 수식어로 분량을 채우지 않는다. "
     "결정론적 사실면 표는 전건 보존용이므로 표의 행을 해설에 다시 나열하지 말고, 표가 뜻하는 맥락과 시사점을 "
     "충분한 길이의 자연스러운 문장으로 연결한다. 결정론적 사실면의 [직접 확인] 레코드 관계는 코드가 "
     "재계산한 주장만 포함하므로 서술에 반영하되, 그 목록에 없는 레코드 간 관계를 새로 만들지 않는다. "
@@ -103,6 +109,9 @@ _SYNTHESIS_SYSTEM_PROMPT = (
     " `required_hira_surface`가 있으면 모든 항목을 첫 합성에서 본문에 정확히 포함한다."
 )
 _CAUSE_MARKERS = ("원인", "왜 ", "이유")
+_DEFAULT_SYNTHESIS_MAX_TOKENS = 16384
+_MIN_SYNTHESIS_MAX_TOKENS = 8192
+_MAX_SYNTHESIS_MAX_TOKENS = 32768
 
 
 @dataclass(frozen=True)
@@ -145,6 +154,7 @@ class V4Synthesizer:
         deterministic_facts: str | None = None,
     ) -> SynthesisOutcome:
         observed_on = _current_kst_date()
+        synthesis_max_tokens = _synthesis_max_tokens()
         usable = _select_usable_results(plan, tuple(
             result
             for result in results
@@ -195,7 +205,7 @@ class V4Synthesizer:
                 self._client,
                 messages,
                 budget_s=budget_s,
-                max_tokens=8192,
+                max_tokens=synthesis_max_tokens,
             )
             answer = completion.text.strip()
         except Exception as exc:  # noqa: BLE001 - a grounded fallback is preferable to a 500
@@ -288,7 +298,7 @@ class V4Synthesizer:
                     self._client,
                     retry_messages,
                     budget_s=min(30.0, budget_s),
-                    max_tokens=8192,
+                    max_tokens=synthesis_max_tokens,
                 )
                 retried_answer = retried.text.strip()
                 if retried_answer and retried.finish_reason != "length":
@@ -341,6 +351,7 @@ class V4Synthesizer:
                     len(json.dumps(result.payload, ensure_ascii=False, default=str))
                     for result in usable
                 ),
+                "max_tokens": synthesis_max_tokens,
                 "coverage_notices": list(_coverage_notices(usable)),
                 "requested_hira_surface_retry": {
                     "attempted": hira_retry_attempted,
@@ -370,6 +381,21 @@ class V4Synthesizer:
                 "model": completion.model if completion else "not_applicable",
             },
         )
+
+
+def _synthesis_max_tokens() -> int:
+    raw = os.environ.get(
+        "V4_SYNTHESIZER_MAX_TOKENS",
+        str(_DEFAULT_SYNTHESIS_MAX_TOKENS),
+    )
+    try:
+        configured = int(raw)
+    except ValueError:
+        configured = _DEFAULT_SYNTHESIS_MAX_TOKENS
+    return min(
+        _MAX_SYNTHESIS_MAX_TOKENS,
+        max(_MIN_SYNTHESIS_MAX_TOKENS, configured),
+    )
 
 
 def _complete_detailed(
@@ -402,6 +428,7 @@ def _synthesis_messages(
 ) -> list[dict[str, str]]:
     mart = tuple(result for result in results if result.source == "mart")
     external = tuple(result for result in results if result.source != "mart")
+    fact_backed = bool(deterministic_facts)
     history = [
         {"question": turn.question, "answer": turn.answer}
         for turn in tuple(turns)[-3:]
@@ -414,8 +441,14 @@ def _synthesis_messages(
         for block in _deep_analysis_blocks(result)
     ]
     prompt = {
-        "internal_datamart": [_mart_block(result) for result in mart],
-        "external_evidence": [_evidence_packet(result) for result in external],
+        "internal_datamart": [
+            _fact_backed_source_packet(result) if fact_backed else _mart_block(result)
+            for result in mart
+        ],
+        "external_evidence": [
+            _evidence_packet(result, include_detail=not fact_backed)
+            for result in external
+        ],
         "source_mapping": [
             {
                 "source": _PUBLIC_SOURCE[result.source],
@@ -477,6 +510,15 @@ def _synthesis_messages(
             "web_context_uses_reported_language": True,
             "separate_official_and_reported_claims": True,
             "do_not_replace_absent_document_with_other_document": True,
+        }
+    if any(result.source == "document" for result in external):
+        prompt["uploaded_document_contract"] = {
+            "same_evidence_fusion": True,
+            "compare_with_other_sources_in_the_same_paragraph": True,
+            "per_source_paragraph_dump_forbidden": True,
+            "raw_chunk_dump_forbidden": True,
+            "cite_document_name_section_and_page": True,
+            "official_source_wins_on_conflict": True,
         }
     reexamination_contract = _reexamination_prompt_contract(
         plan.resolved_question,
@@ -977,7 +1019,22 @@ def _topic_particle(subject: str) -> str:
     return "는"
 
 
-def _evidence_packet(result: SourceResult) -> dict[str, Any]:
+def _fact_backed_source_packet(result: SourceResult) -> dict[str, Any]:
+    return {
+        "source": _PUBLIC_SOURCE[result.source],
+        "query": result.query,
+        "status": result.status,
+        "detail": {
+            "omitted": "deterministic_facts contains the rendered evidence",
+        },
+    }
+
+
+def _evidence_packet(
+    result: SourceResult,
+    *,
+    include_detail: bool = True,
+) -> dict[str, Any]:
     evidence = result.evidence
     packet = {
         "source": _PUBLIC_SOURCE[result.source],
@@ -987,7 +1044,11 @@ def _evidence_packet(result: SourceResult) -> dict[str, Any]:
             "source_scope": _SOURCE_SCOPE[result.source],
             "time_match": _time_match(result),
         },
-        "detail": result.payload,
+        "detail": (
+            result.payload
+            if include_detail
+            else {"omitted": "deterministic_facts contains the rendered evidence"}
+        ),
     }
     if result.source == "hira":
         packet["field_labels"] = dict(_HIRA_FIELD_LABELS)
@@ -1189,18 +1250,15 @@ def _select_usable_results(
     plan: PlannerOutput,
     results: tuple[SourceResult, ...],
 ) -> tuple[SourceResult, ...]:
-    selected: list[SourceResult] = []
-    counts: dict[str, int] = {}
-    for result in sorted(
-        results,
-        key=lambda item: (item.source not in plan.answer_sources, SOURCE_ORDER[item.source]),
-    ):
-        limit = 2 if result.source in plan.answer_sources else 1
-        if counts.get(result.source, 0) >= limit:
-            continue
-        counts[result.source] = counts.get(result.source, 0) + 1
-        selected.append(result)
-    return tuple(selected)
+    return tuple(
+        sorted(
+            results,
+            key=lambda item: (
+                item.source not in plan.answer_sources,
+                SOURCE_ORDER[item.source],
+            ),
+        )
+    )
 
 
 SOURCE_ORDER = {
@@ -1211,6 +1269,7 @@ SOURCE_ORDER = {
     "clinicaltrials": 4,
     "web": 5,
     "patent": 6,
+    "document": 7,
 }
 
 
@@ -1340,6 +1399,14 @@ def _finalize_answer(answer: str, results: Sequence[SourceResult]) -> str:
                 if label not in answer
             )
         ).rstrip()
+    for result in results:
+        notice = str(result.notice or "").strip()
+        if (
+            result.source == "mart"
+            and notice.startswith("요청한 종료 기간 ")
+            and notice not in answer
+        ):
+            answer = f"{answer.rstrip()}\n\n{notice}"
     answer = _append_automatic_footnotes(answer, results)
     return answer
 
@@ -1763,6 +1830,10 @@ def _deep_analysis_freshness_labels(
 def _coverage_notices(results: Sequence[SourceResult]) -> tuple[str, ...]:
     notices: list[str] = []
     for result in results:
+        mart_notice = str(result.notice or "").strip()
+        if result.source == "mart" and mart_notice.startswith("요청한 종료 기간 "):
+            notices.append(mart_notice)
+            continue
         if result.source not in {"hira", "nedrug"} or not isinstance(result.payload, Mapping):
             continue
         coverage = result.payload.get("period_coverage")
@@ -2056,7 +2127,7 @@ def _hira_patient_facts(payload: Any) -> tuple[str, ...]:
             row_year = year or str(row.get("year") or "")
             if not row_year or row.get("ptntCnt") in (None, ""):
                 continue
-            care_type = str(row.get("inpatOpat") or "환자")
+            care_type = hira_row_axis_label(row)
             values: list[str] = []
             for field, label, unit in public_fields:
                 raw_value = row.get(field)

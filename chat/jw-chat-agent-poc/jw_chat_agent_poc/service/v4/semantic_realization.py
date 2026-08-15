@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from hashlib import sha256
 import re
 from typing import Literal
 
@@ -41,6 +42,7 @@ class SemanticEvidenceContext(BaseModel):
     temporal_support_texts: tuple[str, ...] = ()
     observed_count: int
     requested_count: int
+    protected_line_sha256: tuple[str, ...] = ()
 
 
 _CAUSE_SENTENCE_PATTERNS = (
@@ -128,6 +130,9 @@ def realize_semantic_surface(
             transformations.extend(table_transformations)
             downgrade_count += table_downgrades
             deletion_count += table_deletions
+            continue
+        if sha256(stripped.encode("utf-8")).hexdigest() in context.protected_line_sha256:
+            output.append(line)
             continue
         policy_text, markdown_prefix = _policy_text(stripped)
         if _TREND_RE.search(policy_text):

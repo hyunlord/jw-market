@@ -18,7 +18,7 @@ def coverage_text(coverage: CoverageLedger, *, rendered: int) -> str:
 def table(headers: Sequence[str], rows: Iterable[Sequence[object]]) -> str:
     rendered_rows = [[cell(value) for value in row] for row in rows]
     if not rendered_rows:
-        rendered_rows = [["조회 결과 없음", *("해당 없음(N/A)" for _ in headers[1:])]]
+        return ""
     lines = [
         "| " + " | ".join(headers) + " |",
         "| " + " | ".join("---" for _ in headers) + " |",
@@ -28,7 +28,17 @@ def table(headers: Sequence[str], rows: Iterable[Sequence[object]]) -> str:
 
 
 def cell(value: object) -> str:
-    return str(value).replace("|", "\\|").replace("\n", "<br>").strip() or "원천 미제공"
+    rendered = str(value).strip()
+    if not rendered:
+        return "원천 미제공"
+    return (
+        rendered.replace("\\", "\\\\")
+        .replace("|", "\\|")
+        .replace("_", "\\_")
+        .replace("*", "\\*")
+        .replace("`", "\\`")
+        .replace("\n", "<br>")
+    )
 
 
 def display(value: object) -> str:

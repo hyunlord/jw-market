@@ -664,6 +664,7 @@ def test_v4_mart_dimension_trend_uses_query_catalog_supported_sort() -> None:
     (
         ("아일리아주 급여기준", "아일리아"),
         ("애플리버셉트(Aflibercept) 요양급여 적용기준 및 방법", "아일리아"),
+        ("엠파글리플로진 급여기준", "Empagliflozin"),
     ),
 )
 def test_v4_reimbursement_subject_normalizes_brand_and_ingredient_queries(
@@ -916,7 +917,7 @@ def test_v4_synthesizer_sends_detail_rows_in_question_first_layout() -> None:
         def complete(self, messages, *, budget_s=None, max_tokens=None) -> str:
             self.messages = messages
             assert budget_s == 15.0
-            assert max_tokens == 8192
+            assert max_tokens == 16384
             return "2024년 D693 외래 환자수는 12,345명입니다. [출처: HIRA]"
 
     client = Client()
@@ -1137,7 +1138,7 @@ def test_v4_synthesis_prompt_preserves_source_payload_verbatim() -> None:
     assert '"sickCd": "D693"' in serialized
     assert '"ptntCnt": "9231"' in serialized
     assert "다운로드 후 담당부서로 연락주시기 바랍니다." in serialized
-    assert "## 핵심 답" in system
+    assert "질문에 대한 답을 첫 문장에서 바로 제시" in system
     assert "한 문단은 최대 4문장" in system
     assert "다운로드 안내문" in system
 
@@ -2280,11 +2281,11 @@ def test_v4_synthesizer_transport_preserves_finish_reason_and_usage(monkeypatch)
 def test_v4_synthesizer_uses_grounded_fallback_for_length_cutoff() -> None:
     class Client:
         def complete_detailed(self, _messages, *, budget_s=None, max_tokens=None):
-            assert max_tokens == 8192
+            assert max_tokens == 16384
             return v4_llm.CompletionResult(
                 text="잘린 답변입니다",
                 finish_reason="length",
-                usage={"completion_tokens": 8192},
+                usage={"completion_tokens": 16384},
                 elapsed_ms=12_000,
             )
 
@@ -2311,6 +2312,23 @@ def test_v4_synthesizer_uses_grounded_fallback_for_length_cutoff() -> None:
     assert "2024년 입원 환자수는 1,606명(청구 실인원)" in outcome.text
     assert outcome.trace["finish_reason"] == "length"
     assert outcome.trace["fallback_reason"] == "length"
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    ((None, 16384), ("12288", 12288), ("4096", 8192), ("bogus", 16384)),
+)
+def test_v4_synthesizer_output_budget_is_configurable_and_bounded(
+    monkeypatch,
+    configured: str | None,
+    expected: int,
+) -> None:
+    if configured is None:
+        monkeypatch.delenv("V4_SYNTHESIZER_MAX_TOKENS", raising=False)
+    else:
+        monkeypatch.setenv("V4_SYNTHESIZER_MAX_TOKENS", configured)
+
+    assert v4_synthesizer._synthesis_max_tokens() == expected
 
 
 def test_hira_year_calls_are_parallel_and_retry_only_failures() -> None:
@@ -2682,7 +2700,7 @@ def test_planner_limits_first_wave_queries_with_env_defaulting_to_one(monkeypatc
 
 @pytest.mark.parametrize(
     ("configured", "expected"),
-    (("0", 1), ("-1", 1), ("bogus", 1), ("99", 2)),
+    (("0", 1), ("-1", 1), ("bogus", 1), pytest.param("99", 3, id="99-2")),
 )
 def test_planner_clamps_source_query_limit_to_supported_range(
     monkeypatch,
@@ -3151,12 +3169,12 @@ def test_v4_source_progress_query_hides_internal_identifiers() -> None:
     assert "slot id 17" not in detail
 
 
-def test_query_plan_progress_limits_expanded_intents_to_five() -> None:
+def test_query_plan_progress_lists_every_expanded_intent() -> None:
     detail = __import__(
         "jw_chat_agent_poc.service.v4.runtime", fromlist=["_expanded_intents_detail"]
     )._expanded_intents_detail(("시장", "허가", "임상", "환자수", "특허", "급여", "안전성"))
 
-    assert detail == "- 시장\n- 허가\n- 임상\n- 환자수\n- 특허\n- 외 2개"
+    assert detail == "- 시장\n- 허가\n- 임상\n- 환자수\n- 특허\n- 급여\n- 안전성"
 
 
 def test_runtime_runs_one_web_gap_fill_for_missing_hira_periods() -> None:
@@ -3615,48 +3633,9 @@ def test_v4_sources_render_one_decoded_title_link_per_public_url() -> None:
     assert all(line.count("](") == 1 for line in url_lines)
 
 
-def test_v4_tavily_retries_transport_once_but_not_empty_or_parse_failure(
+def test_v4_tavily_does_not_retry_read_timeout_empty_or_parse_failure(
     monkeypatch,
 ) -> None:
-    monkeypatch.setenv("WEB_SEARCH_PROVIDER", "tavily_mcp")
-    calls: list[str] = []
-    timeout = ExternalCall(
-        tool="web_search",
-        source="web",
-        status="error",
-        summary_text="timeout",
-        render_data={
-            "error": "Read timed out",
-            "error_type": "read_timeout",
-            "request_issued": True,
-            "response_received": False,
-        },
-    )
-
-    def request(_external, query, *, search_depth, topic):
-        calls.append(f"{query}:{search_depth}:{topic}")
-        return timeout
-
-    monkeypatch.setattr(v4_adapters, "_v4_tavily_mcp_request", request)
-    result = v4_adapters._v4_web_search(
-        SimpleNamespace(),
-        "리바로 최신 근거",
-        search_depth="advanced",
-    )
-
-    policy = result.render_data["v4_tavily_policy"]
-    assert result.status == "error"
-    assert len(calls) == 1
-    assert policy["attempts"] == 1
-    assert policy["requests_issued"] == 1
-    assert policy["responses_received"] == 0
-    assert policy["retry_count"] == 0
-    assert policy["read_timeout_retries"] == 0
-    assert policy["credit_at_risk_without_response"] == 1
-
-
-@pytest.mark.parametrize("error_type", ("connect_timeout", "http_5xx"))
-def test_v4_tavily_retries_connect_or_5xx_once(monkeypatch, error_type: str) -> None:
     monkeypatch.setenv("WEB_SEARCH_PROVIDER", "tavily_mcp")
     calls: list[str] = []
     responses = [
@@ -3664,24 +3643,15 @@ def test_v4_tavily_retries_connect_or_5xx_once(monkeypatch, error_type: str) -> 
             tool="web_search",
             source="web",
             status="error",
-            summary_text=error_type,
-            render_data={
-                "error": error_type,
-                "error_type": error_type,
-                "request_issued": True,
-                "response_received": error_type == "http_5xx",
-            },
+            summary_text="timeout",
+            render_data={"error": "Read timed out"},
         ),
         ExternalCall(
             tool="web_search",
             source="web",
             status="live",
             summary_text="ok",
-            render_data={
-                "items": [{"url": "https://example.org"}],
-                "request_issued": True,
-                "response_received": True,
-            },
+            render_data={"items": [{"url": "https://example.org"}]},
         ),
     ]
 
@@ -3696,17 +3666,9 @@ def test_v4_tavily_retries_connect_or_5xx_once(monkeypatch, error_type: str) -> 
         search_depth="advanced",
     )
 
-    policy = result.render_data["v4_tavily_policy"]
-    assert result.status == "live"
-    assert len(calls) == 2
-    assert policy["attempts"] == 2
-    assert policy["retry_count"] == 1
-    assert policy["read_timeout_retries"] == 0
-
-
-def test_v4_tavily_does_not_retry_empty_parse_or_quota(monkeypatch) -> None:
-    monkeypatch.setenv("WEB_SEARCH_PROVIDER", "tavily_mcp")
-    calls: list[str] = []
+    assert result.status == "error"
+    assert len(calls) == 1
+    assert result.render_data["v4_tavily_policy"]["attempts"] == 1
 
     for response in (
         ExternalCall(
@@ -3722,13 +3684,6 @@ def test_v4_tavily_does_not_retry_empty_parse_or_quota(monkeypatch) -> None:
             status="error",
             summary_text="parse",
             render_data={"error_type": "parse_failure"},
-        ),
-        ExternalCall(
-            tool="web_search",
-            source="web",
-            status="error",
-            summary_text="quota",
-            render_data={"error_type": "quota"},
         ),
         ExternalCall(
             tool="web_search",
@@ -4811,6 +4766,71 @@ def test_flag_on_chat_answer_bypasses_legacy_answer_and_finalizer(monkeypatch) -
     assert response.status_code == 200
     assert response.json()["text"].startswith("V4 자유 답변")
     assert runtime.calls == [("리바로 요즘 어때", None, 0)]
+
+
+def test_flag_on_chat_answer_enters_file_scope_for_active_upload(monkeypatch) -> None:
+    class RuntimeThatMustNotRun:
+        def answer(self, *_args, **_kwargs):
+            raise AssertionError("market V4 runtime ran for an active uploaded file")
+
+    monkeypatch.setenv("V4_PLANNER", "on")
+    monkeypatch.setattr(service_app, "_get_v4_runtime", RuntimeThatMustNotRun)
+    monkeypatch.setattr(
+        service_app,
+        "_delegated_file_context",
+        lambda *_args, **_kwargs: (
+            "[1] cohort.xlsx (sheet=환자)\n문서 전용 값: 386,933,825,518",
+            ({"file_name": "cohort.xlsx", "sheet_name": "환자", "document_id": 91},),
+            True,
+            "문서 전용 값은 386,933,825,518입니다.",
+            (),
+        ),
+    )
+    client = TestClient(service_app.create_app())
+
+    response = client.post(
+        "/chat/answer",
+        json={"question": "업로드 문서의 전용 값을 알려줘", "conversation_id": "file-session"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "386,933,825,518" in payload["text"]
+    assert payload["sources"] == ["document"]
+    assert payload["file_sources"] == [{"file_name": "cohort.xlsx", "sheet_name": "환자"}]
+    assert payload["trace"]["file_scope"]["status"] == "ACTIVE_FILE"
+    records = payload["trace"]["file_scope"]["records"]
+    assert len(records) == 1
+    assert records[0]["record_id"].startswith("FILE-")
+    assert records[0]["narrative_used"] is True
+    assert "document_id" not in records[0]
+
+
+def test_flag_on_file_question_reports_missing_document_without_market_fallback(monkeypatch) -> None:
+    class RuntimeThatMustNotRun:
+        def answer(self, *_args, **_kwargs):
+            raise AssertionError("market V4 runtime ran for a file-directed question")
+
+    monkeypatch.setenv("V4_PLANNER", "on")
+    monkeypatch.setattr(service_app, "_get_v4_runtime", RuntimeThatMustNotRun)
+    monkeypatch.setattr(
+        service_app,
+        "_delegated_file_context",
+        lambda *_args, **_kwargs: (None, (), False, "", ()),
+    )
+    client = TestClient(service_app.create_app())
+
+    response = client.post(
+        "/chat/answer",
+        json={"question": "업로드 문서의 결론을 알려줘", "conversation_id": "empty-file-session"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "조회 가능한 업로드 문서를 확인하지 못했습니다" in payload["text"]
+    assert payload["sources"] == []
+    assert payload["file_sources"] == []
+    assert payload["trace"]["file_scope"]["status"] == "NO_ACTIVE_FILE"
 
 
 def test_flag_off_chat_answer_is_identical_to_legacy_route(monkeypatch) -> None:

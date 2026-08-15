@@ -98,6 +98,7 @@ def compose_lossless_answer(
     requested_fields_mode: RequestedFieldsMode = "shadow",
     request_satisfaction_mode: RequestSatisfactionMode = "inject",
 ) -> CompositionResult:
+    commentary = _drop_empty_bold_headings(commentary)
     fallback = bool(synthesis_trace.get("fallback_reason")) or synthesis_trace.get("status") in {
         "fallback",
         "no_usable_evidence",
@@ -129,6 +130,21 @@ def compose_lossless_answer(
         "records_rendered": rendered.coverage.records_rendered,
         "rendered_table_rows": rendered.coverage.records_rendered,
         "lossless_records_rendered": rendered.coverage.records_rendered,
+        "narrated_record_count": len(rendered.narrated_record_ids),
+        "narrated_record_ids": list(rendered.narrated_record_ids),
+        "unnarrated_record_count": rendered.unnarrated_record_count,
+        "unnarrated_records": list(rendered.unnarrated_records),
+        "narrative_identifier_parity": (
+            len(rendered.narrated_record_ids) == rendered.coverage.records_rendered
+        ),
+        "narrative_record_accounting_complete": (
+            len(rendered.narrated_record_ids) + rendered.unnarrated_record_count
+            == rendered.coverage.records_rendered
+        ),
+        "record_field_usage": list(rendered.record_field_usage),
+        "average_narrated_field_count": rendered.average_narrated_field_count,
+        "loaded_field_narrative_use_rate": rendered.loaded_field_narrative_use_rate,
+        "identifier_only_sentence_count": rendered.identifier_only_sentence_count,
         "render_nodes": [
             {
                 "block_id": node.block_id,
@@ -148,6 +164,23 @@ def compose_lossless_answer(
     )
     inject_source_notices = bool(mode == "inject" and rendered.source_notices)
     if not inject_facts and not inject_request_notice and not inject_source_notices:
+        if mode == "inject":
+            text, numeric_separator_repairs = _repair_numeric_separators(commentary)
+            text, public_source_rewrites = normalize_public_source_surface(text)
+            text, duplicate_leading_sentences_removed = _deduplicate_sentences(text)
+            mutated = text.strip() != commentary.strip()
+            trace["answer_mutation"] = mutated
+            trace["public_source_surface"] = {"rewritten": public_source_rewrites}
+            trace["numeric_separator_repairs"] = numeric_separator_repairs
+            trace["duplicate_leading_sentences_removed"] = (
+                duplicate_leading_sentences_removed
+            )
+            return CompositionResult(
+                text=text.strip(),
+                answer_mutated=mutated,
+                fallback_detail_retention_rate=retention,
+                trace=trace,
+            )
         return CompositionResult(
             text=commentary,
             answer_mutated=False,
@@ -166,9 +199,28 @@ def compose_lossless_answer(
             requested_fields_mode=requested_fields_mode,
             request_notice=rendered.request_notice if inject_request_notice else None,
         )
+    text, numeric_separator_repairs = _repair_numeric_separators(text)
     text, public_source_rewrites = normalize_public_source_surface(text)
+    text, duplicate_leading_sentences_removed = _deduplicate_sentences(text)
     trace["answer_mutation"] = True
     trace["public_source_surface"] = {"rewritten": public_source_rewrites}
+    trace["numeric_separator_repairs"] = numeric_separator_repairs
+    narrative_character_count = _narrative_character_count(text)
+    narrative_character_floor = max(1500, rendered.coverage.records_rendered * 80)
+    narrative_minimum_required = rendered.coverage.records_rendered > 0
+    trace["duplicate_leading_sentences_removed"] = duplicate_leading_sentences_removed
+    trace["narrative_character_count"] = narrative_character_count
+    trace["narrative_character_floor"] = narrative_character_floor
+    trace["narrative_character_floor_met"] = (
+        narrative_character_count >= narrative_character_floor
+    )
+    trace["narrative_minimum_required"] = narrative_minimum_required
+    trace["narrative_shortfall_reason"] = (
+        f"validated prose below {narrative_character_floor} characters"
+        if narrative_minimum_required
+        and narrative_character_count < narrative_character_floor
+        else None
+    )
     trace["requested_fields_injected"] = bool(
         inject_facts
         and requested_fields_mode == "inject"
@@ -201,40 +253,12 @@ def _assemble_injected_answer(
         for heading, body in commentary_sections
         if heading not in {"출처", "자동 해설"} and body
     ]
-
-    core: list[tuple[str, str]] = []
-    context: list[tuple[str, str]] = []
-    insights: list[tuple[str, str]] = []
-    limits: list[tuple[str, str]] = []
-    other: list[tuple[str, str]] = []
-    for heading, body in commentary_sections:
-        if heading in _CORE_HEADINGS:
-            core.append(("핵심 답", body))
-        elif heading in _CONTEXT_HEADINGS:
-            context.append(("근거와 맥락", body))
-        elif heading in _INSIGHT_HEADINGS:
-            insights.append(("종합 인사이트", body))
-        elif heading in _LIMIT_HEADINGS:
-            limits.append((heading, body))
-        else:
-            other.append((heading, body))
-
-    if fallback:
-        core = [("핵심 답", "자동 해설 생성 미완료")]
-    elif preamble:
-        core.insert(0, ("핵심 답", preamble))
-    if not core and not fallback:
-        # A claim gate can remove every sentence under the model's core
-        # heading while leaving later sections intact. Promote the first
-        # surviving section instead of wrapping the complete markdown answer,
-        # which would duplicate headings, facts, and sources.
-        for candidates in (context, other, insights, limits):
-            if candidates:
-                _, body = candidates.pop(0)
-                core = [("핵심 답", body)]
-                break
-        if not core and not commentary_sections:
-            core = [("핵심 답", commentary.strip())]
+    commentary_blocks = _question_driven_blocks(
+        preamble,
+        commentary_sections,
+        fallback=fallback,
+        fallback_text="## 핵심 답\n자동 해설 생성 미완료",
+    )
 
     fact_coverage: list[str] = []
     fact_narratives: list[str] = []
@@ -267,6 +291,7 @@ def _assemble_injected_answer(
         else:
             fact_tables.append(visible_text)
 
+    limits: list[tuple[str, str]] = []
     if request_notice:
         limits.append(("미확인 요소", request_notice.strip()))
     if rendered.source_notices:
@@ -287,13 +312,11 @@ def _assemble_injected_answer(
             )
         )
 
+    primary_narrative = [*fact_narratives, *commentary_blocks]
     blocks = [
-        *(_render_sections(core)),
+        *primary_narrative,
         *fact_coverage,
-        *fact_narratives,
         *fact_tables,
-        *(_render_sections([*context, *other])),
-        *(_render_sections(insights)),
         *fact_limits,
         *(_render_sections(limits)),
     ]
@@ -301,6 +324,58 @@ def _assemble_injected_answer(
     if source_block:
         blocks.append(source_block)
     return "\n\n".join(block for block in blocks if block.strip()).strip()
+
+
+def _question_driven_blocks(
+    preamble: str,
+    sections: Sequence[tuple[str, str]],
+    *,
+    fallback: bool,
+    fallback_text: str,
+) -> list[str]:
+    if fallback:
+        return [fallback_text]
+    core: list[tuple[str, str]] = []
+    headed: list[tuple[str, str]] = []
+    unheaded: list[str] = []
+    for heading, body in sections:
+        if _is_source_axis_heading(heading):
+            if body.strip() and body.strip() not in unheaded:
+                unheaded.append(body.strip())
+            continue
+        if heading in _CORE_HEADINGS:
+            core.append(("핵심 답", body))
+        else:
+            headed.append((heading, body))
+    blocks: list[str] = []
+    if preamble.strip():
+        blocks.append(preamble.strip())
+    blocks.extend(_render_sections(core))
+    blocks.extend(_render_sections(headed))
+    blocks.extend(unheaded)
+    if not blocks and fallback_text.strip():
+        blocks.append(fallback_text.strip())
+    return blocks
+
+
+def _is_source_axis_heading(heading: str) -> bool:
+    normalized = " ".join(heading.split()).casefold()
+    if not normalized.endswith((" 요약", " 보조 자료")):
+        return False
+    return any(
+        token in normalized
+        for token in (
+            "fda",
+            "웹 뉴스",
+            "임상시험",
+            "clinicaltrials",
+            "건강보험심사평가원",
+            "hira",
+            "국내 특허",
+            "특허·분쟁",
+            "식품의약품안전처",
+        )
+    )
 
 
 def _omit_fully_unprovided_columns(text: str) -> tuple[str, tuple[str, ...]]:
@@ -393,6 +468,26 @@ def _markdown_sections(value: str) -> tuple[str, list[tuple[str, str]]]:
     return preamble, sections
 
 
+_BOLD_HEADING_RE = re.compile(r"^\s*\*\*[^*\n]+\*\*\s*$")
+
+
+def _drop_empty_bold_headings(value: str) -> str:
+    lines = value.splitlines()
+    output: list[str] = []
+    for index, line in enumerate(lines):
+        if not _BOLD_HEADING_RE.fullmatch(line):
+            output.append(line)
+            continue
+        next_visible = next(
+            (candidate for candidate in lines[index + 1 :] if candidate.strip()),
+            "",
+        )
+        if not next_visible or _BOLD_HEADING_RE.fullmatch(next_visible) or next_visible.lstrip().startswith("#"):
+            continue
+        output.append(line)
+    return "\n".join(output)
+
+
 def _render_sections(sections: Sequence[tuple[str, str]]) -> list[str]:
     merged: list[tuple[str, list[str]]] = []
     by_heading: dict[str, list[str]] = {}
@@ -407,6 +502,60 @@ def _render_sections(sections: Sequence[tuple[str, str]]) -> list[str]:
         if body.strip() not in bodies:
             bodies.append(body.strip())
     return [f"## {heading}\n" + "\n\n".join(bodies) for heading, bodies in merged]
+
+
+def _deduplicate_sentences(text: str) -> tuple[str, int]:
+    seen: set[str] = set()
+    removed = 0
+    output: list[str] = []
+    sentence_re = re.compile(
+        r".+?[.!?](?:\s*\[[^\n]+\])?(?=\s|$)",
+    )
+    for line in text.splitlines():
+        if line.lstrip().startswith(("#", "|")):
+            output.append(line)
+            continue
+        cursor = 0
+        parts: list[str] = []
+        for match in sentence_re.finditer(line):
+            parts.append(line[cursor : match.start()])
+            sentence = match.group(0).strip()
+            sentence_without_source = re.sub(
+                r"\s*\[[^\n]+\]\s*$",
+                "",
+                sentence,
+            )
+            key = re.sub(r"\s+", " ", sentence_without_source).casefold()
+            if key in seen:
+                removed += 1
+            else:
+                seen.add(key)
+                parts.append(match.group(0))
+            cursor = match.end()
+        parts.append(line[cursor:])
+        output.append("".join(parts).strip())
+    return "\n".join(output).strip(), removed
+
+
+def _repair_numeric_separators(text: str) -> tuple[str, int]:
+    repaired, thousands = re.subn(
+        r"(?<=\d)\.\s+(?=\d{3}\s*(?:만|천|백)?\s*(?:Rx|건|명|원|억원))",
+        ",",
+        text,
+    )
+    repaired, decimals = re.subn(r"(?<=\d)\.\s+(?=\d{3}\s*%)", ".", repaired)
+    return repaired, thousands + decimals
+
+
+def _narrative_character_count(text: str) -> int:
+    prose_lines = tuple(
+        line.strip()
+        for line in text.splitlines()
+        if line.strip()
+        and not line.lstrip().startswith(("#", "|", "[출처:"))
+        and not _TABLE_SEPARATOR_CELL_RE.fullmatch(line.strip())
+    )
+    return len("".join(prose_lines))
 
 
 def _has_visible_node_content(node: RenderNode) -> bool:

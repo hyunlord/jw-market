@@ -92,6 +92,30 @@ def test_mcp_response_is_forced_to_utf8(monkeypatch: pytest.MonkeyPatch) -> None
     assert result["title"] == "리바로 관련 기사"
 
 
+def test_mcp_client_uses_separate_connect_and_read_timeouts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    event = {"jsonrpc": "2.0", "id": 1, "result": {"tools": []}}
+    response = _response(f"data: {json.dumps(event)}\n\n".encode())
+    observed_timeout: tuple[float, float] | None = None
+
+    def post(*_args: Any, **kwargs: Any) -> requests.Response:
+        nonlocal observed_timeout
+        observed_timeout = kwargs["timeout"]
+        return response
+
+    monkeypatch.setattr("jw_chat_agent_poc.tools.external.mcp_client.requests.post", post)
+
+    McpJsonClient(
+        "http://mcp.test/json",
+        timeout_s=8.0,
+        connect_timeout_s=2.0,
+        first_attempt_timeout_s=8.0,
+    )._post("tools/list", {})
+
+    assert observed_timeout == (2.0, 8.0)
+
+
 def test_corrupt_payload_still_raises_json_decode_error() -> None:
     with pytest.raises(json.JSONDecodeError):
         _first_sse_event("event: message\ndata: {not-json}\n\n")

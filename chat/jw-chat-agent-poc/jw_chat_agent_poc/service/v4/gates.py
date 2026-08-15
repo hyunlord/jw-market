@@ -188,12 +188,23 @@ _HIRA_PATIENT_SURFACE_RE = re.compile(
 
 @dataclass(frozen=True)
 class _HiraSurfaceFact:
+    subject: str
     year: str
     care_type: str
     field: str
     label: str
     value: str
     display: str
+
+
+def hira_row_axis_label(row: Mapping[str, Any]) -> str:
+    """Return the public labels that identify one HIRA dimensional row."""
+
+    labels = [
+        str(row.get(field) or "").strip()
+        for field in ("inpatOpat", "sex", "age", "grade", "lcName")
+    ]
+    return " · ".join(dict.fromkeys(label for label in labels if label)) or "환자"
 
 
 def apply_v4_gates(
@@ -290,9 +301,13 @@ def apply_v4_gates(
         )
         verified_summary, _ = normalize_answer_surface(verified_summary)
         text = _merge_unique_blocks(verified_summary, text)
+    monthly_table = _render_mart_monthly_table(mart_results, question)
+    if monthly_table and monthly_table.splitlines()[0] not in text:
+        text = _merge_unique_blocks(monthly_table, text)
     trace["requested_metric_surface"] = {
         "repaired": metric_missing and can_repair,
         "expected_display_numbers": sorted(requested_display_numbers),
+        "monthly_rows": max(0, monthly_table.count("\n|") - 1),
     }
 
     timed_out = tuple(item for item in results if item.status == "timeout")
@@ -1249,6 +1264,71 @@ def _render_mart_history(results: tuple[SourceResult, ...], question: str) -> st
     return ""
 
 
+def _render_mart_monthly_table(
+    results: tuple[SourceResult, ...],
+    question: str,
+) -> str:
+    if not any(token in question.casefold() for token in ("월별", "월간")):
+        return ""
+    requested_years = set(re.findall(r"(?<!\d)(20\d{2})\s*년", question))
+    candidates: list[tuple[bool, str, list[Mapping[str, Any]]]] = []
+    for result in results:
+        calls = result.payload.get("calls") if isinstance(result.payload, dict) else None
+        if not isinstance(calls, list):
+            continue
+        for call in calls:
+            render_data = call.get("render_data") if isinstance(call, dict) else None
+            if not isinstance(render_data, Mapping):
+                continue
+            series_candidates: list[tuple[str, Any]] = [
+                (
+                    str(render_data.get("brand") or "브랜드").strip() or "브랜드",
+                    render_data.get("brand_value_series_10pt"),
+                )
+            ]
+            trends = render_data.get("level_top5_trend_series")
+            if isinstance(trends, list):
+                series_candidates.extend(
+                    (
+                        str(trend.get("brand") or "브랜드").strip() or "브랜드",
+                        trend.get("series"),
+                    )
+                    for trend in trends
+                    if isinstance(trend, Mapping)
+                )
+            for brand, series in series_candidates:
+                if not isinstance(series, list):
+                    continue
+                rows = [
+                    item
+                    for item in series
+                    if isinstance(item, Mapping)
+                    and re.fullmatch(r"20\d{2}-(?:0[1-9]|1[0-2])", str(item.get("period") or ""))
+                    and item.get("value_억원") is not None
+                    and (
+                        not requested_years
+                        or str(item.get("period"))[:4] in requested_years
+                    )
+                ]
+                if rows:
+                    candidates.append((brand.casefold() in question.casefold(), brand, rows))
+    if not candidates:
+        return ""
+    _, brand, rows = max(candidates, key=lambda item: (item[0], len(item[2])))
+    by_period = {
+        str(item["period"]): item["value_억원"]
+        for item in rows
+    }
+    if len(by_period) < 2:
+        return ""
+    lines = [f"| 월 | {brand} 매출 |", "| --- | ---: |"]
+    lines.extend(
+        f"| {period} | {_format_mart_value(value)}억원 |"
+        for period, value in sorted(by_period.items())
+    )
+    return "\n".join(lines)
+
+
 def is_typed_absence_confirmation(result: SourceResult) -> bool:
     record = typed_absence_record(result)
     if record is None or result.evidence is None:
@@ -1471,7 +1551,7 @@ def _requested_hira_facts(
     }
 
     facts: list[_HiraSurfaceFact] = []
-    seen: set[tuple[str, str, str, str]] = set()
+    seen: set[tuple[str, str, str, str, str]] = set()
     for result in results:
         if result.source != "hira" or result.status != "ok" or not isinstance(result.payload, dict):
             continue
@@ -1485,6 +1565,10 @@ def _requested_hira_facts(
             if not isinstance(render, dict):
                 continue
             request = render.get("request") if isinstance(render.get("request"), dict) else {}
+            subject = str(request.get("sickCd") or "").strip().upper()
+            if not subject:
+                match = re.search(r"\b[A-Z]\d{2,3}(?:\.\d+)?\b", result.query.upper())
+                subject = match.group(0) if match else result.query.strip()
             request_year = str(request.get("year") or "").strip()
             items = render.get("items")
             if not isinstance(items, list):
@@ -1493,7 +1577,7 @@ def _requested_hira_facts(
                 if not isinstance(row, dict):
                     continue
                 year = request_year or str(row.get("year") or "").strip()
-                care_type = str(row.get("inpatOpat") or "환자").strip()
+                care_type = hira_row_axis_label(row)
                 if not year:
                     continue
                 if requested_years and year not in requested_years:
@@ -1506,7 +1590,7 @@ def _requested_hira_facts(
                     value = _normalized_hira_value(field, row[field], row.get("units"))
                     if value is None:
                         continue
-                    key = (year, care_type, field, value)
+                    key = (subject, year, care_type, field, value)
                     if key in seen:
                         continue
                     seen.add(key)
@@ -1514,6 +1598,7 @@ def _requested_hira_facts(
                     display_number = _format_decimal(value)
                     facts.append(
                         _HiraSurfaceFact(
+                            subject=subject,
                             year=year,
                             care_type=care_type,
                             field=field,
@@ -1522,7 +1607,10 @@ def _requested_hira_facts(
                             display=f"{display_number}{unit}",
                         )
                     )
-    return sorted(facts, key=lambda fact: (fact.year, fact.care_type, fact.field))
+    return sorted(
+        facts,
+        key=lambda fact: (fact.subject, fact.year, fact.care_type, fact.field),
+    )
 
 
 def _requested_hira_years(question: str) -> set[str]:
@@ -1561,28 +1649,31 @@ def _hira_fact_is_rendered(text: str, fact: _HiraSurfaceFact) -> bool:
     value = re.escape(fact.value)
     year = re.escape(fact.year)
     care_type = re.escape(fact.care_type)
+    subject = re.escape(fact.subject)
     patterns = (
-        rf"{year}년?.{{0,500}}{care_type}.{{0,160}}{label}.{{0,40}}{value}\s*{unit}",
-        rf"{care_type}.{{0,160}}{label}.{{0,40}}{value}\s*{unit}.{{0,500}}{year}년?",
+        rf"{subject}.{{0,160}}{year}년?.{{0,500}}{care_type}.{{0,160}}{label}.{{0,40}}{value}\s*{unit}",
+        rf"{year}년?.{{0,160}}{subject}.{{0,500}}{care_type}.{{0,160}}{label}.{{0,40}}{value}\s*{unit}",
+        rf"{subject}.{{0,500}}{care_type}.{{0,160}}{label}.{{0,40}}{value}\s*{unit}",
     )
     return any(re.search(pattern, compact, re.DOTALL) for pattern in patterns)
 
 
 def _render_hira_surface_facts(facts: list[_HiraSurfaceFact]) -> str:
-    grouped: dict[tuple[str, str], list[_HiraSurfaceFact]] = {}
+    grouped: dict[tuple[str, str, str], list[_HiraSurfaceFact]] = {}
     for fact in facts:
-        grouped.setdefault((fact.year, fact.care_type), []).append(fact)
+        grouped.setdefault((fact.subject, fact.year, fact.care_type), []).append(fact)
     lines = [
-        f"{year}년 {care_type} "
+        f"{year}년 {subject} {care_type} "
         + ", ".join(f"{fact.label} {fact.display}" for fact in group)
         + "으로 확인되었습니다. [출처: HIRA]"
-        for (year, care_type), group in sorted(grouped.items())
+        for (subject, year, care_type), group in sorted(grouped.items())
     ]
     return "\n".join(lines)
 
 
 def _public_hira_fact(fact: _HiraSurfaceFact) -> dict[str, str]:
     return {
+        "subject": fact.subject,
         "year": fact.year,
         "care_type": fact.care_type,
         "metric": fact.label,
@@ -1611,6 +1702,10 @@ def _invalid_hira_patient_sentences(
             if care_types:
                 candidates = [
                     fact for fact in candidates if fact.care_type == care_types[-1]
+                ]
+            elif any(fact.care_type != "환자" for fact in candidates):
+                candidates = [
+                    fact for fact in candidates if fact.care_type in prefix
                 ]
             rendered_value = _normalize_number(match.group("value"))
             if rendered_value not in {fact.value for fact in candidates}:
@@ -1797,6 +1892,7 @@ def _source_reference_type(result: SourceResult) -> str:
         "clinicaltrials": "임상 검색",
         "web": "웹 검색",
         "patent": "특허 검색",
+        "document": "업로드 문서 검색",
     }[result.source]
 
 
