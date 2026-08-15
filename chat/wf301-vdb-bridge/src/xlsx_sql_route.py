@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from codecs import getincrementaldecoder
@@ -34,9 +35,45 @@ from .xlsx_preprocessor import (
 )
 
 
-FAST_SQL_PROFILE_MIN_XML_BYTES = 32 * 1024 * 1024
-FAST_SQL_PROFILE_MAX_XML_BYTES = 256 * 1024 * 1024
-DENSE_SQL_MAX_XML_BYTES = 128 * 1024 * 1024
+logger = logging.getLogger(__name__)
+
+
+def _env_bytes(name: str, default: int) -> int:
+    """Read a byte threshold from the environment, refusing unusable values."""
+    raw = os.environ.get(name, "")
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            "xlsx_sql_route threshold ignored name=%s value=%r reason=not_an_integer",
+            name,
+            raw,
+        )
+        return default
+    if value <= 0:
+        logger.warning(
+            "xlsx_sql_route threshold ignored name=%s value=%d reason=not_positive",
+            name,
+            value,
+        )
+        return default
+    return value
+
+
+# Byte thresholds for the in-memory dense fast path. They are settings-injected
+# because the workbooks that approach them grow a column block every month, and
+# the cost of raising them is memory only the operator can budget.
+FAST_SQL_PROFILE_MIN_XML_BYTES = _env_bytes(
+    "FILE_SQL_FAST_PROFILE_MIN_XML_BYTES", 32 * 1024 * 1024
+)
+FAST_SQL_PROFILE_MAX_XML_BYTES = _env_bytes(
+    "FILE_SQL_FAST_PROFILE_MAX_XML_BYTES", 256 * 1024 * 1024
+)
+DENSE_SQL_MAX_XML_BYTES = _env_bytes(
+    "FILE_SQL_DENSE_MAX_XML_BYTES", 128 * 1024 * 1024
+)
 _DIMENSION_REF_RE = re.compile(rb'<dimension\b[^>]*\bref="([^"]+)"')
 _ROW_REF_RE = re.compile(rb'<row\b[^>]*\br="([0-9]+)"')
 _ROW_SPAN_RE = re.compile(rb'<row\b[^>]*\bspans="([0-9]+):([0-9]+)"')
@@ -413,20 +450,59 @@ def _validated_dense_sheet_xml(
     style_formats: dict[int, str],
 ) -> bytes | None:
     if not profile.proven_dense or shared_strings or style_formats:
+        _log_dense_declined(profile, "sheet_not_proven_dense")
         return None
-    if archive.getinfo(profile.sheet_path).file_size > DENSE_SQL_MAX_XML_BYTES:
+    xml_bytes = archive.getinfo(profile.sheet_path).file_size
+    if xml_bytes > DENSE_SQL_MAX_XML_BYTES:
+        # Not a failure: the streaming parser still reads every row. Logged so a
+        # workbook that crosses the threshold is visible before it is a mystery.
+        _log_dense_declined(
+            profile,
+            "xml_over_dense_limit",
+            xml_bytes=xml_bytes,
+            limit_bytes=DENSE_SQL_MAX_XML_BYTES,
+        )
         return None
     raw = archive.read(profile.sheet_path)
     if profile.dense_xml_sha256 is not None:
-        return raw if sha256(raw).hexdigest() == profile.dense_xml_sha256 else None
+        if sha256(raw).hexdigest() == profile.dense_xml_sha256:
+            return raw
+        _log_dense_declined(profile, "dense_xml_digest_changed")
+        return None
     if any(marker in raw for marker in _UNSAFE_DENSE_XML_MARKERS):
+        _log_dense_declined(profile, "unsupported_xml_markers")
         return None
     if not _is_valid_utf8(raw):
+        _log_dense_declined(profile, "xml_not_valid_utf8")
         return None
     matched_cells = sum(1 for _match in _DENSE_VALUE_CELL_RE.finditer(raw))
     if matched_cells != profile.used_cell_count:
+        _log_dense_declined(
+            profile,
+            "dense_cell_count_mismatch",
+            matched_cells=matched_cells,
+            profiled_cells=profile.used_cell_count,
+        )
         return None
     return raw
+
+
+def _log_dense_declined(
+    profile: SheetSqlProfile, reason: str, **details: int
+) -> None:
+    """Record why the dense fast path was declined for a sheet.
+
+    Declining is safe — the streaming parser produces identical rows — but it is
+    a silent performance cliff unless the reason is written down.
+    """
+
+    extra = "".join(f" {key}={value}" for key, value in sorted(details.items()))
+    logger.info(
+        "xlsx_sql_route dense_path_declined sheet=%s reason=%s fallback=streaming_parser%s",
+        profile.sheet_name,
+        reason,
+        extra,
+    )
 
 
 def _is_valid_utf8(raw: bytes, *, chunk_size: int = 1024 * 1024) -> bool:

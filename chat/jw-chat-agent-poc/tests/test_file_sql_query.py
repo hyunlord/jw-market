@@ -263,12 +263,18 @@ def test_manufacturer_by_sum_builds_grouped_deterministic_query() -> None:
     )
 
     assert resolution.missing_slots == ()
-    assert resolution.resolved_slots == ("measure", "manufacturer")
+    assert resolution.resolved_slots == (
+        "measure",
+        "period",
+        "manufacturer",
+        "total_row_exclusion",
+    )
     assert resolution.plan == {
         "logical_name": SQL_SOURCE.logical_name,
         "sql": (
             "SELECT c2, SUM(c72) AS total_value, COUNT(*) AS applied_rows "
-            "FROM data GROUP BY c2 ORDER BY total_value DESC"
+            "FROM data WHERE (COALESCE(TRIM(c2), '') <> '') "
+            "GROUP BY c2 ORDER BY total_value DESC"
         ),
     }
 
@@ -333,12 +339,14 @@ def test_channel_by_count_builds_grouped_deterministic_query() -> None:
     )
 
     assert resolution.missing_slots == ()
-    assert resolution.resolved_slots == ("measure", "channel")
+    assert resolution.resolved_slots == ("measure", "channel", "total_row_exclusion")
     assert resolution.plan == {
         "logical_name": SQL_SOURCE.logical_name,
         "sql": (
             "SELECT c259, COUNT(*) AS response_count, COUNT(*) AS applied_rows "
-            "FROM data GROUP BY c259 ORDER BY response_count DESC"
+            "FROM data WHERE (COALESCE(TRIM(c259), '') <> '' "
+            "OR COALESCE(TRIM(c1), '') <> '') "
+            "GROUP BY c259 ORDER BY response_count DESC"
         ),
     }
 
@@ -497,14 +505,15 @@ def test_monthly_trend_builds_one_select_over_ordered_month_columns() -> None:
     )
 
     assert resolution.missing_slots == ()
-    assert resolution.resolved_slots == ("monthly_measures",)
+    assert resolution.resolved_slots == ("monthly_measures", "total_row_exclusion")
     assert resolution.plan == {
         "logical_name": SQL_SOURCE.logical_name,
         "sql": (
             "SELECT SUM(c70) AS period_2025_11, "
             "SUM(c71) AS period_2025_12, "
             "SUM(c72) AS period_2026_01, "
-            "COUNT(*) AS applied_rows FROM data"
+            "COUNT(*) AS applied_rows FROM data "
+            "WHERE (COALESCE(TRIM(c2), '') <> '')"
         ),
     }
 

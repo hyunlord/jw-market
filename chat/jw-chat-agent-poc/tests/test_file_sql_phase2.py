@@ -632,6 +632,7 @@ def test_product_top_n_sellout_groups_by_product_name() -> None:
     )
 
     assert plan is not None
+    # An explicit month still resolves to exactly that column.
     assert "SELECT c3, SUM(c72) AS total_value" in plan["sql"]
     assert "WHERE c3 IS NOT NULL AND TRIM(c3) <> ''" in plan["sql"]
     assert "GROUP BY c3" in plan["sql"]
@@ -646,7 +647,9 @@ def test_natural_product_top_n_groups_by_product_without_by_suffix() -> None:
     )
 
     assert plan is not None
-    assert "SELECT c3, SUM(c72) AS total_value" in plan["sql"]
+    # R14: a question that names no period now covers every month the workbook
+    # has, instead of silently collapsing to the newest column.
+    assert "SELECT c3, COALESCE(SUM(c71), 0) + COALESCE(SUM(c72), 0) AS total_value" in plan["sql"]
     assert "WHERE c3 IS NOT NULL AND TRIM(c3) <> ''" in plan["sql"]
     assert "GROUP BY c3 ORDER BY total_value DESC" in plan["sql"]
     assert plan["sql"].endswith("LIMIT 10")

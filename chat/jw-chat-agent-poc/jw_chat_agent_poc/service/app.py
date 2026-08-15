@@ -1613,7 +1613,7 @@ def _answer_question(
                         _has_active_upload,
                         _deep_file_sql_answer,
                         file_sql_trace,
-                    ) = _delegated_file_context(
+                    ) = _delegated_file_context_or_absent(
                         effective_question,
                         state.conversation_id,
                         file_context,
@@ -1977,6 +1977,52 @@ def _market_metric_clarification_result(question: str) -> dict:
         "markdown_response": {"markdown": answer, "fact_md": "", "data_md": ""},
         "router_diagnostics": {"mode": "market_clarification", "deterministic_execution": True},
     }
+
+
+def _delegated_file_context_or_absent(
+    question: str,
+    conversation_id: str | None,
+    file_context: str | None,
+    *,
+    include_all_files: bool = False,
+) -> tuple[str | None, tuple[dict[str, Any], ...], bool, str, tuple[dict[str, str], ...]]:
+    """Collect file evidence for an answer that also has non-file legs.
+
+    Deep research gathers uploaded-file evidence alongside the market and
+    external lanes. Losing the document lane must cost the document evidence
+    only — never the rest of the answer (§0.2 rule 3). The failure is logged
+    and reported as a lane-level error rather than swallowed.
+    """
+
+    try:
+        return _delegated_file_context(
+            question,
+            conversation_id,
+            file_context,
+            include_all_files=include_all_files,
+        )
+    except InputSizeLimitError:
+        # Size limits are a caller contract, not a lane failure.
+        raise
+    except Exception as exc:  # noqa: BLE001 - one lane must not fail the answer
+        LOGGER.exception(
+            "document lane unavailable conversation_id=%s reason=%s",
+            conversation_id,
+            type(exc).__name__,
+        )
+        return (
+            None,
+            (),
+            False,
+            "",
+            (
+                {
+                    "stage": "document_lane",
+                    "status": "error",
+                    "reason": type(exc).__name__,
+                },
+            ),
+        )
 
 
 def _delegated_file_context(

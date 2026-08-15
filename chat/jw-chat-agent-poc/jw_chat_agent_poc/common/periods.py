@@ -96,6 +96,75 @@ def requested_period(text: str) -> str | None:
     return None
 
 
+def explicit_years(text: str) -> tuple[int, ...]:
+    """Return bare year references that carry no month or quarter of their own.
+
+    ``canonical_periods`` deliberately ignores these because a year is not a
+    single period key. Callers that can expand a year into its months need them
+    separately, so the span a question asks for is never silently dropped.
+    """
+    years: list[int] = []
+    for match in _YEAR_ONLY_PATTERN.finditer(text):
+        year = _four_digit_year(match.group("year"))
+        if year not in years:
+            years.append(year)
+    return tuple(years)
+
+
+def quarter_keys(text: str) -> frozenset[str]:
+    """Return canonical quarter references, the complement of ``month_keys``."""
+    return frozenset(period for period in canonical_periods(text) if "-Q" in period)
+
+
+def relative_span(text: str) -> tuple[int, str] | None:
+    """Return a ``(count, unit)`` pair for expressions such as ``최근 3년``."""
+    match = _RELATIVE_RANGE_PATTERN.search(text)
+    if match is None:
+        return None
+    unit = "개월" if match.group("unit") == "달" else match.group("unit")
+    return int(match.group("count")), unit
+
+
+def year_months(year: int) -> tuple[str, ...]:
+    """Return the twelve canonical month keys of ``year`` in ascending order."""
+    return tuple(f"{year:04d}-{month:02d}" for month in range(1, 13))
+
+
+def quarter_months(quarter_key: str) -> tuple[str, ...]:
+    """Return the three canonical month keys covered by ``YYYY-Qn``."""
+    year_text, _, quarter_text = quarter_key.partition("-Q")
+    try:
+        year = int(year_text)
+        quarter = int(quarter_text)
+    except ValueError:
+        return ()
+    if not 1 <= quarter <= 4:
+        return ()
+    first = (quarter - 1) * 3 + 1
+    return tuple(f"{year:04d}-{month:02d}" for month in range(first, first + 3))
+
+
+def months_back(anchor: str, count: int) -> tuple[str, ...]:
+    """Return ``count`` month keys ending at ``anchor`` inclusive, ascending."""
+    if count <= 0:
+        return ()
+    try:
+        year_text, month_text = anchor.split("-", 1)
+        year = int(year_text)
+        month = int(month_text)
+    except (ValueError, TypeError):
+        return ()
+    if not 1 <= month <= 12:
+        return ()
+    index = year * 12 + (month - 1)
+    start = index - (count - 1)
+    if start < 0:
+        start = 0
+    return tuple(
+        f"{value // 12:04d}-{value % 12 + 1:02d}" for value in range(start, index + 1)
+    )
+
+
 def _four_digit_year(raw_year: str) -> int:
     year = int(raw_year)
     return year if year >= 100 else 2000 + year
