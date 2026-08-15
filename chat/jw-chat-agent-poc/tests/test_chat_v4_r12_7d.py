@@ -341,6 +341,28 @@ def test_market_gate_recipe_is_pinned_in_the_repository() -> None:
     assert mart_records({}) == 0
 
 
+def test_stranded_citations_are_not_left_behind() -> None:
+    """Deduping a sentence must not leave its citation orphaned on its own line."""
+    from jw_chat_agent_poc.service.v4.lossless_spine import _deduplicate_sentences
+
+    text = (
+        "리바로젯은 +13.73억원 변했습니다. [출처: 내부 데이터마트]\n"
+        "다른 문장입니다. [출처: 내부 데이터마트]\n"
+        "리바로젯은 +13.73억원 변했습니다. [출처: 내부 데이터마트]"
+    )
+    cleaned, removed = _deduplicate_sentences(text)
+
+    assert removed == 1
+    assert "[출처: 내부 데이터마트]" in cleaned
+    # the duplicate line is gone entirely, not reduced to a bare citation
+    assert not [
+        line for line in cleaned.splitlines() if line.strip() == "[출처: 내부 데이터마트]"
+    ]
+    # both distinct facts survive
+    assert cleaned.count("리바로젯은 +13.73억원 변했습니다.") == 1
+    assert "다른 문장입니다." in cleaned
+
+
 def test_non_market_answers_are_untouched() -> None:
     """No mart result means no injection and no empty heading."""
     ct = SourceResult(

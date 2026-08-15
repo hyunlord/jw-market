@@ -525,6 +525,9 @@ def _render_sections(sections: Sequence[tuple[str, str]]) -> list[str]:
     return [f"## {heading}\n" + "\n\n".join(bodies) for heading, bodies in merged]
 
 
+_CITATION_ONLY_RE = re.compile(r"(?:\[[^\n\]]+\]\s*)+")
+
+
 def _deduplicate_sentences(text: str) -> tuple[str, int]:
     seen: set[str] = set()
     removed = 0
@@ -554,7 +557,13 @@ def _deduplicate_sentences(text: str) -> tuple[str, int]:
                 parts.append(match.group(0))
             cursor = match.end()
         parts.append(line[cursor:])
-        output.append("".join(parts).strip())
+        collapsed = "".join(parts).strip()
+        # Dropping a duplicate sentence can leave its citation stranded on a line
+        # of its own. A bare citation carries no fact, so it is noise rather than
+        # evidence; the record it pointed at is still cited by the surviving copy.
+        if collapsed and _CITATION_ONLY_RE.fullmatch(collapsed):
+            continue
+        output.append(collapsed)
     return "\n".join(output).strip(), removed
 
 
