@@ -46,6 +46,19 @@ _PLURAL_FILE_REFERENCE_RE = re.compile(
     r"(?:두|여러)\s+(?:[가-힣A-Za-z0-9_-]+\s+){0,3}(?:보고서|문서|파일)",
     re.IGNORECASE,
 )
+# A file named by its own title rather than by a demonstrative: "CHSO 문서의",
+# "3월 보고서의". DEFAULT_FILE_REFERENCE_TERMS only covers demonstratives
+# ("이 문서", "해당 보고서"), so a question that says which file it means was
+# read as naming no file at all.
+#
+# Deliberately limited to the genitive "의". Wider particles ("파일에 있는")
+# also re-route a corpus case frozen in routing_inputs.v3.json, a write-once
+# pre-cutover characterization asset owned by another phase. Widening the
+# particle set is a separate decision, not a side effect of this one.
+_QUALIFIED_FILE_REFERENCE_RE = re.compile(
+    r"[가-힣A-Za-z0-9_.\-]+\s*(?:보고서|문서|파일|엑셀|시트)\s*의",
+    re.IGNORECASE,
+)
 _EXPLICIT_MARKET_TERMS = (
     "시장 데이터",
     "전체 시장",
@@ -54,6 +67,11 @@ _EXPLICIT_MARKET_TERMS = (
     "mart에서",
     "ubist",
     "iqvia",
+    # Korean names for the same internal source. Without these a comparison
+    # request reads as market-ungrounded and never reaches MIXED.
+    "마트",
+    "내부 데이터",
+    "자사 데이터",
 )
 
 
@@ -71,6 +89,7 @@ def has_file_reference(query: str) -> bool:
     return bool(
         any(term.lower() in normalized for term in file_reference_terms())
         or _PLURAL_FILE_REFERENCE_RE.search(normalized)
+        or _QUALIFIED_FILE_REFERENCE_RE.search(normalized)
     )
 
 

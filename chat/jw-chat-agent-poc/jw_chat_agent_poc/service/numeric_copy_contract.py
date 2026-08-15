@@ -10,7 +10,11 @@ from jw_chat_agent_poc.orchestrator.external_passthrough_render import (
     normalize_external_section_headings,
 )
 from jw_chat_agent_poc.orchestrator.query_spec import CanonicalMetric, canonical_metrics_for_question
-from jw_chat_agent_poc.service.answer_safety import fact_token_allowed, strict_allowed_numbers
+from jw_chat_agent_poc.service.answer_safety import (
+    fact_token_allowed,
+    strict_allowed_numbers,
+    uploaded_file_fact_tokens,
+)
 
 
 _FAILED_STATUSES: Final[frozenset[str]] = frozenset(
@@ -81,6 +85,18 @@ def enforce_numeric_copy_contract(
     allowed = strict_allowed_numbers(allowed_payload, allowed_numbers(allowed_payload))
     trusted_payload = _trusted_internal_payload(result)
     trusted = strict_allowed_numbers(trusted_payload, allowed_numbers(trusted_payload))
+
+    # A MIXED answer is composed from a market leg and an uploaded-file leg, but
+    # this contract only ever saw the market leg's payload. Figures the file leg
+    # had actually retrieved were judged ungrounded and stripped, so the file
+    # section arrived empty. Admit the file leg's own evidence for both sets.
+    #
+    # This does not relax the market contract: market figures still need their
+    # own backing, and a market number absent from the mart payload stays blocked.
+    file_tokens = _mixed_file_tokens(result)
+    if file_tokens:
+        allowed = tuple(sorted({*allowed, *file_tokens}))
+        trusted = tuple(sorted({*trusted, *file_tokens}))
 
     kept: list[str] = []
     blocked_tokens: set[str] = set()
@@ -347,6 +363,26 @@ def _allowed_payload(result: Mapping[str, Any], *, derived_only: bool) -> str:
     if isinstance(marker, Mapping):
         payload["external_passthrough"] = marker
     return _stable_text(payload)
+
+
+def _mixed_file_tokens(result: Mapping[str, Any]) -> tuple[str, ...]:
+    """Numeric tokens the uploaded-file leg of a MIXED answer actually retrieved.
+
+    Returns nothing for any other scope, so the change is confined to answers
+    that carry both a market leg and a file leg.
+    """
+
+    leg = result.get("mixed_file_result")
+    if not isinstance(leg, Mapping):
+        return ()
+    sources = [
+        str(leg.get("file_context") or ""),
+        str(leg.get("deterministic_file_answer") or ""),
+    ]
+    combined = "\n".join(part for part in sources if part.strip())
+    if not combined.strip():
+        return ()
+    return uploaded_file_fact_tokens(combined)
 
 
 def _trusted_internal_payload(result: Mapping[str, Any]) -> str:
