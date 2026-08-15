@@ -163,40 +163,39 @@ def _retrieval_shortfall_notice(results: Sequence[Any]) -> str | None:
 
     notices: list[str] = []
     for source, lane_results in executed.items():
-        # A call that kept part of its work is neither a success nor a failure;
-        # without this the preserved-versus-dropped split would never be said
-        # out loud, because the result still carries status "ok".
-        for result in lane_results:
-            partial = (getattr(result, "failure_detail", None) or {}).get(
-                "partial_preservation"
-            )
-            if not isinstance(partial, Mapping):
-                continue
-            preserved = int(partial.get("preserved") or 0)
-            requested = int(partial.get("requested") or 0)
-            dropped = int(partial.get("dropped") or 0)
-            if dropped <= 0:
-                continue
-            label = _SCOPE_NOTICE_LABELS.get(source, source)
-            dropped_names = [
-                str(name).strip()
-                for name in (partial.get("dropped_brands") or [])
-                if str(name).strip()
-            ]
-            notices.append(
-                f"{label} 조회에서 대상 {requested}개 중 {preserved}개까지 자료를 확보했고, "
-                f"나머지 {dropped}개는 조회 시간이 초과되어 이번 답변에 반영되지 않았습니다"
-                f"{_shortfall_query_preview(dropped_names)}"
-            )
         shortfalls: dict[str, list[str]] = {}
         for result in lane_results:
             reason = _result_exclusion_reason(result)
             if reason is None:
                 continue
             shortfalls.setdefault(reason, []).append(str(getattr(result, "query", "")))
-        if not shortfalls:
-            continue
         label = _SCOPE_NOTICE_LABELS.get(source, source)
+        # A call that kept part of its work is neither a success nor a failure;
+        # without this the preserved-versus-dropped split would never be said
+        # out loud, because the result still carries status "ok".
+        partial_lines: list[str] = []
+        for result in lane_results:
+            partial = (getattr(result, "failure_detail", None) or {}).get(
+                "partial_preservation"
+            )
+            if not isinstance(partial, Mapping):
+                continue
+            dropped = int(partial.get("dropped") or 0)
+            if dropped <= 0:
+                continue
+            dropped_names = [
+                str(name).strip()
+                for name in (partial.get("dropped_brands") or [])
+                if str(name).strip()
+            ]
+            partial_lines.append(
+                f"- 그중 1건은 대상 {int(partial.get('requested') or 0)}개 중 "
+                f"{int(partial.get('preserved') or 0)}개까지만 조회했고, "
+                f"나머지 {dropped}개는 조회 시간이 초과되어 반영되지 않았습니다"
+                f"{_shortfall_query_preview(dropped_names)}"
+            )
+        if not shortfalls and not partial_lines:
+            continue
         total = len(lane_results)
         grounded = total - sum(len(queries) for queries in shortfalls.values())
         notices.append(
@@ -220,6 +219,7 @@ def _retrieval_shortfall_notice(results: Sequence[Any]) -> str | None:
             notices.append(
                 f"- {len(queries)}건은 {phrase}{_shortfall_query_preview(queries)}"
             )
+        notices.extend(partial_lines)
     return "\n".join(notices) if notices else None
 
 

@@ -174,10 +174,41 @@ def test_partial_preservation_reaches_the_body_notice() -> None:
         },
     )
     notice = _retrieval_shortfall_notice((result,)) or ""
-    assert "대상 4개 중 2개까지 자료를 확보했고" in notice
-    assert "나머지 2개는 조회 시간이 초과되어" in notice
+    lines = notice.splitlines()
+    # The lane total is stated before the qualification that refines it.
+    assert lines[0] == "시장 데이터 조회 1건 중 1건에서 자료를 확보했습니다."
+    assert "그중 1건은 대상 4개 중 2개까지만 조회했고" in lines[1]
+    assert "나머지 2개는 조회 시간이 초과되어 반영되지 않았습니다" in lines[1]
     assert "리피토" in notice and "크레스토" in notice
     assert "partial_preservation" not in notice
+
+
+def test_partial_preservation_is_reported_after_the_lane_failures() -> None:
+    from jw_chat_agent_poc.service.v4.contracts import SourceResult
+    from jw_chat_agent_poc.service.v4.runtime import _retrieval_shortfall_notice
+
+    results = (
+        SourceResult(
+            source="mart",
+            query="피타바스타틴 매출 알려줘",
+            status="ok",
+            failure_detail={
+                "partial_preservation": {
+                    "unit": "brand",
+                    "requested": 4,
+                    "preserved": 2,
+                    "dropped": 2,
+                    "preserved_brands": ["리바로", "피큐로우"],
+                    "dropped_brands": ["타바로우", "피타틴"],
+                }
+            },
+        ),
+        SourceResult(source="mart", query="JW중외제약 매출 알려줘", status="empty"),
+    )
+    lines = (_retrieval_shortfall_notice(results) or "").splitlines()
+    assert lines[0] == "시장 데이터 조회 2건 중 1건에서 자료를 확보했습니다."
+    assert "해당하는 자료를 찾지 못했습니다" in lines[1]
+    assert "그중 1건은 대상 4개 중 2개까지만" in lines[2]
 
 
 def test_f2_failure_injection_without_a_budget_the_loop_never_stops_early(

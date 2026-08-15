@@ -1383,6 +1383,7 @@ def build_source_adapters() -> dict[SourceName, Any]:
         has_general_payload = False
         preserved_brands: list[str] = []
         dropped_brands: list[str] = []
+        brand_seconds: list[float] = []
         worst_brand_s = 0.0
         route = general_view.route(query)
         if route in {GeneralRoute.GENERAL_ONLY, GeneralRoute.DUAL}:
@@ -1462,7 +1463,9 @@ def build_source_adapters() -> dict[SourceName, Any]:
             finally:
                 # Recorded on every exit path, including the ``continue`` above,
                 # so the preservation ledger cannot drift from what actually ran.
-                worst_brand_s = max(worst_brand_s, time.monotonic() - brand_started)
+                brand_s = time.monotonic() - brand_started
+                brand_seconds.append(round(brand_s, 3))
+                worst_brand_s = max(worst_brand_s, brand_s)
                 preserved_brands.append(brand_name)
 
         source_labels = tuple(
@@ -1483,6 +1486,17 @@ def build_source_adapters() -> dict[SourceName, Any]:
                 "dropped_brands": list(dropped_brands),
                 "budget_s": budget_s,
                 "elapsed_s": round(time.monotonic() - started_monotonic, 3),
+                # The stop rule projects the next brand from the worst one seen
+                # so far, which is deliberately pessimistic. Recording the per
+                # brand costs and the budget actually left makes it possible to
+                # tell later whether that pessimism forfeited usable time.
+                "brand_seconds": list(brand_seconds),
+                "worst_brand_s": round(worst_brand_s, 3),
+                "reserve_s": _MART_BRAND_RESERVE_S,
+                "unused_budget_s": round(
+                    max(0.0, (budget_s or 0.0) - (time.monotonic() - started_monotonic)),
+                    3,
+                ),
             }
             notices.append(
                 f"조회 시간 상한에 걸려 브랜드 {len(resolutions)}개 중 "
