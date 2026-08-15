@@ -60,6 +60,19 @@ class ExpansionOutcome:
     trace: dict[str, Any]
 
 
+def _mart_year_axis_is_redundant(plan: PlannerOutput) -> bool:
+    """True when explicit period bounds already decide the mart history span.
+
+    ``_strategic_mart_calls`` derives its span from ``period_from``/``period_to``
+    and only falls back to reading a year out of the query text when no bound is
+    given. With both bounds present the year suffix changes nothing, so the year
+    variants are duplicates; without them it still selects the period and must
+    be kept.
+    """
+    shape = plan.requested_answer_shape
+    return bool(shape.period_from) and bool(shape.period_to)
+
+
 def expand_parameter_axes(
     plan: PlannerOutput,
     question: str,
@@ -98,6 +111,15 @@ def expand_parameter_axes(
     elif len(years) > 1:
         for source in plan.answer_sources:
             queries = getattr(plan.tool_queries, source)
+            if source == "mart" and _mart_year_axis_is_redundant(plan):
+                # The mart lane reads its history span from the period bounds and
+                # ignores a trailing year once those bounds are set, so the year
+                # variants of one query issue byte-identical calls. Multiplying
+                # them only splits the retrieval budget across duplicates.
+                updates[source] = tuple(
+                    dict.fromkeys(_strip_years(query).strip() for query in queries)
+                )
+                continue
             updates[source] = tuple(
                 dict.fromkeys(
                     f"{_strip_years(query)} {year}년".strip()

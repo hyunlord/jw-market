@@ -496,10 +496,24 @@ class ParallelSourceExecutor:
                 and requested_answer_shape is not None
                 and _accepts_period_bounds(adapter)
             ):
+                # The mart adapter walks several brands inside this one budget.
+                # Telling it how much time it actually has lets it hand back the
+                # brands it finished instead of being cut with all of them lost.
+                budget_kwargs = (
+                    {
+                        "budget_s": max(
+                            0.0,
+                            min(self._per_tool_timeout_s, deadline - started),
+                        )
+                    }
+                    if _accepts_retrieval_budget(adapter)
+                    else {}
+                )
                 result = adapter(
                     query,
                     period_from=requested_answer_shape.period_from,
                     period_to=requested_answer_shape.period_to,
+                    **budget_kwargs,
                 )
             elif getattr(adapter, "supports_transport_event_callback", False):
                 result = adapter(
@@ -519,6 +533,20 @@ class ParallelSourceExecutor:
         return result.model_copy(
             update={"elapsed_ms": (time.monotonic() - started) * 1000}
         )
+
+
+def _accepts_retrieval_budget(adapter: Any) -> bool:
+    """Only adapters that name ``budget_s`` are told the budget.
+
+    Deliberately narrower than :func:`_accepts_period_bounds`: a ``**kwargs``
+    test double would silently swallow the argument and report a preservation
+    behaviour it never implemented.
+    """
+    try:
+        parameters = inspect.signature(adapter).parameters
+    except (TypeError, ValueError):
+        return False
+    return "budget_s" in parameters
 
 
 def _accepts_period_bounds(adapter: Any) -> bool:

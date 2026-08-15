@@ -73,6 +73,12 @@ _DISEASE_ALIASES = {
     "당뇨병성 망막병증": ("H360", "diabetic retinopathy"),
     "뇌경색": ("I63", "cerebral infarction"),
 }
+# Headroom kept back from the tool budget so the brands already gathered can be
+# assembled into an envelope and returned before the executor cuts the call.
+# It covers that local assembly only, not upstream variance: a run that finishes
+# the whole expansion does so with barely a second to spare, so a larger reserve
+# would drop a brand the old code would have delivered.
+_MART_BRAND_RESERVE_S = float(os.getenv("MART_BRAND_RESERVE_SECONDS", "1.0"))
 _INGREDIENT_ALIASES = {
     "pitavastatin calcium": "Pitavastatin",
     "pitavastatin": "Pitavastatin",
@@ -80,6 +86,11 @@ _INGREDIENT_ALIASES = {
     "피타바스타틴": "Pitavastatin",
     "리바로": "Pitavastatin",
 }
+# The subset of the aliases above that names the molecule rather than a brand
+# ("리바로") or a drug class ("스타틴"). Only these may launch a product search.
+_INGREDIENT_NAME_ALIASES = frozenset(
+    {"pitavastatin calcium", "pitavastatin", "피타바스타틴"}
+)
 _REIMBURSEMENT_ALIASES = {
     "aflibercept": "아일리아",
     "애플리버셉트": "아일리아",
@@ -792,13 +803,31 @@ def _ingredient_query(query: str) -> str:
     return _base_query(query)
 
 
-def _ingredient_search_term(query: str) -> str | None:
+def _matched_ingredient_alias(query: str) -> str | None:
     lowered = query.casefold()
     aliases = [alias for alias in _INGREDIENT_ALIASES if alias.casefold() in lowered]
-    if not aliases:
+    return max(aliases, key=len) if aliases else None
+
+
+def _ingredient_search_term(query: str) -> str | None:
+    alias = _matched_ingredient_alias(query)
+    if alias is None:
         return None
-    alias = max(aliases, key=len)
     return alias if alias == "피타바스타틴" else _INGREDIENT_ALIASES[alias]
+
+
+def _names_an_ingredient(query: str) -> bool:
+    """True when the query names the molecule itself, not a brand of it.
+
+    ``_INGREDIENT_ALIASES`` maps brand and drug-class words onto the molecule so
+    that unrelated lookups can find it. Using those same words to launch a
+    product search is a different matter: the search term they produce is the
+    English molecule name, which returns no product whose brand the catalogue
+    recognises, so the expansion is a guaranteed empty result bought with an
+    upstream round trip.
+    """
+    alias = _matched_ingredient_alias(query)
+    return alias is not None and alias in _INGREDIENT_NAME_ALIASES
 
 
 def _is_ingredient_only_nedrug_query(query: str) -> bool:
@@ -1306,6 +1335,12 @@ def build_source_adapters() -> dict[SourceName, Any]:
         return tuple(resolution for _candidate, resolution in resolved_entity_pairs(query))
 
     def ingredient_brand_resolutions(query: str) -> tuple[Any, ...]:
+        if not _names_an_ingredient(query):
+            # A brand word that failed to resolve is not an ingredient request.
+            # Searching products for the molecule it belongs to costs an upstream
+            # round trip and has never returned a brand the catalogue knows, so
+            # the lane reports the miss instead of paying for it.
+            return ()
         search_term = _ingredient_search_term(query)
         if search_term is None:
             return ()
@@ -1339,11 +1374,16 @@ def build_source_adapters() -> dict[SourceName, Any]:
         *,
         period_from: str | None = None,
         period_to: str | None = None,
+        budget_s: float | None = None,
     ) -> SourceResult:
         started_at = datetime.now(UTC)
+        started_monotonic = time.monotonic()
         payloads: list[dict[str, Any]] = []
         period_clamp_notices: list[str] = []
         has_general_payload = False
+        preserved_brands: list[str] = []
+        dropped_brands: list[str] = []
+        worst_brand_s = 0.0
         route = general_view.route(query)
         if route in {GeneralRoute.GENERAL_ONLY, GeneralRoute.DUAL}:
             result = general_view.answer(
@@ -1362,46 +1402,68 @@ def build_source_adapters() -> dict[SourceName, Any]:
             else ingredient_brand_resolutions(query)
         )
         layer = dependencies.query_layer
-        for item in resolutions:
-            market_ids = getattr(item, "market_ids", None)
-            if market_ids == ():
-                if not has_general_payload:
-                    general = general_mart(str(item.canonical_brand))
+        for position, item in enumerate(resolutions):
+            brand_name = str(item.canonical_brand)
+            # Invariant 2: an ingredient expansion runs several brands inside one
+            # tool budget, and the executor discards the whole return value when
+            # that budget expires. Stop before the brand that would overrun it so
+            # the brands already gathered are returned instead of thrown away.
+            # The estimate is the worst brand observed in this very call, so no
+            # constant has to guess what a brand costs.
+            if budget_s is not None and position:
+                elapsed_s = time.monotonic() - started_monotonic
+                if elapsed_s + worst_brand_s + _MART_BRAND_RESERVE_S > budget_s:
+                    dropped_brands.extend(
+                        str(pending.canonical_brand)
+                        for pending in resolutions[position:]
+                    )
+                    break
+            brand_started = time.monotonic()
+            try:
+                market_ids = getattr(item, "market_ids", None)
+                if market_ids == ():
+                    if not has_general_payload:
+                        general = general_mart(brand_name)
+                        if general is not None:
+                            payloads.append(general)
+                            has_general_payload = True
+                    continue
+                strategic = (
+                    _strategic_mart_calls(
+                        layer,
+                        brand_name,
+                        query,
+                        period_from=period_from,
+                        period_to=period_to,
+                    )
+                    if layer is not None
+                    else []
+                )
+                if period_to and (
+                    clamp_notice := _mart_period_clamp_notice_for_calls(
+                        period_to,
+                        strategic,
+                    )
+                ):
+                    period_clamp_notices.append(clamp_notice)
+                if _needs_deep_analysis(query):
+                    deep_analysis = _load_canonical_deep_analysis(
+                        brand_name,
+                        tuple(str(value) for value in (market_ids or ()) if str(value)),
+                    )
+                    if deep_analysis is not None:
+                        strategic.append(deep_analysis)
+                payloads.extend(strategic)
+                if not strategic and not has_general_payload:
+                    general = general_mart(brand_name)
                     if general is not None:
                         payloads.append(general)
                         has_general_payload = True
-                continue
-            strategic = (
-                _strategic_mart_calls(
-                    layer,
-                    str(item.canonical_brand),
-                    query,
-                    period_from=period_from,
-                    period_to=period_to,
-                )
-                if layer is not None
-                else []
-            )
-            if period_to and (
-                clamp_notice := _mart_period_clamp_notice_for_calls(
-                    period_to,
-                    strategic,
-                )
-            ):
-                period_clamp_notices.append(clamp_notice)
-            if _needs_deep_analysis(query):
-                deep_analysis = _load_canonical_deep_analysis(
-                    str(item.canonical_brand),
-                    tuple(str(value) for value in (market_ids or ()) if str(value)),
-                )
-                if deep_analysis is not None:
-                    strategic.append(deep_analysis)
-            payloads.extend(strategic)
-            if not strategic and not has_general_payload:
-                general = general_mart(str(item.canonical_brand))
-                if general is not None:
-                    payloads.append(general)
-                    has_general_payload = True
+            finally:
+                # Recorded on every exit path, including the ``continue`` above,
+                # so the preservation ledger cannot drift from what actually ran.
+                worst_brand_s = max(worst_brand_s, time.monotonic() - brand_started)
+                preserved_brands.append(brand_name)
 
         source_labels = tuple(
             dict.fromkeys(
@@ -1409,6 +1471,23 @@ def build_source_adapters() -> dict[SourceName, Any]:
                 for payload in payloads
             )
         )
+        notices = list(dict.fromkeys(period_clamp_notices))
+        failure_detail: dict[str, Any] = {}
+        if dropped_brands:
+            failure_detail["partial_preservation"] = {
+                "unit": "brand",
+                "requested": len(resolutions),
+                "preserved": len(preserved_brands),
+                "dropped": len(dropped_brands),
+                "preserved_brands": list(preserved_brands),
+                "dropped_brands": list(dropped_brands),
+                "budget_s": budget_s,
+                "elapsed_s": round(time.monotonic() - started_monotonic, 3),
+            }
+            notices.append(
+                f"조회 시간 상한에 걸려 브랜드 {len(resolutions)}개 중 "
+                f"{len(preserved_brands)}개까지만 조회했습니다"
+            )
         return SourceResult(
             source="mart",
             query=query,
@@ -1425,9 +1504,10 @@ def build_source_adapters() -> dict[SourceName, Any]:
                 )
                 for label in source_labels
             ),
+            failure_detail=failure_detail,
             notice=(
-                " ".join(dict.fromkeys(period_clamp_notices))
-                if period_clamp_notices
+                " ".join(notices)
+                if notices
                 else None if payloads else "mart read-only adapters returned no rows"
             ),
         )

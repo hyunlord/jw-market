@@ -27,7 +27,10 @@ from jw_chat_agent_poc.service.v4.contracts import (
     SourceResult,
     V4Answer,
 )
-from jw_chat_agent_poc.service.v4.executor import ParallelSourceExecutor
+from jw_chat_agent_poc.service.v4.executor import (
+    ParallelSourceExecutor,
+    _result_exclusion_reason,
+)
 from jw_chat_agent_poc.service.v4.expansion import (
     _kcd_codes,
     build_second_hop_expansion,
@@ -109,19 +112,122 @@ ProgressCallback = Callable[[dict[str, Any]], None]
 _PROGRESS_URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
 
 
+_SCOPE_NOTICE_LABELS = {
+    "mart": "시장 데이터",
+    "nedrug": "의약품 정보",
+    "hira": "HIRA",
+    "openfda": "FDA",
+    "clinicaltrials": "임상시험",
+    "web": "웹 검색",
+    "patent": "특허",
+}
+# Invariant 1: the surface must separate "the source answered nothing" from
+# "we never got the answer back". Both used to read as absence of data. The
+# wording is keyed off the exclusion reasons the executor already types, so no
+# second classification exists to drift away from the trace.
+_SHORTFALL_PHRASING: tuple[tuple[str, str], ...] = (
+    ("upstream_timeout", "조회 시간이 초과되어 이번 답변에 반영되지 않았습니다"),
+    ("empty_result", "조회했으나 해당하는 자료를 찾지 못했습니다"),
+    ("provider_quota", "조회 한도에 걸려 이번 답변에 반영되지 않았습니다"),
+    ("parse_error", "응답을 해석하지 못해 이번 답변에 반영되지 않았습니다"),
+    ("scope_limit", "조회 범위 제한으로 이번 답변에 반영되지 않았습니다"),
+    ("upstream_error", "조회에 실패해 이번 답변에 반영되지 않았습니다"),
+)
+_SHORTFALL_QUERY_PREVIEW = 5
+
+
+def _shortfall_query_preview(queries: Sequence[str]) -> str:
+    preview = [str(query).strip() for query in queries[:_SHORTFALL_QUERY_PREVIEW]]
+    preview = [query for query in preview if query]
+    if not preview:
+        return ""
+    remainder = len(queries) - len(preview)
+    suffix = f" · 외 {remainder}건" if remainder > 0 else ""
+    return f": {' · '.join(preview)}{suffix}"
+
+
+def _retrieval_shortfall_notice(results: Sequence[Any]) -> str | None:
+    """Name the calls that ran but brought nothing back.
+
+    ``_query_scope_notice`` only speaks about queries that were never issued,
+    so a lane whose every call timed out reads to the user exactly like a lane
+    with no data. This walks the executed results instead and reports, per
+    lane, how many calls produced evidence and why the rest did not.
+    """
+    executed: dict[str, list[Any]] = {}
+    for result in results:
+        source = getattr(result, "source", None)
+        if source is None:
+            continue
+        executed.setdefault(str(source), []).append(result)
+
+    notices: list[str] = []
+    for source, lane_results in executed.items():
+        # A call that kept part of its work is neither a success nor a failure;
+        # without this the preserved-versus-dropped split would never be said
+        # out loud, because the result still carries status "ok".
+        for result in lane_results:
+            partial = (getattr(result, "failure_detail", None) or {}).get(
+                "partial_preservation"
+            )
+            if not isinstance(partial, Mapping):
+                continue
+            preserved = int(partial.get("preserved") or 0)
+            requested = int(partial.get("requested") or 0)
+            dropped = int(partial.get("dropped") or 0)
+            if dropped <= 0:
+                continue
+            label = _SCOPE_NOTICE_LABELS.get(source, source)
+            dropped_names = [
+                str(name).strip()
+                for name in (partial.get("dropped_brands") or [])
+                if str(name).strip()
+            ]
+            notices.append(
+                f"{label} 조회에서 대상 {requested}개 중 {preserved}개까지 자료를 확보했고, "
+                f"나머지 {dropped}개는 조회 시간이 초과되어 이번 답변에 반영되지 않았습니다"
+                f"{_shortfall_query_preview(dropped_names)}"
+            )
+        shortfalls: dict[str, list[str]] = {}
+        for result in lane_results:
+            reason = _result_exclusion_reason(result)
+            if reason is None:
+                continue
+            shortfalls.setdefault(reason, []).append(str(getattr(result, "query", "")))
+        if not shortfalls:
+            continue
+        label = _SCOPE_NOTICE_LABELS.get(source, source)
+        total = len(lane_results)
+        grounded = total - sum(len(queries) for queries in shortfalls.values())
+        notices.append(
+            f"{label} 조회 {total}건 중 {grounded}건에서 자료를 확보했습니다."
+        )
+        known = {reason for reason, _phrase in _SHORTFALL_PHRASING}
+        ordered = [
+            (reason, phrase)
+            for reason, phrase in _SHORTFALL_PHRASING
+            if reason in shortfalls
+        ]
+        # A reason the phrasing table has not caught up with is still reported,
+        # never dropped, so an unnamed failure cannot masquerade as success.
+        ordered.extend(
+            (reason, "이번 답변에 반영되지 않았습니다")
+            for reason in sorted(shortfalls)
+            if reason not in known
+        )
+        for reason, phrase in ordered:
+            queries = shortfalls[reason]
+            notices.append(
+                f"- {len(queries)}건은 {phrase}{_shortfall_query_preview(queries)}"
+            )
+    return "\n".join(notices) if notices else None
+
+
 def _query_scope_notice(plan: Any) -> str | None:
     scope = getattr(plan, "query_scope", None)
     if scope is None:
         return None
-    labels = {
-        "mart": "시장 데이터",
-        "nedrug": "의약품 정보",
-        "hira": "HIRA",
-        "openfda": "FDA",
-        "clinicaltrials": "임상시험",
-        "web": "웹 검색",
-        "patent": "특허",
-    }
+    labels = _SCOPE_NOTICE_LABELS
     notices: list[str] = []
     for source, omitted in scope.omitted_queries.items():
         omitted_count = len(omitted)
@@ -677,6 +783,7 @@ class V4Runtime:
             for notice in (
                 _session_inheritance_notice(question, session_state),
                 _query_scope_notice(plan),
+                _retrieval_shortfall_notice(results),
             )
             if notice
         )
@@ -1376,13 +1483,42 @@ def _time_window(question: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(periods))
 
 
+_DEFAULT_PER_TOOL_TIMEOUT_S = 45.0
+_DEFAULT_TOTAL_TIMEOUT_S = 50.0
+
+
+def _timeout_from_env(name: str, default: float) -> float:
+    """Read a retrieval budget from the environment without changing its value.
+
+    The budgets used to be literals here, so tuning one meant shipping code.
+    The defaults are the values that were hardcoded; a malformed or
+    non-positive override is reported and ignored rather than silently applied.
+    """
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        LOGGER.warning("ignoring non-numeric %s=%r; using %s", name, raw, default)
+        return default
+    if value <= 0:
+        LOGGER.warning("ignoring non-positive %s=%r; using %s", name, raw, default)
+        return default
+    return value
+
+
 def build_default_runtime() -> V4Runtime:
     return V4Runtime(
         planner=V4Planner(planner_client()),
         executor=ParallelSourceExecutor(
             adapters=build_source_adapters(),
-            per_tool_timeout_s=45.0,
-            total_timeout_s=50.0,
+            per_tool_timeout_s=_timeout_from_env(
+                "CHAT_V4_PER_TOOL_TIMEOUT_SECONDS", _DEFAULT_PER_TOOL_TIMEOUT_S
+            ),
+            total_timeout_s=_timeout_from_env(
+                "CHAT_V4_TOTAL_TIMEOUT_SECONDS", _DEFAULT_TOTAL_TIMEOUT_S
+            ),
         ),
         synthesizer=V4Synthesizer(synthesizer_client()),
         state_store=SessionStateStore.from_env(),
