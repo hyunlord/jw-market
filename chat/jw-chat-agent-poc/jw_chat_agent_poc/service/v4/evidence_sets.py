@@ -216,6 +216,16 @@ def _patent_set(results: Sequence[SourceResult], observed_on: date) -> EvidenceS
                     "identifier_exclusions": identifier_exclusions,
                     "product_patent_rows": product_patent_rows,
                     "non_product_exclusions": non_product_exclusions,
+                    "product_patent_edges": list(
+                        lane.get("product_patent_edges")
+                        if isinstance(lane.get("product_patent_edges"), list)
+                        else []
+                    ),
+                    "pms_periods": list(
+                        lane.get("pms_periods")
+                        if isinstance(lane.get("pms_periods"), list)
+                        else []
+                    ),
                 }
             )
             if source_limit_reached:

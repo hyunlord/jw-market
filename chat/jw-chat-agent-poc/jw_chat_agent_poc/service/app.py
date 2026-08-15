@@ -297,6 +297,7 @@ from jw_chat_agent_poc.service.sse_presenter import (
     SSE_PRESENTER_ENV,
     selected_sse_presenter,
 )
+from jw_chat_agent_poc.service.trace_transport import trace_for_transport
 from jw_chat_agent_poc.service.startup_warmup import (
     DisabledStartupWarmup,
     StartupWarmup,
@@ -1157,7 +1158,7 @@ def create_app(
         return ChatAnswer(
             text=final_answer.text,
             charts=final_answer.charts,
-            trace=final_answer.trace,
+            trace=trace_for_transport(final_answer.trace),
             sources=final_answer.sources,
             conversation_id=final_answer.conversation_id,
             file_sources=list(_project_public_file_sources(final_answer.file_sources)),
@@ -3587,7 +3588,7 @@ def _sse_events_from_final_answer(
         text=final_answer.text,
         charts=final_answer.charts,
         timing=final_answer.timing,
-        trace=final_answer.trace,
+        trace=trace_for_transport(final_answer.trace),
         streamed_prefix=streamed_prefix,
     )
 

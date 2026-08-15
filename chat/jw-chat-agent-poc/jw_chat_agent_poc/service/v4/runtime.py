@@ -68,6 +68,9 @@ from jw_chat_agent_poc.service.v4.semantic_realization import (
     realize_semantic_surface,
 )
 from jw_chat_agent_poc.service.v4.session_state import SessionState, SessionStateStore
+from jw_chat_agent_poc.service.v4.scope_provenance import (
+    build_scope_provenance_projection,
+)
 from jw_chat_agent_poc.service.v4.synthesizer import SynthesisOutcome, V4Synthesizer
 from jw_chat_agent_poc.service.v4.shadow import (
     CanonicalFact,
@@ -975,6 +978,11 @@ class V4Runtime:
             deterministic_render,
             expansion=trace["expansion"],
             answer_text=composition.text,
+        )
+        trace["scope_provenance_projection"] = build_scope_provenance_projection(
+            evidence_sets,
+            deterministic_render.nodes,
+            strict=False,
         )
         source_names = [
                 citation.source
