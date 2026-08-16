@@ -128,11 +128,19 @@ def bound_synthesis_messages(
 def prune_unsupported_source_queries(
     plan: PlannerOutput,
 ) -> tuple[PlannerOutput, dict[str, Any]]:
-    if os.environ.get("CHAT_V4_PRUNE_UNSUPPORTED_SOURCE_QUERIES", "1").strip().casefold() in {
-        "0",
-        "false",
-        "off",
-        "no",
+    # Off by default. Pruning decides, before any call is made, that a source cannot
+    # answer this question — and a wrong guess costs the answer a whole lane with no
+    # way for the user to know what was never asked. "리바로젯 제네릭 임상현황" lost mart,
+    # nedrug and hira that way, even though mart holds that brand's sales and a generic
+    # question is exactly when patent and approval evidence matters. An empty lane is
+    # cheap and the shortfall notice already reports it; a lane never attempted is not
+    # recoverable. Set CHAT_V4_PRUNE_UNSUPPORTED_SOURCE_QUERIES=1 to restore the old
+    # behaviour.
+    if os.environ.get("CHAT_V4_PRUNE_UNSUPPORTED_SOURCE_QUERIES", "0").strip().casefold() not in {
+        "1",
+        "true",
+        "on",
+        "yes",
     }:
         return plan, {"applied": False, "disabled": True, "omitted": {}}
     requested = frozenset(plan.requested_answer_shape.measure_or_attribute)

@@ -5,6 +5,7 @@ from collections.abc import Callable, Mapping
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 import inspect
+import os
 import threading
 import time
 from typing import Any
@@ -22,6 +23,25 @@ from jw_chat_agent_poc.service.v4.source_tiers import source_tier
 SourceAdapter = Callable[..., SourceResult]
 SourceProgressCallback = Callable[[SourceResult], None]
 TransportEventCallback = Callable[[Mapping[str, Any]], None]
+
+
+def _quorum_early_exit_enabled() -> bool:
+    """Whether a satisfied answer-source quorum may cancel the lanes still running.
+
+    Off by default. The quorum is measured against ``answer_sources``, which the planner
+    collapses to a single keyword-derived source, so six seconds after the wave starts
+    one finished lane could cancel every other one. That is how a question reached the
+    user on two lanes when six had evidence to give. Cancelling on a soft deadline trades
+    evidence for latency, and this round trades the other way. Set
+    CHAT_V4_ANSWER_QUORUM_EARLY_EXIT=1 to restore it.
+    """
+
+    return os.environ.get("CHAT_V4_ANSWER_QUORUM_EARLY_EXIT", "0").strip().casefold() in {
+        "1",
+        "true",
+        "on",
+        "yes",
+    }
 
 
 @dataclass(frozen=True)
@@ -130,6 +150,7 @@ class ParallelSourceExecutor:
         tool_trace: dict[int, dict[str, Any]] = {}
         quorum_fired = False
         quorum_fire_ms: float | None = None
+        quorum_early_exit = _quorum_early_exit_enabled()
         exempt_sources = frozenset(soft_deadline_exempt_sources or ())
         query_items = {
             source: queries
@@ -183,6 +204,7 @@ class ParallelSourceExecutor:
                     "elapsed_ms": (time.monotonic() - started) * 1000,
                     "quorum_fired": False,
                     "quorum_fire_ms": None,
+                    "quorum_early_exit_enabled": quorum_early_exit,
                     "soft_deadline_exempt_sources": sorted(exempt_sources),
                     "tools": list(tool_trace.values()),
                 },
@@ -320,6 +342,7 @@ class ParallelSourceExecutor:
                 now = time.monotonic()
                 if (
                     not quorum_fired
+                    and quorum_early_exit
                     and answer_sources
                     and soft_deadline_s is not None
                     and now - started >= soft_deadline_s
@@ -424,7 +447,7 @@ class ParallelSourceExecutor:
                             for actual_started in started_remaining
                         )
                     )
-                if answer_sources and soft_deadline_s is not None:
+                if quorum_early_exit and answer_sources and soft_deadline_s is not None:
                     soft_remaining = started + soft_deadline_s - time.monotonic()
                     if soft_remaining > 0:
                         wait_candidates.append(soft_remaining)
@@ -460,6 +483,7 @@ class ParallelSourceExecutor:
                 "elapsed_ms": (time.monotonic() - started) * 1000,
                 "quorum_fired": quorum_fired,
                 "quorum_fire_ms": quorum_fire_ms,
+                "quorum_early_exit_enabled": quorum_early_exit,
                 "soft_deadline_exempt_sources": sorted(exempt_sources),
                 "scheduler": {
                     "tier_zero_first": True,
