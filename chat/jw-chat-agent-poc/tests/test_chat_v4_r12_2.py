@@ -297,8 +297,14 @@ def test_a_binding_preserves_supported_english_schema_header() -> None:
         (),
     )
 
-    assert sanitized == answer
-    assert trace["answer_mutation"] is False
+    assert sanitized == (
+        "## 핵심 답\n"
+        "| NCT ID | Official Title | Overall Status |\n"
+        "| --- | --- | --- |\n"
+        "| NCT05151731 | Pitavastatin and ezetimibe study | COMPLETED |"
+    )
+    assert trace["answer_mutation"] is True
+    assert trace["core_section_recovered_from"] == "임상시험 전건"
 
 
 def test_a_binding_removes_source_url_not_present_in_evidence() -> None:
@@ -596,7 +602,7 @@ def test_a_binding_does_not_promote_nested_request_metadata_url() -> None:
     assert trace["removed_unbound_source_lines"] == 1
 
 
-def test_a_binding_does_not_invent_core_section_without_binding_deletion() -> None:
+def test_a_binding_promotes_the_first_supported_section_to_core() -> None:
     evidence = _clinical_set(_clinical_record("NCT05151731"))
     answer = "## 근거와 맥락\nNCT05151731의 시험 설계를 확인했습니다."
 
@@ -607,9 +613,9 @@ def test_a_binding_does_not_invent_core_section_without_binding_deletion() -> No
         (),
     )
 
-    assert sanitized == answer
-    assert trace["answer_mutation"] is False
-    assert trace["core_section_recovered_from"] is None
+    assert sanitized == "## 핵심 답\nNCT05151731의 시험 설계를 확인했습니다."
+    assert trace["answer_mutation"] is True
+    assert trace["core_section_recovered_from"] == "근거와 맥락"
 
 
 def test_b_single_record_does_not_render_zero_information_aggregates() -> None:

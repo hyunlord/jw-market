@@ -138,7 +138,7 @@ def sanitize_bound_surface(
     )
     sanitized, recovered_from = _recover_core_section(
         sanitized,
-        enabled=original_had_core,
+        original_had_core=original_had_core,
     )
     return sanitized, {
         "answer_mutation": sanitized != answer,
@@ -315,10 +315,8 @@ def prune_empty_surface_sections(value: str) -> tuple[str, int]:
 def _recover_core_section(
     value: str,
     *,
-    enabled: bool,
+    original_had_core: bool,
 ) -> tuple[str, str | None]:
-    if not enabled:
-        return value, None
     lines = value.splitlines()
     sections = tuple(
         (index, match.group(1).strip())
@@ -327,17 +325,37 @@ def _recover_core_section(
     if any(heading in _CORE_HEADINGS for _, heading in sections):
         return value, None
 
-    for recovery_heading in _CORE_RECOVERY_ORDER:
-        for position, (start, heading) in enumerate(sections):
-            if heading != recovery_heading:
-                continue
-            end = sections[position + 1][0] if position + 1 < len(sections) else len(lines)
-            body = "\n".join(lines[start + 1 : end]).strip()
+    if original_had_core:
+        for recovery_heading in _CORE_RECOVERY_ORDER:
+            for position, (start, heading) in enumerate(sections):
+                if heading != recovery_heading:
+                    continue
+                end = sections[position + 1][0] if position + 1 < len(sections) else len(lines)
+                body = "\n".join(lines[start + 1 : end]).strip()
+                if not body:
+                    continue
+                remaining = "\n".join((*lines[:start], *lines[end:])).strip()
+                core = f"## 핵심 답\n{body}"
+                return core + (f"\n\n{remaining}" if remaining else ""), heading
+        return value, None
+
+    for index, line in enumerate(lines):
+        if not line.strip():
+            continue
+        if (heading_match := _H2_RE.match(line.strip())) is not None:
+            end = sections[1][0] if len(sections) > 1 else len(lines)
+            body = "\n".join(lines[index + 1 : end]).strip()
             if not body:
                 continue
-            remaining = "\n".join((*lines[:start], *lines[end:])).strip()
+            remaining = "\n".join((*lines[:index], *lines[end:])).strip()
             core = f"## 핵심 답\n{body}"
-            return core + (f"\n\n{remaining}" if remaining else ""), heading
+            return (
+                core + (f"\n\n{remaining}" if remaining else ""),
+                heading_match.group(1).strip(),
+            )
+        if _HEADING_RE.match(line.strip()) is not None:
+            continue
+        return "\n".join((*lines[:index], "## 핵심 답", *lines[index:])), "answer_lead"
     return value, None
 
 

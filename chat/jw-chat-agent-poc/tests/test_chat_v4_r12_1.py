@@ -1684,7 +1684,7 @@ def test_runtime_inject_mode_composes_deterministic_facts_before_commentary(
         synthesizer=Synthesizer(),
     ).answer("리바로젯 임상현황", conversation_id="lossless", turns=())
 
-    assert answer.text.startswith("임상 포트폴리오 해설입니다.")
+    assert answer.text.startswith("## 핵심 답\n임상 포트폴리오 해설입니다.")
     assert "- ClinicalTrials.gov의 NCT00000001" not in answer.text
     assert "NCT00000001" in answer.text
     assert "## 자동 해설" not in answer.text
@@ -1775,12 +1775,12 @@ def test_runtime_request_satisfaction_flag_only_adds_a_notice_in_inject_mode(
         request_satisfaction_mode="inject",
     )
 
-    assert shadow.text.startswith(commentary)
+    assert shadow.text.startswith(f"## 핵심 답\n{commentary}")
     assert "요청하신 API 단가" not in shadow.text
     assert inject.text.startswith(
-        "요청하신 API 단가는 현재 연결된 원천에서 확인되지 않았습니다."
+        "## 핵심 답\n요청하신 API 단가는 현재 연결된 원천에서 확인되지 않았습니다."
     )
-    assert inject.text.endswith(shadow.text)
+    assert commentary in inject.text
     assert inject.trace["lossless_spine"]["request_notice_injected"] is True
 
 

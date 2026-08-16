@@ -159,6 +159,29 @@ def test_empty_core_is_recovered_without_an_unrelated_line_removal() -> None:
     assert trace["core_section_recovered_from"] == "근거와 맥락"
 
 
+def test_missing_core_heading_wraps_the_answer_lead_without_changing_text() -> None:
+    evidence = EvidenceSet(
+        source="mart",
+        retrieved_at="2026-08-17T00:00:00Z",
+        coverage=CoverageLedger(records_received=1, records_unique=1),
+        records=(
+            EvidenceRecord(
+                evidence_id="mart:livaro",
+                source="mart",
+                result_kind="sales",
+                payload={"brand": "리바로", "sales": 85.87},
+            ),
+        ),
+    )
+    answer = "리바로 매출은 85.87억원입니다.\n\n**근거와 맥락**\n원외처방 매출입니다."
+
+    sanitized, trace = sanitize_bound_surface("리바로 매출", answer, (evidence,), ())
+
+    assert sanitized == f"## 핵심 답\n{answer}"
+    assert sanitized.replace("## 핵심 답\n", "", 1) == answer
+    assert trace["core_section_recovered_from"] == "answer_lead"
+
+
 def test_hira_completion_scope_does_not_call_disease_codes_brands() -> None:
     plan = _plan(entities=("E10", "E11"))
     result = SourceResult(
