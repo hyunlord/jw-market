@@ -97,8 +97,14 @@ def build_lossless_render(
         observed_on=observed_on,
     )
     if limit_trace["applied"]:
+        # Say how the shown ones were chosen. They are the leading records in the
+        # order upstream returned them, with no relevance ranking, and a bare
+        # "40/1004 표시" invites the reader to assume the 40 are the best 40.
+        ranked = limit_trace.get("selection_is_ranked", False)
+        basis = "관련도 순" if ranked else "상류 반환 순서의 앞 항목(임의 선택)"
         notices = [
-            f"{source}: {counts['shown']}/{counts['total']} 표시, 나머지는 조회 상세에 보존"
+            f"{source}: {counts['shown']}/{counts['total']} 표시({basis}), "
+            "나머지는 조회 상세에 보존"
             for source, counts in limit_trace["sources"].items()
         ]
         existing = str(rendered.request_notice or "").strip()

@@ -205,5 +205,13 @@ def test_render_cap_limits_only_surface_projection() -> None:
 
     assert len(limited[0].records) == 40
     assert len(evidence.records) == 55
-    assert trace["sources"]["clinicaltrials"] == {"shown": 40, "total": 55}
+    # R24 STAGE 2 extended this trace: the cap now governs source_refs as well as
+    # records, because the source block renders from refs and used to list all 1,004
+    # links beneath a notice that said 40. These records carry no refs, so both are 0.
+    assert trace["sources"]["clinicaltrials"] == {
+        "shown": 40,
+        "total": 55,
+        "refs_shown": 0,
+        "refs_total": 0,
+    }
     assert "surface_render_limit" in limited[0].coverage.partial_reasons

@@ -56,6 +56,173 @@ class SynthesisPolicy:
         return min(self.max_synthesis_budget_s, remaining_s)
 
 
+# Keys whose values are the per-source packets the prompt is built from. A budget
+# has to be shared between these, because they are what one oversized lane crowds out.
+_SOURCE_PACKET_KEYS = ("external_evidence", "internal_datamart", "internal_deep_analysis")
+
+
+def _size(value: Any) -> int:
+    return len(json.dumps(value, ensure_ascii=False, default=str))
+
+
+def _packet_label(packet: Any, index: int) -> str:
+    if isinstance(packet, Mapping):
+        for key in ("source", "name"):
+            label = packet.get(key)
+            if isinstance(label, str) and label.strip():
+                return label.strip()
+    return f"packet_{index}"
+
+
+def _largest_record_list(value: Any) -> tuple[list[Any] | None, Any, Any]:
+    """Find the bulkiest list inside a packet, with its parent and key.
+
+    Shape-agnostic on purpose: a packet carries an upstream payload under
+    ``detail`` and an evidence envelope whose record list has moved between
+    schema versions. Searching by size rather than by a hard-coded path means a
+    future envelope change degrades the trim, not the answer.
+    """
+    best: tuple[int, list[Any] | None, Any, Any] = (0, None, None, None)
+
+    def walk(node: Any, parent: Any, key: Any) -> None:
+        nonlocal best
+        if isinstance(node, list):
+            size = _size(node)
+            if size > best[0] and len(node) > 1:
+                best = (size, node, parent, key)
+            for item in node:
+                walk(item, node, None)
+        elif isinstance(node, Mapping):
+            for child_key, child in node.items():
+                walk(child, node, child_key)
+
+    walk(value, None, None)
+    return best[1], best[2], best[3]
+
+
+def _shrink_packet(packet: Any, budget: int) -> tuple[Any, dict[str, Any]]:
+    """Bring one source's packet under its share, reporting exactly what left.
+
+    Nothing is discarded from the turn: the full payload stays in the evidence
+    sets and the inspection detail. Only this lane's copy inside the prompt is
+    reduced, and only as far as its own share requires.
+    """
+    if not isinstance(packet, Mapping) or _size(packet) <= budget:
+        return packet, {}
+    current: dict[str, Any] = dict(packet)
+    trimmed: dict[str, Any] = {"budget_chars": budget, "before_chars": _size(packet)}
+
+    detail = current.get("detail")
+    if detail is not None and not (
+        isinstance(detail, Mapping) and "omitted" in detail
+    ):
+        detail_chars = _size(detail)
+        current["detail"] = {
+            "omitted": "per-source prompt budget",
+            "omitted_chars": detail_chars,
+            "retained_in": "inspection_detail",
+        }
+        trimmed["detail_chars_omitted"] = detail_chars
+        if _size(current) <= budget:
+            trimmed["after_chars"] = _size(current)
+            return current, trimmed
+
+    # Still oversized: thin the bulkiest record list, halving until it fits so a
+    # lane keeps a representative sample rather than losing its content entirely.
+    for _ in range(24):
+        if _size(current) <= budget:
+            break
+        records, parent, key = _largest_record_list(current)
+        if records is None or parent is None or key is None or len(records) <= 1:
+            break
+        kept = max(1, len(records) // 2)
+        trimmed["records_withheld_from_prompt"] = (
+            trimmed.get("records_withheld_from_prompt", 0) + (len(records) - kept)
+        )
+        parent[key] = records[:kept]
+        trimmed["records_in_prompt"] = kept
+    trimmed["after_chars"] = _size(current)
+    return current, trimmed
+
+
+def bound_sources_fairly(value: Any, *, char_limit: int) -> tuple[Any, dict[str, Any]]:
+    """Give every source a share of the prompt before anyone takes all of it.
+
+    The global bound this runs ahead of is all-or-nothing: once the prompt is over
+    the limit it replaces *every* record with a bare identifier list, so a single
+    8.4MB lane costs the other six their content. One live turn spent 8,569,677
+    chars on 1,004 clinical trials and the synthesis, left with identifiers only,
+    wrote that the trials "were not confirmed in the provided evidence".
+
+    Sharing is proportional-with-redistribution: packets already under an equal
+    share keep everything and hand their slack to the ones over it, so trimming
+    reaches only the lanes that are actually crowding the prompt.
+    """
+    if char_limit <= 0:
+        raise ValueError("char_limit must be positive")
+    if not isinstance(value, Mapping):
+        return value, {"applied": False, "reason": "prompt_is_not_a_mapping"}
+
+    packets: list[tuple[str, int, str, Any]] = []  # key, index, label, packet
+    for key in _SOURCE_PACKET_KEYS:
+        entries = value.get(key)
+        if isinstance(entries, list):
+            for index, packet in enumerate(entries):
+                packets.append((key, index, _packet_label(packet, index), packet))
+    if not packets:
+        return value, {"applied": False, "reason": "no_source_packets"}
+
+    overhead = _size(value) - sum(_size(packet) for _k, _i, _l, packet in packets)
+    available = max(char_limit - max(overhead, 0), char_limit // 2)
+
+    sizes = {(k, i): _size(p) for k, i, _l, p in packets}
+    if sum(sizes.values()) <= available:
+        return value, {"applied": False, "reason": "already_within_budget"}
+
+    # Redistribute: repeatedly give every not-yet-capped packet an equal share and
+    # let the ones that do not need it release the remainder.
+    remaining = available
+    uncapped = {(k, i) for k, i, _l, _p in packets}
+    budgets: dict[tuple[str, int], int] = {}
+    while uncapped:
+        share = remaining // len(uncapped)
+        fitting = {ident for ident in uncapped if sizes[ident] <= share}
+        if not fitting:
+            for ident in uncapped:
+                budgets[ident] = share
+            break
+        for ident in fitting:
+            budgets[ident] = sizes[ident]
+            remaining -= sizes[ident]
+        uncapped -= fitting
+
+    updated = dict(value)
+    per_source: dict[str, Any] = {}
+    for key in _SOURCE_PACKET_KEYS:
+        entries = value.get(key)
+        if not isinstance(entries, list):
+            continue
+        rebuilt: list[Any] = []
+        for index, packet in enumerate(entries):
+            ident = (key, index)
+            budget = budgets.get(ident, sizes.get(ident, 0))
+            shrunk, trimmed = _shrink_packet(packet, budget)
+            rebuilt.append(shrunk)
+            if trimmed:
+                label = _packet_label(packet, index)
+                per_source.setdefault(label, []).append(trimmed)
+        updated[key] = rebuilt
+
+    return updated, {
+        "applied": bool(per_source),
+        "char_limit": char_limit,
+        "available_for_packets": available,
+        "packet_count": len(packets),
+        "sources_trimmed": sorted(per_source),
+        "detail": per_source,
+    }
+
+
 def bound_synthesis_messages(
     messages: Sequence[dict[str, str]],
     *,
@@ -67,6 +234,33 @@ def bound_synthesis_messages(
     before = sum(len(message.get("content", "")) for message in copied)
     if before <= char_limit:
         return copied, _prompt_trace(before, before, False, "none")
+
+    # Share the prompt between sources before the all-or-nothing strategies below
+    # get a chance to strip every record to an identifier.
+    fair_trace: dict[str, Any] = {"applied": False, "reason": "not_attempted"}
+    shared: list[dict[str, str]] = [dict(copied[0])]
+    for message in copied[1:]:
+        content = message.get("content", "")
+        try:
+            parsed = json.loads(content)
+        except (TypeError, json.JSONDecodeError):
+            shared.append(dict(message))
+            continue
+        bounded_value, trace = bound_sources_fairly(parsed, char_limit=char_limit)
+        if trace.get("applied"):
+            fair_trace = trace
+            shared.append(
+                {**message, "content": json.dumps(bounded_value, ensure_ascii=False, default=str)}
+            )
+        else:
+            fair_trace = trace
+            shared.append(dict(message))
+    shared_chars = sum(len(message.get("content", "")) for message in shared)
+    if shared_chars <= char_limit:
+        trace = _prompt_trace(before, shared_chars, True, "per_source_fair_share")
+        trace["fair_share"] = fair_trace
+        return shared, trace
+    copied = shared
 
     bounded = [dict(copied[0])]
     for message in copied[1:]:
@@ -122,7 +316,11 @@ def bound_synthesis_messages(
         after = sum(len(message.get("content", "")) for message in bounded)
         strategy = "bounded_identifier_manifest"
 
-    return bounded, _prompt_trace(before, after, True, strategy)
+    trace = _prompt_trace(before, after, True, strategy)
+    # Report the fair-share attempt even when it was not enough on its own, so a
+    # turn that still fell through to a manifest says why.
+    trace["fair_share"] = fair_trace
+    return bounded, trace
 
 
 def prune_unsupported_source_queries(
@@ -206,6 +404,30 @@ def limit_evidence_sets_for_render(
         shown = min(total, per_source_limit)
         if shown < total:
             sources[evidence.source] = {"shown": shown, "total": total}
+            # source_refs has to follow records. It did not, and the two surfaces
+            # disagreed in front of the user: the notice said "clinicaltrials:
+            # 40/1004 표시" while the source block below it listed all 1,004 links,
+            # because the block renders from source_refs and only records were cut.
+            # Refs that belong to a withheld record go with it; refs that belong to
+            # the call rather than to any one record stay, so a lane never loses its
+            # own attribution.
+            # A ref is attributable when some record claims that url. Those follow
+            # their record. Anything no record claims is call-level attribution -
+            # the search itself, a landing page - and stays, so the lane never
+            # loses the right to say where it looked.
+            # Note result_refs() emits one ref per citation, so a lane's per-study
+            # urls arrive here twice: once from the record and once from the call.
+            # Keying on "does any record claim this url" is what makes the two
+            # agree; treating everything outside the withheld records as
+            # call-level left all 1,004 links in place.
+            kept_refs = {
+                ref.url
+                for record in evidence.records[:shown]
+                for ref in record.source_refs
+            }
+            attributable = {
+                ref.url for record in evidence.records for ref in record.source_refs
+            }
             coverage = evidence.coverage.model_copy(
                 update={
                     "partial_reasons": tuple(
@@ -215,11 +437,30 @@ def limit_evidence_sets_for_render(
                     )
                 }
             )
+            retained_refs = tuple(
+                ref
+                for ref in evidence.source_refs
+                if ref.url not in attributable or ref.url in kept_refs
+            )
+            sources[evidence.source]["refs_shown"] = len(retained_refs)
+            sources[evidence.source]["refs_total"] = len(evidence.source_refs)
             evidence = evidence.model_copy(
-                update={"records": evidence.records[:shown], "coverage": coverage}
+                update={
+                    "records": evidence.records[:shown],
+                    "coverage": coverage,
+                    "source_refs": retained_refs,
+                }
             )
         limited.append(evidence)
-    return tuple(limited), {"applied": bool(sources), "sources": sources}
+    return tuple(limited), {
+        "applied": bool(sources),
+        "sources": sources,
+        # The kept records are the first N in upstream return order — no relevance
+        # ranking runs here. Naming that lets the surface say so instead of letting
+        # "40 표시" read as "the 40 best".
+        "selection_rule": "leading_records_in_upstream_order",
+        "selection_is_ranked": False,
+    }
 
 
 def _float_env(name: str, default: float) -> float:
