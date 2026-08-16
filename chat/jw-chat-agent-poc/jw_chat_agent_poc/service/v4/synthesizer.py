@@ -533,6 +533,7 @@ def _synthesis_messages(
         for result in mart
         for block in _deep_analysis_blocks(result)
     ]
+    source_mapping, source_mapping_capped = _bounded_source_mapping(results)
     prompt = {
         "internal_datamart": [
             _fact_backed_source_packet(result) if fact_backed else _mart_block(result)
@@ -542,18 +543,25 @@ def _synthesis_messages(
             _evidence_packet(result, include_detail=not fact_backed)
             for result in external
         ],
-        "source_mapping": [
-            {
-                "source": _PUBLIC_SOURCE[result.source],
-                "url": citation.url,
-                "retrieved_at": citation.retrieved_at.isoformat(),
-            }
-            for result in results
-            for citation in result.citations
-        ],
+        "source_mapping": source_mapping,
         "recent_turns": history,
         "resolved_intents": list(plan.expanded_intents),
         "user_question": plan.resolved_question,
+        **(
+            {
+                "source_mapping_contract": {
+                    "capped_per_source": SynthesisPolicy.from_env().source_render_limit,
+                    "omitted_counts": source_mapping_capped,
+                    "do_not_enumerate_every_url_in_the_answer": True,
+                    "instruction": (
+                        "출처 목록은 코드가 별도로 렌더한다. 본문에서 인용한 항목만 "
+                        "언급하고, 전체 URL 목록을 답변에 나열하지 않는다"
+                    ),
+                }
+            }
+            if source_mapping_capped
+            else {}
+        ),
         "as_of_date_context": as_of_date_instruction(
             observed_on or _current_kst_date()
         ),
@@ -1121,6 +1129,40 @@ def _fact_backed_source_packet(result: SourceResult) -> dict[str, Any]:
             "omitted": "deterministic_facts contains the rendered evidence",
         },
     }
+
+
+def _bounded_source_mapping(
+    results: Sequence[SourceResult],
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Hand synthesis the same number of urls per source that the surface shows.
+
+    source_mapping used to carry every citation of every result. That is a third
+    rule for the same cap: the display notice said "clinicaltrials: 40/1004 표시",
+    the deterministic source block rendered its own set, and this list gave the
+    model all 1,004 - which it then dutifully wrote out, producing an answer that
+    was 93% link list. Capping here at the same per-source limit means the three
+    surfaces finally agree, and the omitted counts are reported rather than
+    silently dropped.
+    """
+    limit = SynthesisPolicy.from_env().source_render_limit
+    mapping: list[dict[str, Any]] = []
+    kept: dict[str, int] = {}
+    omitted: dict[str, int] = {}
+    for result in results:
+        label = _PUBLIC_SOURCE[result.source]
+        for citation in result.citations:
+            if kept.get(label, 0) >= limit:
+                omitted[label] = omitted.get(label, 0) + 1
+                continue
+            kept[label] = kept.get(label, 0) + 1
+            mapping.append(
+                {
+                    "source": label,
+                    "url": citation.url,
+                    "retrieved_at": citation.retrieved_at.isoformat(),
+                }
+            )
+    return mapping, omitted
 
 
 def _evidence_packet(

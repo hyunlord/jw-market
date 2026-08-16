@@ -208,3 +208,49 @@ def test_a_set_within_the_cap_keeps_every_ref():
 def test_a_nonsense_cap_is_refused_rather_than_silently_ignored(limit):
     with pytest.raises(ValueError):
         limit_evidence_sets_for_render([_evidence_set("hira", 3)], per_source_limit=limit)
+
+
+# ------------------------------------------------------- ⑷ the third surface
+
+
+def _result_with_citations(source: str, n: int):
+    from datetime import datetime, timezone
+
+    from jw_chat_agent_poc.service.v4.contracts import Citation, SourceResult
+
+    return SourceResult(
+        source=source,
+        query=f"{source} q",
+        status="ok",
+        payload={},
+        citations=tuple(
+            Citation(
+                source=source,
+                query=f"{source} q",
+                url=f"https://clinicaltrials.gov/study/NCT{i:08d}",
+                retrieved_at=datetime(2026, 8, 17, tzinfo=timezone.utc),
+            )
+            for i in range(n)
+        ),
+    )
+
+
+def test_source_mapping_uses_the_same_cap_as_the_surface():
+    """The prompt's url list is the third surface that used to have its own rule.
+
+    Uncapped, it handed the model all 1,004 urls and the model wrote them out;
+    one live answer was 93% link list under a notice that said "40 표시".
+    """
+    from jw_chat_agent_poc.service.v4.synthesizer import _bounded_source_mapping
+
+    mapping, omitted = _bounded_source_mapping([_result_with_citations("clinicaltrials", 1004)])
+    assert len(mapping) == 40
+    assert omitted == {"ClinicalTrials.gov": 964}
+
+
+def test_source_mapping_leaves_small_lanes_whole():
+    from jw_chat_agent_poc.service.v4.synthesizer import _bounded_source_mapping
+
+    mapping, omitted = _bounded_source_mapping([_result_with_citations("clinicaltrials", 9)])
+    assert len(mapping) == 9
+    assert omitted == {}
