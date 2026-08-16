@@ -491,7 +491,15 @@ def test_source_log_commits_before_projection_outbox_enqueue(monkeypatch) -> Non
         projection_context=ProjectionRequestContext(85, {"accept": "text/event-stream"}),
     )
 
-    assert connection.commits == 1
+    # R20 rebased the mechanism, not the contract. The source log is still
+    # durable before the outbox is touched -- it is just no longer an explicit
+    # COMMIT that makes it so. The connection autocommits (pinned by
+    # test_the_connection_autocommits_so_finished_server_work_is_kept), which is
+    # what stops a client-side timeout from discarding a row the server already
+    # wrote. So this asserts the absence of the old call and the presence of the
+    # ordering it used to guarantee.
+    assert connection.commits == 0
+    assert connection.cursor_instance.lastrowid == 41
     assert outbox.calls[0]["source_log_id"] == 41
     assert outbox.calls[0]["turn_index"] == 1
 
@@ -577,7 +585,9 @@ def test_projection_outbox_failure_does_not_rollback_source_log(monkeypatch) -> 
         projection_context=ProjectionRequestContext(85, {"accept": "text/event-stream"}),
     )
 
-    assert connection.commits == 1
+    # R20: durability comes from autocommit now, so there is no explicit COMMIT
+    # to count. The row still stands after the outbox fails, which is the point.
+    assert connection.commits == 0
     assert connection.cursor_instance.lastrowid == 41
     assert outbox.failures[0]["source_log_id"] == 41
     assert outbox.failures[0]["error_type"] == "RuntimeError"
@@ -606,7 +616,10 @@ def test_projection_enqueue_failure_ledger_failure_preserves_both_errors(monkeyp
 
     assert isinstance(captured.value.__cause__, OSError)
     assert captured.value.enqueue_error_type == "RuntimeError"
-    assert connection.commits == 1
+    # R20: see above -- autocommit replaced the explicit COMMIT, and the source
+    # log survives both the enqueue failure and the ledger failure regardless.
+    assert connection.commits == 0
+    assert connection.cursor_instance.lastrowid == 41
 
 
 def test_outbox_enqueue_has_idempotency_guard_and_its_own_commit(monkeypatch) -> None:

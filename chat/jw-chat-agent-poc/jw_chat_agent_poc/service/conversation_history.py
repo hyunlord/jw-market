@@ -20,6 +20,7 @@ from jw_chat_agent_poc.service.conversation import (
     conversation_slots_from_dict,
     conversation_slots_to_dict,
 )
+from jw_chat_agent_poc.service.trace_codec import decode_trace, encode_trace
 from jw_chat_agent_poc.tools.query_layer.mart_json import mart_json_default_or_str
 
 
@@ -28,6 +29,60 @@ LOGGER = logging.getLogger(__name__)
 HISTORY_TABLE_NAME = "jw_chat_agent_conversation_log"
 _CONVERSATION_SLOTS_TRACE_KEY = "_conversation_slots"
 DEFAULT_CONTEXT_TTL_SECONDS = 600
+
+READ_TIMEOUT_ENV = "CHAT_HISTORY_READ_TIMEOUT_SECONDS"
+
+# How long the answer waits on its own bookkeeping. This is not a data-safety
+# limit -- the connection is autocommitting, so a write the server finishes is
+# kept whether or not this client is still listening. It is a limit on the
+# critical path: the turn is persisted *before* the final answer is streamed, so
+# every second spent here is a second the user does not have their answer, and
+# the BFF ends the stream at 120 s regardless. Ten seconds leaves room for a
+# compressed trace (measured at 1.2 MB for the largest live turn) without
+# letting a pathological one hold the answer hostage.
+DEFAULT_READ_TIMEOUT_SECONDS = 10
+
+# The verification read after a write timeout. Short on purpose: it answers one
+# indexed question about one row, and it must not extend the critical path it
+# was added to explain.
+_VERIFY_TIMEOUT_SECONDS = 3
+_VERIFY_WINDOW_SECONDS = 600
+
+PERSIST_STATUS_PERSISTED = "persisted"
+PERSIST_STATUS_SKIPPED = "skipped"
+PERSIST_STATUS_UNCONFIRMED = "unconfirmed"
+PERSIST_STATUS_FAILED = "failed"
+
+
+@dataclass(frozen=True, slots=True)
+class TurnPersistOutcome:
+    """What became of one turn's bookkeeping, in terms a caller can act on.
+
+    ``record_turn`` used to return ``None`` and let the caller's ``except``
+    decide, which meant a turn that was never written looked exactly like one
+    that was. The user was told nothing either way. This carries the difference
+    out so the answer can say so.
+
+    ``unconfirmed`` is deliberately distinct from ``failed``: after a client-side
+    timeout the server may well have committed the row, and claiming it was lost
+    would be as wrong as claiming it was saved.
+    """
+
+    status: str = PERSIST_STATUS_PERSISTED
+    reason: str | None = None
+    detail: str | None = None
+
+    @property
+    def recorded(self) -> bool:
+        return self.status in (PERSIST_STATUS_PERSISTED, PERSIST_STATUS_SKIPPED)
+
+    def as_trace(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {"status": self.status}
+        if self.reason is not None:
+            payload["reason"] = self.reason
+        if self.detail is not None:
+            payload["detail"] = self.detail
+        return payload
 
 
 class ConversationHistoryStore(Protocol):
@@ -44,8 +99,8 @@ class ConversationHistoryStore(Protocol):
         charts: Sequence[Mapping[str, Any]],
         projection_context: ProjectionRequestContext | None,
         conversation_slots: ConversationSlots = ConversationSlots(),
-    ) -> None:
-        """Persist a completed chat turn."""
+    ) -> TurnPersistOutcome:
+        """Persist a completed chat turn and say what became of it."""
 
     def latest_turn(self, conversation_id: str) -> ConversationTurn | None:
         """Return the latest completed turn for cross-process follow-ups."""
@@ -100,10 +155,10 @@ class MySQLConversationHistoryStore:
         charts: Sequence[Mapping[str, Any]] = (),
         projection_context: ProjectionRequestContext | None = None,
         conversation_slots: ConversationSlots = ConversationSlots(),
-    ) -> None:
+    ) -> TurnPersistOutcome:
         if self._config is None:
             LOGGER.warning("chat history persistence skipped: DB config is incomplete")
-            return
+            return TurnPersistOutcome(status=PERSIST_STATUS_SKIPPED, reason="not_configured")
         quality_taxonomy = trace.get("quality_taxonomy")
         quality_label = _string_value(quality_taxonomy.get("label")) if isinstance(quality_taxonomy, Mapping) else None
         contract_status = trace.get("answer_contract_status")
@@ -113,6 +168,62 @@ class MySQLConversationHistoryStore:
         tools_called = trace.get("tools_called")
         trace_payload = dict(trace)
         trace_payload[_CONVERSATION_SLOTS_TRACE_KEY] = conversation_slots_to_dict(conversation_slots)
+        trace_text = encode_trace(_json_dumps(trace_payload))
+        turn_index = 1
+        try:
+            source_log_id, turn_index = self._write_turn(
+                conversation_id=conversation_id,
+                session_id=session_id,
+                question_text=question_text,
+                answer_text=answer_text,
+                tools_called=tools_called,
+                sources=sources,
+                contract_status_value=contract_status_value,
+                quality_label=quality_label,
+                elapsed_ms_value=elapsed_ms_value,
+                trace_text=trace_text,
+            )
+        except pymysql.err.OperationalError as exc:
+            # The write budget ran out. The server may still finish and keep the
+            # row -- the connection autocommits precisely so its work is not
+            # thrown away -- so ask before deciding what to tell the user.
+            outcome = self._outcome_after_write_timeout(exc, conversation_id, session_id)
+            LOGGER.warning(
+                "chat history write did not confirm conversation_id=%s status=%s error_type=%s",
+                conversation_id,
+                outcome.status,
+                type(exc).__name__,
+            )
+            return outcome
+        self._enqueue_projection(
+            source_log_id=source_log_id,
+            session_id=session_id,
+            conversation_id=conversation_id,
+            turn_index=turn_index,
+            question_text=question_text,
+            answer_text=answer_text,
+            charts=charts,
+            sources=sources,
+            trace=trace,
+            timing=timing,
+            projection_context=projection_context,
+        )
+        return TurnPersistOutcome(status=PERSIST_STATUS_PERSISTED)
+
+    def _write_turn(
+        self,
+        *,
+        conversation_id: str | None,
+        session_id: str | None,
+        question_text: str,
+        answer_text: str,
+        tools_called: object,
+        sources: Sequence[str],
+        contract_status_value: str | None,
+        quality_label: str | None,
+        elapsed_ms_value: int | None,
+        trace_text: str,
+    ) -> tuple[int, int]:
         with self._connect() as connection:
             turn_index = self._next_turn_index(connection, conversation_id, session_id)
             with connection.cursor() as cursor:
@@ -146,11 +257,87 @@ class MySQLConversationHistoryStore:
                         contract_status_value,
                         quality_label,
                         elapsed_ms_value,
-                        _json_dumps(trace_payload),
+                        trace_text,
                     ),
                 )
                 source_log_id = int(cursor.lastrowid)
-            connection.commit()
+        return source_log_id, turn_index
+
+    def _outcome_after_write_timeout(
+        self,
+        exc: BaseException,
+        conversation_id: str | None,
+        session_id: str | None,
+    ) -> TurnPersistOutcome:
+        landed = self._turn_was_written(conversation_id, session_id)
+        if landed is True:
+            # The server finished after this client stopped waiting, and the row
+            # is there. Nothing to tell the user.
+            return TurnPersistOutcome(status=PERSIST_STATUS_PERSISTED, reason="confirmed_after_timeout")
+        if landed is False:
+            return TurnPersistOutcome(
+                status=PERSIST_STATUS_UNCONFIRMED,
+                reason="write_timeout",
+                detail=type(exc).__name__,
+            )
+        return TurnPersistOutcome(
+            status=PERSIST_STATUS_UNCONFIRMED,
+            reason="write_timeout_unverifiable",
+            detail=type(exc).__name__,
+        )
+
+    def _turn_was_written(self, conversation_id: str | None, session_id: str | None) -> bool | None:
+        """Did the row land? ``None`` means the question itself could not be asked.
+
+        A separate short-lived connection, because the one that timed out is no
+        longer usable. Tri-state on purpose: "we could not check" is not the same
+        answer as "it is not there", and collapsing them would put a wrong
+        sentence in front of the user.
+        """
+        if conversation_id:
+            where_clause = "conversation_id = %s"
+            value = conversation_id
+        elif session_id:
+            where_clause = "session_id = %s"
+            value = session_id
+        else:
+            return None
+        try:
+            with self._connect(read_timeout=_VERIFY_TIMEOUT_SECONDS) as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        f"""
+                        SELECT id
+                        FROM {self._table_name}
+                        WHERE {where_clause}
+                          AND created_at >= UTC_TIMESTAMP() - INTERVAL %s SECOND
+                        ORDER BY id DESC
+                        LIMIT 1
+                        """,
+                        (value, _VERIFY_WINDOW_SECONDS),
+                    )
+                    return cursor.fetchone() is not None
+        except Exception:
+            LOGGER.exception(
+                "chat history write verification failed conversation_id=%s", conversation_id
+            )
+            return None
+
+    def _enqueue_projection(
+        self,
+        *,
+        source_log_id: int,
+        session_id: str | None,
+        conversation_id: str | None,
+        turn_index: int,
+        question_text: str,
+        answer_text: str,
+        charts: Sequence[Mapping[str, Any]],
+        sources: Sequence[str],
+        trace: Mapping[str, Any],
+        timing: Mapping[str, Any],
+        projection_context: ProjectionRequestContext | None,
+    ) -> None:
         if self._projection_outbox is not None:
             try:
                 self._projection_outbox.enqueue(
@@ -250,8 +437,9 @@ class MySQLConversationHistoryStore:
             )
         return tuple(turns)
 
-    def _connect(self):
+    def _connect(self, *, read_timeout: int | None = None):
         assert self._config is not None
+        timeout = read_timeout if read_timeout is not None else read_timeout_seconds()
         return pymysql.connect(
             host=self._config.host,
             port=self._config.port,
@@ -259,10 +447,19 @@ class MySQLConversationHistoryStore:
             password=self._config.password,
             database=self._config.database,
             charset="utf8mb4",
-            autocommit=False,
+            # Autocommitting, so that a write the server completes is kept even
+            # when this client has already stopped waiting for it. Under the
+            # previous explicit transaction the client's timeout closed the
+            # connection before COMMIT, and the server discarded work it had
+            # measurably spent 11.5 to 50.9 seconds on.
+            #
+            # This does not widen the turn_index race that already exists: the
+            # index is read in its own statement either way, and the previous
+            # transaction took no lock on what it read.
+            autocommit=True,
             connect_timeout=3,
-            read_timeout=5,
-            write_timeout=5,
+            read_timeout=timeout,
+            write_timeout=timeout,
         )
 
     def _next_turn_index(self, connection, conversation_id: str | None, session_id: str | None) -> int:
@@ -307,17 +504,27 @@ def _json_dumps(value: object) -> str:
     )
 
 
-def _json_object(value: object) -> dict[str, Any]:
-    if isinstance(value, Mapping):
-        return dict(value)
-    if isinstance(value, bytes):
-        value = value.decode("utf-8", errors="replace")
-    if not isinstance(value, str):
-        return {}
+def read_timeout_seconds() -> int:
+    raw = os.environ.get(READ_TIMEOUT_ENV, "").strip()
+    if not raw:
+        return DEFAULT_READ_TIMEOUT_SECONDS
     try:
-        parsed = json.loads(value)
-    except (TypeError, ValueError):
-        return {}
+        value = int(raw)
+    except ValueError:
+        LOGGER.warning("ignoring unusable %s=%r; keeping %ss", READ_TIMEOUT_ENV, raw, DEFAULT_READ_TIMEOUT_SECONDS)
+        return DEFAULT_READ_TIMEOUT_SECONDS
+    if value <= 0:
+        LOGGER.warning("ignoring non-positive %s=%r; keeping %ss", READ_TIMEOUT_ENV, raw, DEFAULT_READ_TIMEOUT_SECONDS)
+        return DEFAULT_READ_TIMEOUT_SECONDS
+    return value
+
+
+def _json_object(value: object) -> dict[str, Any]:
+    # Goes through the codec so a compressed row and a row written before the
+    # codec existed read back identically. A trace that announces itself
+    # compressed and then will not decode raises rather than returning {}:
+    # reporting a damaged trace as an absent one would hide the damage.
+    parsed = decode_trace(value)
     return dict(parsed) if isinstance(parsed, Mapping) else {}
 
 

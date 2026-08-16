@@ -186,7 +186,13 @@ from jw_chat_agent_poc.service.conversation_context import (
     reused_context_result,
     unresolved_reference_result,
 )
-from jw_chat_agent_poc.service.conversation_history import ConversationHistoryStore, MySQLConversationHistoryStore
+from jw_chat_agent_poc.service.conversation_history import (
+    PERSIST_STATUS_FAILED,
+    PERSIST_STATUS_SKIPPED,
+    ConversationHistoryStore,
+    MySQLConversationHistoryStore,
+    TurnPersistOutcome,
+)
 
 try:
     from jw_chat_agent_poc.service.input_guard_shadow import (
@@ -1148,12 +1154,15 @@ def create_app(
                         )
         except ChatBusyError as exc:
             raise HTTPException(status_code=503, detail=BUSY_MESSAGE) from exc
-        _record_conversation_history(
-            history,
-            session_id=None,
-            question=item["question"],
-            final_answer=final_answer,
-            projection_context=projection_context,
+        final_answer = _answer_with_history_notice(
+            final_answer,
+            _record_conversation_history(
+                history,
+                session_id=None,
+                question=item["question"],
+                final_answer=final_answer,
+                projection_context=projection_context,
+            ),
         )
         return ChatAnswer(
             text=final_answer.text,
@@ -1190,12 +1199,15 @@ def create_app(
                 )
             v4_final_answer = item.get("v4_final_answer")
             if isinstance(v4_final_answer, FinalAnswer):
-                _record_conversation_history(
-                    history,
-                    session_id=session_id,
-                    question=item["question"],
-                    final_answer=v4_final_answer,
-                    projection_context=projection_context,
+                v4_final_answer = _answer_with_history_notice(
+                    v4_final_answer,
+                    _record_conversation_history(
+                        history,
+                        session_id=session_id,
+                        question=item["question"],
+                        final_answer=v4_final_answer,
+                        projection_context=projection_context,
+                    ),
                 )
                 return StreamingResponse(
                     _sse_events_from_final_answer(v4_final_answer),
@@ -3327,12 +3339,15 @@ def _stream_resolving_session_events(
                                 None,
                             ),
                         )
-            _record_conversation_history(
-                history_store,
-                session_id=None,
-                question=item["question"],
-                final_answer=final_answer,
-                projection_context=projection_context,
+            final_answer = _answer_with_history_notice(
+                final_answer,
+                _record_conversation_history(
+                    history_store,
+                    session_id=None,
+                    question=item["question"],
+                    final_answer=final_answer,
+                    projection_context=projection_context,
+                ),
             )
             events.put(
                 {
@@ -3483,12 +3498,15 @@ def _sse_events(
                 conversation_id,
                 query_spec,
             )
-        _record_conversation_history(
-            history_store,
-            session_id=session_id,
-            question=question,
-            final_answer=final_answer,
-            projection_context=projection_context,
+        final_answer = _answer_with_history_notice(
+            final_answer,
+            _record_conversation_history(
+                history_store,
+                session_id=session_id,
+                question=question,
+                final_answer=final_answer,
+                projection_context=projection_context,
+            ),
         )
     finally:
         if limiter is not None:
@@ -3564,12 +3582,15 @@ def _v4_sse_events(
         if isinstance(error, Exception):
             raise error
         final_answer = result_box["answer"]
-        _record_conversation_history(
-            history_store,
-            session_id=None,
-            question=question,
-            final_answer=final_answer,
-            projection_context=projection_context,
+        final_answer = _answer_with_history_notice(
+            final_answer,
+            _record_conversation_history(
+                history_store,
+                session_id=None,
+                question=question,
+                final_answer=final_answer,
+                projection_context=projection_context,
+            ),
         )
     except Exception as exc:  # noqa: BLE001 - preserve the existing SSE error contract
         yield _sse_json_event(
@@ -3627,6 +3648,17 @@ def _sse_events_from_final_answer(
     *,
     streamed_prefix: str = "",
 ):
+    # Machine-readable twin of the sentence in the answer body. The sentence is
+    # what the current portal shows; this is what a portal can act on once it
+    # chooses to. Emitted only when there is something to report, so a client
+    # that ignores the event is not made to skip anything.
+    persist = final_answer.trace.get(_HISTORY_PERSIST_TRACE_KEY)
+    if isinstance(persist, Mapping) and persist.get("status") not in (
+        None,
+        "persisted",
+        PERSIST_STATUS_SKIPPED,
+    ):
+        yield _sse_json_event("history_persist", dict(persist))
     yield from selected_sse_presenter().final_answer_events(
         conversation_id=final_answer.conversation_id,
         source_labels=source_labels(final_answer.sources),
@@ -3639,6 +3671,16 @@ def _sse_events_from_final_answer(
     )
 
 
+# Written by code, never by the model: the user is being told a fact about our
+# bookkeeping, and a generated sentence could soften or invent it. The two cases
+# stay apart because they are different facts -- after a write timeout the server
+# may have kept the row, and saying it was lost would be its own falsehood. No
+# internal error code appears here; those go to the log and the trace.
+_HISTORY_NOTICE_UNCONFIRMED = "⚠ 이번 대화는 기록 저장을 확인하지 못했습니다. (사유: 이력 저장 시간 초과)"
+_HISTORY_NOTICE_FAILED = "⚠ 이번 대화는 기록에 저장되지 않았습니다. (사유: 이력 저장 실패)"
+_HISTORY_PERSIST_TRACE_KEY = "history_persist"
+
+
 def _record_conversation_history(
     history_store: ConversationHistoryStore | None,
     *,
@@ -3646,11 +3688,11 @@ def _record_conversation_history(
     question: str,
     final_answer: FinalAnswer,
     projection_context: ProjectionRequestContext | None = None,
-) -> None:
+) -> TurnPersistOutcome:
     if history_store is None:
-        return
+        return TurnPersistOutcome(status=PERSIST_STATUS_SKIPPED, reason="no_store")
     try:
-        history_store.record_turn(
+        outcome = history_store.record_turn(
             session_id=session_id,
             conversation_id=final_answer.conversation_id,
             question_text=question,
@@ -3662,8 +3704,40 @@ def _record_conversation_history(
             projection_context=projection_context,
             conversation_slots=final_answer.conversation_slots,
         )
-    except Exception:
+    except Exception as exc:
         LOGGER.exception("failed to persist chat conversation history")
+        return TurnPersistOutcome(
+            status=PERSIST_STATUS_FAILED, reason="error", detail=type(exc).__name__
+        )
+    # A store that predates the outcome contract (and every test double that
+    # returns None) still counts as having persisted the turn; only a store that
+    # says otherwise changes what the user is told.
+    return outcome if isinstance(outcome, TurnPersistOutcome) else TurnPersistOutcome()
+
+
+def _answer_with_history_notice(
+    final_answer: FinalAnswer, outcome: TurnPersistOutcome
+) -> FinalAnswer:
+    """Carry a bookkeeping failure onto the answer instead of only into the log.
+
+    The turn is persisted before the answer is streamed, so the outcome is known
+    while there is still an answer to amend. The trace is stamped either way --
+    including on success -- so that a reader can tell "recorded" from "nobody
+    looked". The stamp lands on the transported trace only: the row it would
+    describe is the row that was not written.
+    """
+    trace = dict(final_answer.trace)
+    trace[_HISTORY_PERSIST_TRACE_KEY] = outcome.as_trace()
+    if outcome.recorded:
+        return replace(final_answer, trace=trace)
+    notice = (
+        _HISTORY_NOTICE_FAILED
+        if outcome.status == PERSIST_STATUS_FAILED
+        else _HISTORY_NOTICE_UNCONFIRMED
+    )
+    text = final_answer.text.rstrip()
+    text = f"{text}\n\n{notice}" if text else notice
+    return replace(final_answer, text=text, trace=trace)
 
 
 def _file_source_items(result: dict) -> tuple[dict[str, Any], ...]:
