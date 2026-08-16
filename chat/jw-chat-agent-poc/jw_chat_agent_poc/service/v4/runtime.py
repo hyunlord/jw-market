@@ -66,7 +66,9 @@ from jw_chat_agent_poc.service.v4.retrieval_events import (
 )
 from jw_chat_agent_poc.service.v4.semantic_realization import (
     SemanticEvidenceContext,
+    evidence_has_hira_patient_count,
     evidence_has_temporal_support,
+    evidence_hira_code_count,
     evidence_support_text,
     evidence_temporal_support_texts,
     realize_semantic_surface,
@@ -866,6 +868,8 @@ class V4Runtime:
                     row.get("status") == "COMPLETE" for row in completion_rows
                 ),
                 requested_count=len(completion_rows),
+                has_hira_patient_count=evidence_has_hira_patient_count(evidence_sets),
+                hira_code_count=evidence_hira_code_count(evidence_sets),
                 protected_line_sha256=tuple(
                     sha256(line.strip().encode("utf-8")).hexdigest()
                     for node in deterministic_render.nodes

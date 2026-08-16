@@ -165,9 +165,11 @@ def entity_completion_rows(
         rows.append({"entity": entity, "status": status})
     scope_notice = ""
     if confirmed and missing:
+        entity_label = _entity_scope_label(plan, entities)
+        missing_text = "·".join(missing)
         scope_notice = (
-            f"확인된 {len(confirmed)}개 브랜드({'·'.join(confirmed)}) 기준으로 비교했으며, "
-            f"{'·'.join(missing)}는 미도착으로 제외했습니다."
+            f"확인된 {len(confirmed)}개 {entity_label}({'·'.join(confirmed)}) 기준으로 비교했으며, "
+            f"{missing_text}{_topic_particle(missing_text)} 미도착으로 제외했습니다."
         )
     missing_rows = "\n".join(
         f"| {row['entity']} | {row['status']} |"
@@ -175,6 +177,32 @@ def entity_completion_rows(
         if row["status"] != "COMPLETE"
     )
     return EntityCompletion(tuple(rows), scope_notice, missing_rows)
+
+
+def _entity_scope_label(plan: PlannerOutput, entities: Sequence[str]) -> str:
+    if "hira" in plan.answer_sources:
+        return "상병코드·질환 항목"
+    normalized = plan.resolved_question.casefold()
+    kcd_like = any(re.fullmatch(r"[A-Za-z]\d{2,3}", entity.strip()) for entity in entities)
+    if kcd_like or any(token in normalized for token in ("상병", "환자수", "질환")):
+        return "상병코드·질환 항목"
+    if "임상" in normalized:
+        return "임상 대상"
+    if "특허" in normalized:
+        return "특허 대상"
+    return "브랜드"
+
+
+def _topic_particle(value: str) -> str:
+    if not value:
+        return "는"
+    last = value[-1]
+    if last.isdigit():
+        return "은"
+    code = ord(last)
+    if 0xAC00 <= code <= 0xD7A3:
+        return "은" if (code - 0xAC00) % 28 else "는"
+    return "는"
 
 
 def _assign_results(

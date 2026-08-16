@@ -9,10 +9,7 @@ from typing import Any, Literal
 from jw_chat_agent_poc.service.v4.contracts import PlannerOutput, SourceResult
 from jw_chat_agent_poc.service.v4.deterministic_render import render_deterministic_facts
 from jw_chat_agent_poc.service.v4.evidence_sets import build_evidence_sets
-from jw_chat_agent_poc.service.v4.gates import (
-    contains_internal_source_reference,
-    is_public_source_url,
-)
+from jw_chat_agent_poc.service.v4.gates import is_public_source_url
 from jw_chat_agent_poc.service.v4.lossless_contracts import (
     CompositionResult,
     DeterministicRender,
@@ -28,8 +25,6 @@ RequestedFieldsMode = Literal["shadow", "inject"]
 RequestSatisfactionMode = Literal["shadow", "inject"]
 
 _SECTION_RE = re.compile(r"(?m)^#{1,6}\s+([^\n]+?)\s*$")
-_MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
-_HTTP_URL_RE = re.compile(r"https?://[^\s<>()\[\]]+")
 _CORE_HEADINGS = {"핵심 답", "핵심 요약"}
 _CONTEXT_HEADINGS = {"근거와 맥락", "근거"}
 _INSIGHT_HEADINGS = {"종합 인사이트", "인사이트"}
@@ -126,6 +121,10 @@ def compose_lossless_answer(
     request_satisfaction_mode: RequestSatisfactionMode = "inject",
 ) -> CompositionResult:
     commentary = _drop_empty_bold_headings(commentary)
+    if mode == "inject":
+        commentary, model_source_lines_ignored = _strip_model_source_sections(commentary)
+    else:
+        model_source_lines_ignored = 0
     fallback = bool(synthesis_trace.get("fallback_reason")) or synthesis_trace.get("status") in {
         "fallback",
         "no_usable_evidence",
@@ -149,6 +148,7 @@ def compose_lossless_answer(
         "source_notices_injected": False,
         "profile": rendered.profile,
         "answer_mutation": False,
+        "model_source_lines_ignored": model_source_lines_ignored,
         "record_surface_rate": rendered.record_surface_rate,
         "required_field_surface_rate": rendered.required_field_surface_rate,
         "fallback_detail_retention_rate": retention,
@@ -195,6 +195,9 @@ def compose_lossless_answer(
             text, numeric_separator_repairs = _repair_numeric_separators(commentary)
             text, public_source_rewrites = normalize_public_source_surface(text)
             text, duplicate_leading_sentences_removed = _deduplicate_sentences(text)
+            source_block = _merged_source_block(rendered, ())
+            if source_block:
+                text = f"{text.rstrip()}\n\n{source_block}" if text.strip() else source_block
             mutated = text.strip() != commentary.strip()
             trace["answer_mutation"] = mutated
             trace["public_source_surface"] = {"rewritten": public_source_rewrites}
@@ -218,6 +221,9 @@ def compose_lossless_answer(
     prefix = f"{rendered.request_notice}\n\n" if inject_request_notice else ""
     if not inject_facts and not inject_source_notices:
         text = prefix + commentary
+        source_block = _merged_source_block(rendered, ())
+        if source_block:
+            text = f"{text.rstrip()}\n\n{source_block}" if text.strip() else source_block
     else:
         text = _assemble_injected_answer(
             rendered,
@@ -495,6 +501,20 @@ def _markdown_sections(value: str) -> tuple[str, list[tuple[str, str]]]:
     return preamble, sections
 
 
+def _strip_model_source_sections(value: str) -> tuple[str, int]:
+    preamble, sections = _markdown_sections(value)
+    ignored = sum(
+        1
+        for heading, body in sections
+        if heading == "출처"
+        for line in body.splitlines()
+        if line.strip()
+    )
+    retained = tuple((heading, body) for heading, body in sections if heading != "출처")
+    blocks = ([preamble] if preamble else []) + _render_sections(retained)
+    return "\n\n".join(block for block in blocks if block.strip()), ignored
+
+
 _BOLD_HEADING_RE = re.compile(r"^\s*\*\*[^*\n]+\*\*\s*$")
 
 
@@ -611,36 +631,13 @@ def _merged_source_block(
     rendered: DeterministicRender,
     source_bodies: Sequence[str],
 ) -> str:
+    del source_bodies
     lines: list[str] = []
-    seen_lines: set[str] = set()
     seen_urls: set[str] = set()
-    for body in source_bodies:
-        for raw_line in body.splitlines():
-            line = raw_line.rstrip()
-            if not line.strip():
-                continue
-            if contains_internal_source_reference(line):
-                continue
-            urls = tuple(
-                dict.fromkeys(
-                    (
-                        *(match.group(2).strip() for match in _MARKDOWN_LINK_RE.finditer(line)),
-                        *(match.group(0).rstrip(".,;:") for match in _HTTP_URL_RE.finditer(line)),
-                    )
-                )
-            )
-            if any(not is_public_source_url(url) for url in urls):
-                continue
-            normalized = " ".join(line.split())
-            if normalized in seen_lines:
-                continue
-            seen_lines.add(normalized)
-            seen_urls.update(urls)
-            lines.append(line)
     for ref in rendered.source_refs:
         if not is_public_source_url(ref.url) or ref.url in seen_urls:
             continue
-        label = ref.title or ref.url
+        label = ref.title or "원문"
         suffix = f" ({ref.published_at})" if ref.published_at else ""
         lines.append(f"- [{label}]({ref.url}){suffix}")
         seen_urls.add(ref.url)

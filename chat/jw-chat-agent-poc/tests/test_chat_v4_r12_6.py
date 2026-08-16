@@ -601,7 +601,7 @@ def test_a_lossless_synthesis_uses_fact_surface_instead_of_duplicate_raw_payload
     assert len(messages[-1]["content"]) < 20_000
     assert prompt["deterministic_facts"].startswith("NCT00000001")
     assert prompt["external_evidence"][0]["detail"] == {
-        "omitted": "deterministic_facts contains the rendered evidence"
+        "omitted": "raw source payload is retained in inspection detail"
     }
 
 

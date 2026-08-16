@@ -896,7 +896,7 @@ def test_v4_synthesis_failure_renders_every_queried_mart_dimension() -> None:
     assert outcome.trace["fallback_reason"] == "empty_or_transport_error"
 
 
-def test_v4_synthesizer_sends_detail_rows_in_question_first_layout() -> None:
+def test_v4_synthesizer_omits_hira_raw_detail_without_mutating_result() -> None:
     class Client:
         def __init__(self) -> None:
             self.messages = None
@@ -927,12 +927,15 @@ def test_v4_synthesizer_sends_detail_rows_in_question_first_layout() -> None:
         },
     )
 
-    answer = V4Synthesizer(client).synthesize(_plan(), (result,), (), budget_s=15.0)
+    plan = _plan().model_copy(update={"resolved_question": "D693 2024년 외래 환자수"})
+    answer = V4Synthesizer(client).synthesize(plan, (result,), (), budget_s=15.0)
 
-    prompt = client.messages[1]["content"]
-    assert "2024" in prompt
-    assert "12,345" in prompt
-    assert prompt.index("external_evidence") < prompt.index("user_question")
+    prompt = json.loads(client.messages[1]["content"])
+    assert prompt["external_evidence"][0]["detail"] == {
+        "omitted": "raw source payload is retained in inspection detail"
+    }
+    assert "required_hira_surface" not in prompt
+    assert result.payload["calls"][0]["render_data"]["items"][0]["outpatient"] == "12,345"
     assert "12,345명" in answer
 
 
@@ -1093,7 +1096,7 @@ def test_v4_surface_detects_broad_log_field_and_raw_won_patterns(leak: str) -> N
     assert _INTERNAL_SURFACE_RE.search(leak)
 
 
-def test_v4_synthesis_prompt_preserves_source_payload_verbatim() -> None:
+def test_v4_synthesis_prompt_omits_raw_payload_but_result_preserves_it() -> None:
     result = SourceResult(
         source="nedrug",
         query="아일리아 급여기준",
@@ -1116,15 +1119,16 @@ def test_v4_synthesis_prompt_preserves_source_payload_verbatim() -> None:
     )
 
     messages = v4_synthesizer._synthesis_messages(_plan(), (result,), ())
+    prompt = json.loads(messages[-1]["content"])
     serialized = messages[-1]["content"]
     system = messages[0]["content"]
 
-    assert '"ITEM_SEQ": "200101234"' in serialized
-    assert '"ENTP_SEQ": "vendor-record"' in serialized
-    assert '"PRDLST_STDR_CODE": "raw-code"' in serialized
-    assert '"sickCd": "D693"' in serialized
-    assert '"ptntCnt": "9231"' in serialized
-    assert "다운로드 후 담당부서로 연락주시기 바랍니다." in serialized
+    assert prompt["external_evidence"][0]["detail"] == {
+        "omitted": "raw source payload is retained in inspection detail"
+    }
+    assert "200101234" not in serialized
+    assert result.payload["calls"][0]["render_data"]["ITEM_SEQ"] == "200101234"
+    assert result.payload["calls"][0]["render_data"]["notice"].startswith("다운로드")
     assert "질문에 대한 답을 첫 문장에서 바로 제시" in system
     assert "한 문단은 최대 4문장" in system
     assert "다운로드 안내문" in system
@@ -1147,7 +1151,7 @@ def test_v4_synthesis_prompt_keeps_external_topic_ahead_of_always_on_mart() -> N
     assert "도구로 확인된 원인 후보" not in system
 
 
-def test_v4_synthesis_preserves_reexamination_source_fields_verbatim() -> None:
+def test_v4_synthesis_omits_reexamination_detail_but_preserves_source_result() -> None:
     result = SourceResult(
         source="nedrug",
         query="리바로젯 재심사 종료일",
@@ -1170,14 +1174,22 @@ def test_v4_synthesis_preserves_reexamination_source_fields_verbatim() -> None:
         },
     )
 
-    serialized = v4_synthesizer._synthesis_messages(_plan(), (result,), ())[-1]["content"]
+    prompt = json.loads(
+        v4_synthesizer._synthesis_messages(_plan(), (result,), ())[-1]["content"]
+    )
 
-    assert '"ITEM_NAME": "리바로젯정2/10밀리그램"' in serialized
-    assert '"REEXAM_DATE": "2021-07-28~2027-07-27"' in serialized
-    assert '"REEXAM_TARGET": "재심사대상(6년)"' in serialized
+    assert prompt["external_evidence"][0]["detail"] == {
+        "omitted": "raw source payload is retained in inspection detail"
+    }
+    item = result.payload["calls"][0]["render_data"]["items"][0]
+    assert item == {
+        "ITEM_NAME": "리바로젯정2/10밀리그램",
+        "REEXAM_DATE": "2021-07-28~2027-07-27",
+        "REEXAM_TARGET": "재심사대상(6년)",
+    }
 
 
-def test_v4_synthesis_labels_hira_patient_fields_and_units_in_korean() -> None:
+def test_v4_synthesis_labels_hira_fields_without_exposing_raw_values() -> None:
     result = SourceResult(
         source="hira",
         query="D693 상병 환자수",
@@ -1205,11 +1217,8 @@ def test_v4_synthesis_labels_hira_patient_fields_and_units_in_korean() -> None:
     serialized = messages[-1]["content"]
     system = messages[0]["content"]
 
-    assert '"sickCd": "D693"' in serialized
-    assert '"ptntCnt": "1606"' in serialized
-    assert '"specCnt": "3301"' in serialized
-    assert '"vstDdcnt": "12152"' in serialized
-    assert '"rvdRpeTamtAmt": "9986518000"' in serialized
+    assert '"sickCd": "D693"' not in serialized
+    assert '"ptntCnt": "1606"' not in serialized
     assert '"ptntCnt": "환자수(명)"' in serialized
     assert '"specCnt": "명세서건수(건)"' in serialized
     assert '"vstDdcnt": "방문일수(일)"' in serialized
@@ -1217,7 +1226,7 @@ def test_v4_synthesis_labels_hira_patient_fields_and_units_in_korean() -> None:
     assert "환자수는 `환자수(명)` 값만 사용" in system
 
 
-def test_v4_synthesis_does_not_truncate_source_text() -> None:
+def test_v4_synthesis_omits_long_source_text_without_mutating_result() -> None:
     source_text = "허가사항 본문 " * 200
     result = SourceResult(
         source="nedrug",
@@ -1229,7 +1238,8 @@ def test_v4_synthesis_does_not_truncate_source_text() -> None:
     messages = v4_synthesizer._synthesis_messages(_plan(), (result,), ())
     serialized = messages[-1]["content"]
 
-    assert source_text in serialized
+    assert source_text not in serialized
+    assert result.payload["calls"][0]["render_data"]["efficacy"] == source_text
     assert "[excerpt]" not in serialized
 
 
@@ -2013,7 +2023,10 @@ def test_v4_clinical_studies_are_classified_per_study_without_mutating_detail() 
     prompt = json.loads(messages[-1]["content"])
     packet = prompt["external_evidence"][0]
 
-    assert packet["detail"] == payload
+    assert packet["detail"] == {
+        "omitted": "raw source payload is retained in inspection detail"
+    }
+    assert result.payload == payload
     assert packet["study_classification"] == [
         {
             "study_id": "NCT00000001",
@@ -2369,8 +2382,13 @@ def test_hira_synthesis_input_keeps_all_requested_year_calls() -> None:
 
     messages = v4_synthesizer._synthesis_messages(_plan(), (result,), ())
 
-    for year in range(2022, 2027):
-        assert f'"year": "{year}"' in messages[-1]["content"]
+    prompt = json.loads(messages[-1]["content"])
+    assert prompt["external_evidence"][0]["detail"] == {
+        "omitted": "raw source payload is retained in inspection detail"
+    }
+    assert [call["render_data"]["request"]["year"] for call in result.payload["calls"]] == [
+        str(year) for year in range(2022, 2027)
+    ]
 
 
 def test_mart_synthesis_input_keeps_long_history_fields_after_scalar_metadata() -> None:
@@ -2404,7 +2422,7 @@ def test_mart_synthesis_input_keeps_long_history_fields_after_scalar_metadata() 
     assert '"series_insight"' in mart_block
 
 
-def test_synthesis_input_keeps_every_raw_payload_key_and_row() -> None:
+def test_synthesis_input_omits_raw_payload_but_inspection_keeps_every_row() -> None:
     late_rows = [
         {"ordinal": index, "body": f"고시 본문 원문 {index}"}
         for index in range(12)
@@ -2433,9 +2451,11 @@ def test_synthesis_input_keeps_every_raw_payload_key_and_row() -> None:
     prompt = json.loads(messages[-1]["content"])
     packet = prompt["external_evidence"][0]
 
-    assert packet["detail"] == payload
-    assert packet["detail"]["calls"][0]["render_data"]["items"][-1] == late_rows[-1]
-    assert packet["detail"]["tail_sentinel"] == "payload-tail-preserved"
+    assert packet["detail"] == {
+        "omitted": "raw source payload is retained in inspection detail"
+    }
+    assert result.payload["calls"][0]["render_data"]["items"][-1] == late_rows[-1]
+    assert result.payload["tail_sentinel"] == "payload-tail-preserved"
 
 
 def test_hira_coverage_notices_are_trace_metadata_not_answer_body() -> None:

@@ -540,7 +540,7 @@ def _synthesis_messages(
             for result in mart
         ],
         "external_evidence": [
-            _evidence_packet(result, include_detail=not fact_backed)
+            _evidence_packet(result, include_detail=False)
             for result in external
         ],
         "source_mapping": source_mapping,
@@ -1126,7 +1126,7 @@ def _fact_backed_source_packet(result: SourceResult) -> dict[str, Any]:
         "query": result.query,
         "status": result.status,
         "detail": {
-            "omitted": "deterministic_facts contains the rendered evidence",
+            "omitted": "raw source payload is retained in inspection detail",
         },
     }
 
@@ -1182,7 +1182,7 @@ def _evidence_packet(
         "detail": (
             result.payload
             if include_detail
-            else {"omitted": "deterministic_facts contains the rendered evidence"}
+            else {"omitted": "raw source payload is retained in inspection detail"}
         ),
     }
     if result.source == "hira":

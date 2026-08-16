@@ -55,6 +55,7 @@ def render_deterministic_facts(
     if profile == "market_analysis":
         return DeterministicRender(
             profile=profile,
+            source_refs=_source_refs(evidence_sets),
             request_notice=_request_satisfaction_notice(plan, evidence_sets),
             source_notices=source_notices,
             source_notice_bindings=source_notice_bindings,

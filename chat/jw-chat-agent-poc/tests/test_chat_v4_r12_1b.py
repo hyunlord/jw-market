@@ -178,7 +178,8 @@ def test_lossless_surface_does_not_duplicate_commentary_when_core_headings_are_e
     assert composed.text.startswith("## 근거와 맥락")
     assert composed.text.count("## 근거와 맥락") == 1
     assert composed.text.count("## 종합 인사이트") == 1
-    assert composed.text.count("## 출처") == 1
+    assert composed.text.count("## 출처") == 0
+    assert composed.trace["model_source_lines_ignored"] == 1
     assert composed.text.count("공식 목록에서 확인된 상태를 설명합니다.") == 1
     assert composed.text.index("## 종합 인사이트") < composed.text.index(
         "## 조사 범위와 완전성"

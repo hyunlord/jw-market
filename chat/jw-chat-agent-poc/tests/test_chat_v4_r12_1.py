@@ -1562,12 +1562,15 @@ def test_market_primary_source_is_not_replaced_by_incidental_clinical_records() 
     original = "## 핵심 답\n기존 5단 시장 답변"
 
     assert rendered.profile == "market_analysis"
-    assert compose_lossless_answer(
+    composed = compose_lossless_answer(
         rendered,
         original,
         synthesis_trace={"status": "synthesized"},
         mode="inject",
-    ).text == original
+    )
+    assert composed.text.startswith(original)
+    assert "NCT00000001" in composed.text
+    assert composed.trace["records_rendered"] == 0
 
 
 def test_source_gate_returns_more_than_five_public_references() -> None:
@@ -1695,7 +1698,7 @@ def test_runtime_inject_mode_composes_deterministic_facts_before_commentary(
     assert answer.trace["lossless_spine"]["records_rendered"] == 1
 
 
-def test_runtime_market_profile_is_byte_invariant_between_shadow_and_inject(
+def test_runtime_market_profile_ignores_model_sources_only_in_inject_mode(
     monkeypatch,
 ) -> None:
     plan = _plan("리바로").model_copy(
@@ -1727,9 +1730,12 @@ def test_runtime_market_profile_is_byte_invariant_between_shadow_and_inject(
         lossless_mode="inject",
     )
 
-    assert inject.text == shadow.text
+    assert "- UBIST" not in shadow.text
+    assert "내부 데이터마트" in shadow.text
+    assert "- UBIST" not in inject.text
+    assert inject.text == "## 핵심 답\n기존 시장 답변"
     assert inject.trace["lossless_spine"]["profile"] == "market_analysis"
-    assert inject.trace["lossless_spine"]["answer_mutation"] is False
+    assert inject.trace["lossless_spine"]["model_source_lines_ignored"] == 1
 
 
 def test_runtime_request_satisfaction_flag_only_adds_a_notice_in_inject_mode(

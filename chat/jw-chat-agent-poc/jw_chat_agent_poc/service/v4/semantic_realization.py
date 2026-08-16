@@ -43,6 +43,8 @@ class SemanticEvidenceContext(BaseModel):
     observed_count: int
     requested_count: int
     protected_line_sha256: tuple[str, ...] = ()
+    has_hira_patient_count: bool = False
+    hira_code_count: int = 0
 
 
 _CAUSE_SENTENCE_PATTERNS = (
@@ -85,6 +87,25 @@ _DATE_VALUE_RE = re.compile(
 _TABLE_SEPARATOR_RE = re.compile(r"^:?-{3,}:?$")
 _CAUSAL_LIMIT_TEXT = "[확인 한계] 인과 관계는 이 조회로 확정하지 않습니다."
 _TREND_LIMIT_TEXT = "[확인 한계] 전망은 이 조회로 확정하지 않습니다."
+_HIRA_RATE_OR_RISK_RE = re.compile(r"(?:발생\s*위험|발생률|유병률)")
+_HIRA_LIMITATION_RE = re.compile(
+    r"(?:아니|다르|판단하지|말할\s*수\s*없|확인되지|제시하지|산출하지)"
+)
+_HIRA_CARE_PATHWAY_RE = re.compile(
+    r"(?=.*외래)(?=.*입원)(?=.*(?:만성|관리))(?=.*(?:주로|보여|시사|명확|뚜렷)).+"
+)
+_HIRA_RATE_LIMIT_TEXT = (
+    "[확인 한계] 이 자료는 주상병 기준 청구 실인원이며, 인구 분모가 없어 "
+    "성별·연령별 발생 위험이나 유병률을 판단하지 않습니다."
+)
+_HIRA_CARE_LIMIT_TEXT = (
+    "[확인 한계] 외래·입원 실인원만으로 진료 방식이나 만성 관리 여부를 "
+    "판단하지 않습니다."
+)
+_HIRA_SUM_LIMIT_TEXT = (
+    "[확인 한계] 제시된 값은 코드별 실인원이며, 코드 간 중복 제거 여부가 "
+    "확인되지 않아 합산한 총계는 제시하지 않습니다."
+)
 
 
 def downgrade_predicate(
@@ -117,6 +138,8 @@ def realize_semantic_surface(
     transformations: list[dict[str, str]] = []
     downgrade_count = 0
     deletion_count = 0
+    hira_rate_blocked = False
+    hira_care_blocked = False
     for line in answer.splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith(("```", "~~~")):
@@ -135,6 +158,28 @@ def realize_semantic_surface(
             output.append(line)
             continue
         policy_text, markdown_prefix = _policy_text(stripped)
+        if context.has_hira_patient_count and _unsupported_hira_rate_claim(policy_text):
+            transformations.append(
+                {
+                    "from": "HIRA_RATE_OR_RISK",
+                    "to": "DELETE",
+                    "reason": "patient_count_has_no_population_denominator",
+                }
+            )
+            deletion_count += 1
+            hira_rate_blocked = True
+            continue
+        if context.has_hira_patient_count and _HIRA_CARE_PATHWAY_RE.search(policy_text):
+            transformations.append(
+                {
+                    "from": "HIRA_CARE_PATHWAY_INTERPRETATION",
+                    "to": "DELETE",
+                    "reason": "patient_counts_do_not_establish_care_pathway",
+                }
+            )
+            deletion_count += 1
+            hira_care_blocked = True
+            continue
         if _TREND_RE.search(policy_text):
             transformations.append(
                 {"from": "TREND_PREDICTION", "to": "DELETE", "reason": "unsupported"}
@@ -205,6 +250,20 @@ def realize_semantic_surface(
             )
             downgrade_count += 1
         output.append(updated)
+    if hira_rate_blocked and _HIRA_RATE_LIMIT_TEXT not in output:
+        output.append(_HIRA_RATE_LIMIT_TEXT)
+    if hira_care_blocked and _HIRA_CARE_LIMIT_TEXT not in output:
+        output.append(_HIRA_CARE_LIMIT_TEXT)
+    if context.has_hira_patient_count and context.hira_code_count >= 2:
+        if _HIRA_SUM_LIMIT_TEXT not in output:
+            output.append(_HIRA_SUM_LIMIT_TEXT)
+        transformations.append(
+            {
+                "from": "HIRA_CODE_SUM",
+                "to": "NOT_REPORTED",
+                "reason": "cross_code_deduplication_unknown",
+            }
+        )
     surface_text, removed_empty_headings = prune_empty_surface_sections(
         "\n".join(output)
     )
@@ -215,6 +274,51 @@ def realize_semantic_surface(
         deletion_count=deletion_count,
         removed_empty_headings=removed_empty_headings,
     )
+
+
+def _unsupported_hira_rate_claim(value: str) -> bool:
+    matches = tuple(_HIRA_RATE_OR_RISK_RE.finditer(value))
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(value)
+        if not _HIRA_LIMITATION_RE.search(value[match.start() : end]):
+            return True
+    return False
+
+
+def evidence_has_hira_patient_count(evidence_sets: Sequence[EvidenceSet]) -> bool:
+    return any(
+        evidence_set.source == "hira"
+        and any(
+            record.result_kind == "patient_count"
+            or "ptntcnt" in {key.casefold() for key in _mapping_keys(record.payload)}
+            for record in evidence_set.records
+        )
+        for evidence_set in evidence_sets
+    )
+
+
+def evidence_hira_code_count(evidence_sets: Sequence[EvidenceSet]) -> int:
+    codes = {
+        match.group(0).upper()
+        for evidence_set in evidence_sets
+        if evidence_set.source == "hira"
+        for record in evidence_set.records
+        for value in _scalar_values(record.payload)
+        for match in re.finditer(r"(?<![A-Za-z0-9])[A-Z]\d{2,3}(?![A-Za-z0-9])", value)
+    }
+    return len(codes)
+
+
+def _mapping_keys(value: object) -> tuple[str, ...]:
+    if isinstance(value, Mapping):
+        keys: list[str] = []
+        for key, nested in value.items():
+            keys.append(str(key))
+            keys.extend(_mapping_keys(nested))
+        return tuple(keys)
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return tuple(key for nested in value for key in _mapping_keys(nested))
+    return ()
 
 
 def _policy_text(stripped: str) -> tuple[str, str]:
@@ -235,6 +339,28 @@ def _sanitize_table_line(
     for index, raw_cell in enumerate(cells):
         cell = raw_cell.strip()
         if not cell or _TABLE_SEPARATOR_RE.fullmatch(cell):
+            continue
+        if context.has_hira_patient_count and _unsupported_hira_rate_claim(cell):
+            cells[index] = f" {_HIRA_RATE_LIMIT_TEXT} "
+            transformations.append(
+                {
+                    "from": "HIRA_RATE_OR_RISK",
+                    "to": "DELETE",
+                    "reason": "patient_count_has_no_population_denominator",
+                }
+            )
+            deletion_count += 1
+            continue
+        if context.has_hira_patient_count and _HIRA_CARE_PATHWAY_RE.search(cell):
+            cells[index] = f" {_HIRA_CARE_LIMIT_TEXT} "
+            transformations.append(
+                {
+                    "from": "HIRA_CARE_PATHWAY_INTERPRETATION",
+                    "to": "DELETE",
+                    "reason": "patient_counts_do_not_establish_care_pathway",
+                }
+            )
+            deletion_count += 1
             continue
         if _TREND_RE.search(cell):
             cells[index] = f" {_TREND_LIMIT_TEXT} "

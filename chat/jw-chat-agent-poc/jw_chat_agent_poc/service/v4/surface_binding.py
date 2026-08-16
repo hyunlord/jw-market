@@ -138,7 +138,7 @@ def sanitize_bound_surface(
     )
     sanitized, recovered_from = _recover_core_section(
         sanitized,
-        enabled=bool(removed_hashes) and original_had_core,
+        enabled=original_had_core,
     )
     return sanitized, {
         "answer_mutation": sanitized != answer,
