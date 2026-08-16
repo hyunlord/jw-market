@@ -140,7 +140,10 @@ def test_prompt_bound_compacts_payload_without_mutating_results() -> None:
     assert trace["inspection_retains_full_payload"] is True
 
 
-def test_pruning_uses_structured_source_capabilities_and_records_omissions() -> None:
+def test_pruning_uses_structured_source_capabilities_and_records_omissions(monkeypatch) -> None:
+    # Pruning is off by default now; this test covers the pruning rule itself,
+    # so it opts back in.
+    monkeypatch.setenv("CHAT_V4_PRUNE_UNSUPPORTED_SOURCE_QUERIES", "1")
     plan = _plan(
         hira=("리바로젯 처방 조제액 추이",),
         mart=("리바로젯 처방 조제액 추이",),

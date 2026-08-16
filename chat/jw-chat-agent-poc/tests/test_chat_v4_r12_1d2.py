@@ -103,7 +103,10 @@ def _web_result() -> SourceResult:
     )
 
 
-def test_explicit_domain_sources_are_exempt_from_soft_deadline_and_trace_is_typed() -> None:
+def test_explicit_domain_sources_are_exempt_from_soft_deadline_and_trace_is_typed(monkeypatch) -> None:
+    # The cancel is off by default now; this test covers the mechanism itself,
+    # so it opts back in.
+    monkeypatch.setenv("CHAT_V4_ANSWER_QUORUM_EARLY_EXIT", "1")
     def adapter(source: str, query: str) -> SourceResult:
         time.sleep({"hira": 0.005, "patent": 0.08}.get(source, 0.2))
         return SourceResult(source=source, query=query, status="ok", payload={"source": source})

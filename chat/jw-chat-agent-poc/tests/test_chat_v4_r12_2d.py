@@ -180,7 +180,10 @@ def test_short_read_timeout_is_typed_as_incomplete_not_zero_results(
     assert "조회 결과가 없습니다" not in surface
 
 
-def test_soft_deadline_keeps_transport_request_in_execution_trace() -> None:
+def test_soft_deadline_keeps_transport_request_in_execution_trace(monkeypatch) -> None:
+    # The cancel is off by default now; this test covers the mechanism itself,
+    # so it opts back in.
+    monkeypatch.setenv("CHAT_V4_ANSWER_QUORUM_EARLY_EXIT", "1")
     def empty(source: str):
         return lambda query: SourceResult(source=source, query=query, status="empty")
 

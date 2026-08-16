@@ -2519,7 +2519,10 @@ def test_runtime_preserves_recent_period_in_hira_answer_query() -> None:
     assert enriched.tool_queries.web == plan.tool_queries.web
 
 
-def test_parallel_executor_soft_deadline_stops_after_answer_source_arrives() -> None:
+def test_parallel_executor_soft_deadline_stops_after_answer_source_arrives(monkeypatch) -> None:
+    # The cancel is off by default now; this test covers the mechanism itself,
+    # so it opts back in.
+    monkeypatch.setenv("CHAT_V4_ANSWER_QUORUM_EARLY_EXIT", "1")
     def adapter(source: str, query: str) -> SourceResult:
         time.sleep(0.01 if source == "hira" else 0.25)
         return SourceResult(source=source, query=query, status="ok", payload={"source": source})
@@ -2548,6 +2551,9 @@ def test_parallel_executor_waits_for_mart_to_settle_before_soft_quorum(
     mart_status: str,
     monkeypatch,
 ) -> None:
+    # The cancel is off by default now; this test covers the mechanism itself,
+    # so it opts back in.
+    monkeypatch.setenv("CHAT_V4_ANSWER_QUORUM_EARLY_EXIT", "1")
     wait_timeouts: list[float | None] = []
     original_wait = v4_executor.wait
 
