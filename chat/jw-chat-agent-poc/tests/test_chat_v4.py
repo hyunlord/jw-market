@@ -2634,10 +2634,15 @@ def test_planner_detailed_trace_keeps_usage_and_corrects_obvious_answer_source()
     )
 
     assert outcome.plan.answer_sources == ("hira",)
+    # R21 added the thinking half of the record: the level a turn asked for and
+    # the text/reasoning split of what came back. Exact equality is kept on
+    # purpose -- this block is a contract, and a silently widening dict is how an
+    # unrecorded field creeps in.
     assert outcome.trace["usage"] == {
         "input_tokens": 120,
         "output_tokens": 30,
         "thinking_tokens": 11,
+        "text_tokens": None,
     }
     assert outcome.trace["elapsed_ms"] == 1250.0
     assert outcome.trace["serving_id"] == "190"
@@ -2745,6 +2750,7 @@ def test_planner_fallback_trace_is_non_null_when_transport_fails() -> None:
         "input_tokens": None,
         "output_tokens": None,
         "thinking_tokens": None,
+        "text_tokens": None,
     }
     assert outcome.trace["status"] == "fallback"
 
@@ -2984,6 +2990,10 @@ def test_runtime_exposes_normalized_usage_and_stage_breakdown() -> None:
         "input_tokens": 100,
         "output_tokens": 20,
         "thinking_tokens": 7,
+        "text_tokens": 0,
+        # This double stands in for a synthesizer that predates the field, so the
+        # level reads as "not_reported" rather than as a level nobody asked for.
+        "thinking_level": "not_reported",
         "finish_reason": "stop",
         "measurement": "reported",
     }
@@ -3007,6 +3017,8 @@ def test_runtime_usage_is_explicit_when_synthesizer_does_not_run() -> None:
         "input_tokens": "not_applicable",
         "output_tokens": "not_applicable",
         "thinking_tokens": "not_applicable",
+        "text_tokens": "not_applicable",
+        "thinking_level": "not_applicable",
         "finish_reason": "not_applicable",
         "measurement": "not_applicable",
     }

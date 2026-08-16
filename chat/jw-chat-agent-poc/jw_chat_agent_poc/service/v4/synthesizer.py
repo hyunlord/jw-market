@@ -23,6 +23,7 @@ from jw_chat_agent_poc.service.v4.llm import (
     CompletionResult,
     CompletionTransportError,
     GenOSV4Client,
+    thinking_observability,
 )
 from jw_chat_agent_poc.service.v4.reason_code_enforcement import typed_absence_record
 from jw_chat_agent_poc.service.v4.session_state import SessionState
@@ -443,6 +444,10 @@ class V4Synthesizer:
                 "partial_generated": partial_generated,
                 "serving_id": completion.serving_id if completion else "not_applicable",
                 "model": completion.model if completion else "not_applicable",
+                "thinking": thinking_observability(
+                    getattr(self._client, "thinking_level", None),
+                    completion.usage if completion else {},
+                ),
             },
         )
 

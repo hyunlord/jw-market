@@ -948,7 +948,9 @@ class V4Runtime:
                 }
         elapsed_ms = (time.monotonic() - started) * 1000
         synth_usage = _normalized_synth_usage(synthesis.trace)
-        planner_usage = _normalized_planner_usage(planner_outcome.trace.get("usage"))
+        planner_usage = _normalized_planner_usage(
+            planner_outcome.trace.get("usage"), planner_outcome.trace.get("thinking")
+        )
         stage_timing = {
             "planner_elapsed_ms": planner_outcome.trace.get("elapsed_ms"),
             "wave_elapsed_ms": first_execution.trace.get("elapsed_ms"),
@@ -1823,6 +1825,8 @@ def _empty_usage() -> dict[str, str]:
         "input_tokens": "not_applicable",
         "output_tokens": "not_applicable",
         "thinking_tokens": "not_applicable",
+        "text_tokens": "not_applicable",
+        "thinking_level": "not_applicable",
         "measurement": "not_applicable",
     }
 
@@ -1837,10 +1841,18 @@ def _normalized_synth_usage(trace: dict[str, Any]) -> dict[str, int | str]:
         }
     details = usage.get("completion_tokens_details")
     details = details if isinstance(details, dict) else {}
+    # thinking_level rides along because output tokens are what synthesis time is
+    # made of -- 6.5 ms each, measured flat across every duration band -- and
+    # most of them are reasoning tokens. Without the level that was asked for,
+    # a drop in reasoning tokens cannot be told apart from ordinary LLM variance.
+    thinking = trace.get("thinking")
+    thinking = thinking if isinstance(thinking, Mapping) else {}
     return {
         "input_tokens": _int_or_zero(usage.get("prompt_tokens")),
         "output_tokens": _int_or_zero(usage.get("completion_tokens")),
         "thinking_tokens": _int_or_zero(details.get("reasoning_tokens")),
+        "text_tokens": _int_or_zero(details.get("text_tokens")),
+        "thinking_level": str(thinking.get("requested_level") or "not_reported"),
         "finish_reason": str(trace.get("finish_reason") or "not_reported"),
         "measurement": "reported",
     }
@@ -1850,13 +1862,18 @@ def _int_or_zero(value: object) -> int:
     return int(value) if isinstance(value, int | float) else 0
 
 
-def _normalized_planner_usage(value: object) -> dict[str, int | str]:
+def _normalized_planner_usage(
+    value: object, thinking: object = None
+) -> dict[str, int | str]:
     if not isinstance(value, Mapping) or not value:
         return _empty_usage()
+    thinking = thinking if isinstance(thinking, Mapping) else {}
     return {
         "input_tokens": _int_or_zero(value.get("input_tokens")),
         "output_tokens": _int_or_zero(value.get("output_tokens")),
         "thinking_tokens": _int_or_zero(value.get("thinking_tokens")),
+        "text_tokens": _int_or_zero(value.get("text_tokens")),
+        "thinking_level": str(thinking.get("requested_level") or "not_reported"),
         "measurement": "reported",
     }
 

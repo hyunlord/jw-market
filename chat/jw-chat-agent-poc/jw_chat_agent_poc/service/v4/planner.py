@@ -30,7 +30,11 @@ from jw_chat_agent_poc.service.v4.clinical_query_policy import (
     is_query_entity_candidate,
     query_entity_candidates,
 )
-from jw_chat_agent_poc.service.v4.llm import CompletionResult, GenOSV4Client
+from jw_chat_agent_poc.service.v4.llm import (
+    CompletionResult,
+    GenOSV4Client,
+    thinking_observability,
+)
 from jw_chat_agent_poc.service.v4.session_state import SessionState
 from jw_chat_agent_poc.service.v4.time_context import (
     as_of_date_instruction,
@@ -135,6 +139,10 @@ class V4Planner:
                         "usage": _normalized_usage(completion.usage if completion else {}),
                         "serving_id": completion.serving_id if completion else "not_applicable",
                         "model": completion.model if completion else "not_applicable",
+                        "thinking": thinking_observability(
+                            getattr(self._client, "thinking_level", None),
+                            completion.usage if completion else {},
+                        ),
                     },
                 )
             except requests.RequestException as exc:
@@ -165,6 +173,10 @@ class V4Planner:
                 "usage": _normalized_usage(completion.usage if completion else {}),
                 "serving_id": completion.serving_id if completion else "not_applicable",
                 "model": completion.model if completion else "not_applicable",
+                "thinking": thinking_observability(
+                    getattr(self._client, "thinking_level", None),
+                    completion.usage if completion else {},
+                ),
                 "error_type": type(error).__name__ if error else "InvalidPlannerOutput",
             },
         )
@@ -701,6 +713,7 @@ def _normalized_usage(usage: dict[str, object]) -> dict[str, int | None]:
         "input_tokens": _optional_int(usage.get("prompt_tokens")),
         "output_tokens": _optional_int(usage.get("completion_tokens")),
         "thinking_tokens": _optional_int(details.get("reasoning_tokens")),
+        "text_tokens": _optional_int(details.get("text_tokens")),
     }
 
 
