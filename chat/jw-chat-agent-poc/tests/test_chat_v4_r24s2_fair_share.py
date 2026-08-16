@@ -254,3 +254,19 @@ def test_source_mapping_leaves_small_lanes_whole():
     mapping, omitted = _bounded_source_mapping([_result_with_citations("clinicaltrials", 9)])
     assert len(mapping) == 9
     assert omitted == {}
+
+
+def test_source_mapping_cap_failure_injection_restores_the_full_live_shape(monkeypatch):
+    """F3: raising the shared cap restores the 1,004-citation failure shape."""
+    from jw_chat_agent_poc.service.v4.synthesizer import _bounded_source_mapping
+
+    result = _result_with_citations("clinicaltrials", 1004)
+    monkeypatch.setenv("CHAT_V4_SOURCE_RENDER_LIMIT", "1004")
+    unbounded, unbounded_omitted = _bounded_source_mapping([result])
+    monkeypatch.setenv("CHAT_V4_SOURCE_RENDER_LIMIT", "40")
+    bounded, bounded_omitted = _bounded_source_mapping([result])
+
+    assert len(unbounded) == 1004
+    assert unbounded_omitted == {}
+    assert len(bounded) == 40
+    assert bounded_omitted == {"ClinicalTrials.gov": 964}

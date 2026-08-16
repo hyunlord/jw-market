@@ -491,7 +491,7 @@ def test_q7_failure_reason_survives_retrieval_event_and_public_notice() -> None:
 
     assert event.reason_code == "QUOTA_EXCEEDED"
     assert public_retrieval_notice(event, label="웹 검색") == (
-        "웹 검색 사용량 한도 초과로 외부 조회가 실패해 확인할 수 없습니다."
+        "웹 검색은 조회 한도를 초과해 이번 답변에 반영되지 않았습니다."
     )
 
 

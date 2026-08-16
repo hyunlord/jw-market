@@ -12,7 +12,7 @@ from typing import Any, Literal, Protocol
 import requests
 
 
-FailureClass = Literal["timeout", "5xx", "0_results", "schema", "none"]
+FailureClass = Literal["timeout", "5xx", "0_results", "schema", "quota", "none"]
 DomainSource = Literal["cache", "MCP", "web"]
 CacheObservation = Literal["hit", "stale", "miss", "not_applicable"]
 
@@ -37,9 +37,23 @@ def failure_class_from_exception(exc: BaseException) -> FailureClass:
         return "timeout"
     if isinstance(exc, requests.HTTPError):
         status_code = getattr(exc.response, "status_code", None)
+        if status_code == 429:
+            return "quota"
         if isinstance(status_code, int) and 500 <= status_code <= 599:
             return "5xx"
     text = str(exc).casefold()
+    if any(
+        token in text
+        for token in (
+            "quota",
+            "usage limit",
+            "plan's set usage limit",
+            "rate limit",
+            "too many requests",
+            "limited_number_of_service_requests_exceeds_error",
+        )
+    ):
+        return "quota"
     if any(token in text for token in ("timeout", "timed out", "deadline exceeded")):
         return "timeout"
     if _HTTP_5XX_RE.search(text):
@@ -54,6 +68,8 @@ def failure_class_from_call(call: _ExternalCallLike) -> FailureClass:
         return "0_results"
     if call.status != "error":
         return "none"
+    if str(call.render_data.get("error_type") or "").casefold() == "quota":
+        return "quota"
     error = call.render_data.get("error")
     return failure_class_from_exception(RuntimeError(str(error or "")))
 

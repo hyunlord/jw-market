@@ -1242,6 +1242,17 @@ def build_source_adapters() -> dict[SourceName, Any]:
             for call, payload in zip(calls, payloads, strict=True)
             if _external_call_is_usable(call, payload)
         ]
+        call_failures = tuple(
+            _external_call_failure_reason(call, payload)
+            for call, payload in zip(calls, payloads, strict=True)
+        )
+        provider_quotas = tuple(
+            dict.fromkeys(
+                str(getattr(call, "source", "") or source)
+                for call, reason in zip(calls, call_failures, strict=True)
+                if reason in {"RATE_LIMITED", "QUOTA_EXCEEDED"}
+            )
+        )
         notice = None if usable else _first_notice(calls)
         if usable:
             status = "ok"
@@ -1268,8 +1279,15 @@ def build_source_adapters() -> dict[SourceName, Any]:
                     payload.get("render_data", ""),
                 )
             )
-            status_match = re.search(r"(?:HTTP\s*)?(\d{3})", raw_failure, re.IGNORECASE)
-            http_status = int(status_match.group(1)) if status_match else None
+            http_status = next(
+                (
+                    value
+                    for payload in payloads
+                    for value in (_external_call_http_status(payload),)
+                    if value is not None
+                ),
+                None,
+            )
             failure_reason = classify_upstream_failure(
                 http_status=http_status,
                 body=raw_failure,
@@ -1290,6 +1308,8 @@ def build_source_adapters() -> dict[SourceName, Any]:
                 status = "timeout"
             elif failure_reason in {"AUTH_FAILED", "UPSTREAM_5XX", "NETWORK"}:
                 status = "upstream"
+        if provider_quotas:
+            failure_detail["provider_quotas"] = list(provider_quotas)
         return SourceResult(
             source=source,
             query=query,
@@ -2900,6 +2920,41 @@ def _external_status_values(call: Any, payload: Mapping[str, Any]) -> tuple[str,
         if isinstance(nested_payload, Mapping):
             values.append(str(nested_payload.get("status") or ""))
     return tuple(value for value in values if value)
+
+
+def _external_call_http_status(payload: Mapping[str, Any]) -> int | None:
+    render_data = payload.get("render_data")
+    candidates = [payload]
+    if isinstance(render_data, Mapping):
+        candidates.append(render_data)
+        nested_payload = render_data.get("payload")
+        if isinstance(nested_payload, Mapping):
+            candidates.append(nested_payload)
+    for candidate in candidates:
+        for key in ("http_status", "status_code"):
+            value = candidate.get(key)
+            if isinstance(value, int) and 100 <= value <= 599:
+                return value
+            if isinstance(value, str) and value.isdigit():
+                parsed = int(value)
+                if 100 <= parsed <= 599:
+                    return parsed
+    return None
+
+
+def _external_call_failure_reason(call: Any, payload: Mapping[str, Any]) -> str:
+    raw_failure = " ".join(
+        str(value)
+        for value in (
+            getattr(call, "status", ""),
+            getattr(call, "summary_text", ""),
+            payload.get("render_data", ""),
+        )
+    )
+    return classify_upstream_failure(
+        http_status=_external_call_http_status(payload),
+        body=raw_failure,
+    )
 
 
 def _hira_period_status(call: Any) -> str:

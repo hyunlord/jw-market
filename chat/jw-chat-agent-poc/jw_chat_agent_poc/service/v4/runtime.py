@@ -60,6 +60,7 @@ from jw_chat_agent_poc.service.v4.inspection import build_inspection_detail
 from jw_chat_agent_poc.service.v4.planner import V4Planner
 from jw_chat_agent_poc.service.v4.clinical_query_policy import clinical_scope_suffix
 from jw_chat_agent_poc.service.v4.retrieval_events import (
+    provider_quota_notice,
     retrieval_event_from_result,
     utc_now,
 )
@@ -164,8 +165,16 @@ def _retrieval_shortfall_notice(results: Sequence[Any]) -> str | None:
     notices: list[str] = []
     for source, lane_results in executed.items():
         shortfalls: dict[str, list[str]] = {}
+        quota_providers: list[str] = []
         for result in lane_results:
             reason = _result_exclusion_reason(result)
+            detail = getattr(result, "failure_detail", None) or {}
+            if isinstance(detail, Mapping):
+                quota_providers.extend(
+                    str(item)
+                    for item in (detail.get("provider_quotas") or [])
+                    if item
+                )
             if reason is None:
                 continue
             shortfalls.setdefault(reason, []).append(str(getattr(result, "query", "")))
@@ -175,6 +184,11 @@ def _retrieval_shortfall_notice(results: Sequence[Any]) -> str | None:
         # out loud, because the result still carries status "ok".
         partial_lines: list[str] = []
         for result in lane_results:
+            detail = getattr(result, "failure_detail", None) or {}
+            if getattr(result, "status", None) == "ok" and isinstance(detail, Mapping):
+                providers = detail.get("provider_quotas") or []
+                for provider in dict.fromkeys(str(item) for item in providers if item):
+                    partial_lines.append(f"- {provider_quota_notice(provider)}")
             partial = (getattr(result, "failure_detail", None) or {}).get(
                 "partial_preservation"
             )
@@ -216,6 +230,14 @@ def _retrieval_shortfall_notice(results: Sequence[Any]) -> str | None:
         )
         for reason, phrase in ordered:
             queries = shortfalls[reason]
+            if reason == "provider_quota":
+                providers = tuple(dict.fromkeys(quota_providers)) or (source,)
+                for provider in providers:
+                    notices.append(
+                        f"- {len(queries)}건: {provider_quota_notice(provider, label=label)}"
+                        f"{_shortfall_query_preview(queries)}"
+                    )
+                continue
             notices.append(
                 f"- {len(queries)}건은 {phrase}{_shortfall_query_preview(queries)}"
             )

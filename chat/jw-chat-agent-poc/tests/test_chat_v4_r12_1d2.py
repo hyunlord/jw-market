@@ -179,8 +179,7 @@ def test_failures_are_surfaced_with_public_source_and_specific_reason() -> None:
     assert "## 미확인 요소" in composed.text
     assert "식품의약품안전처 의약품 특허목록" in composed.text
     assert "응답 시간 내 도착하지 않아 이번 답변에서 제외" in composed.text
-    assert "웹 뉴스" in composed.text
-    assert "사용량 한도 초과" in composed.text
+    assert "웹 검색은 조회 한도를 초과해 이번 답변에 반영되지 않았습니다." in composed.text
     assert "soft deadline" not in composed.text
 
 

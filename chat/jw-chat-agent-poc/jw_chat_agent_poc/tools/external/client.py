@@ -14,7 +14,10 @@ from urllib.parse import urlparse
 import requests
 
 from jw_chat_agent_poc.tools.external.mcp_client import McpClientError, McpJsonClient, McpToolResult
-from jw_chat_agent_poc.tools.external.telemetry import emit_external_call_telemetry
+from jw_chat_agent_poc.tools.external.telemetry import (
+    emit_external_call_telemetry,
+    failure_class_from_exception,
+)
 
 
 GENOS_MCP_GATEWAY_BASE_ENV = "GENOS_MCP_GATEWAY_BASE"
@@ -909,13 +912,18 @@ def _mcp_external_call(
 ) -> ExternalCall:
     if tool == "tavily_mcp_search":
         return _tavily_mcp_web_call(params, result, elapsed)
+    payload = _mcp_payload(result)
+    if source in {NEDRUG_MCP_SOURCE, HIRA_MCP_SOURCE} and _public_data_quota_exceeded(
+        payload,
+        result.content_text,
+    ):
+        return _mcp_quota_call(tool, source, params, mcp_tool, url, elapsed)
     if result.raw_result.get("isError") is True:
         return _mcp_failed_call(tool, source, params, mcp_tool, result.content_text, url, elapsed, no_data="No results" in result.content_text)
     if tool == "clinicaltrials_study_details":
         return _clinicaltrials_detail_call_from_mcp(params, mcp_tool, result, url, elapsed)
     if tool == "clinicaltrials_v2_search":
         return _clinicaltrials_call_from_mcp(params, mcp_tool, result, url, elapsed)
-    payload = _mcp_payload(result)
     if mcp_tool == "search_drug_adverse_events" and not (
         isinstance(payload, dict) and isinstance(payload.get("results"), list)
     ):
@@ -1364,6 +1372,52 @@ def _mcp_failed_call(
     )
 
 
+def _mcp_quota_call(
+    tool: str,
+    source: str,
+    params: dict[str, str],
+    mcp_tool: str,
+    url: str,
+    elapsed: float,
+) -> ExternalCall:
+    return ExternalCall(
+        tool=tool,
+        source=source,
+        status="error",
+        summary_text=f"{mcp_tool} MCP 제공자 조회 한도 초과",
+        render_data={
+            "request": params,
+            "mcp": {"tool": mcp_tool},
+            "items": [],
+            "error_type": "quota",
+            "message": "제공자 조회 한도 초과",
+        },
+        safe_url=url,
+        elapsed_ms=elapsed,
+    )
+
+
+def _public_data_quota_exceeded(payload: Any, content_text: str) -> bool:
+    pending = [payload]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, dict):
+            for key, value in current.items():
+                if key in {"resultCode", "result_code"} and str(value).strip() == "22":
+                    return True
+                if isinstance(value, (dict, list, tuple)):
+                    pending.append(value)
+        elif isinstance(current, (list, tuple)):
+            pending.extend(current)
+    try:
+        serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    except (TypeError, ValueError):
+        serialized = str(payload)
+    return failure_class_from_exception(
+        RuntimeError(f"{serialized} {content_text}")
+    ) == "quota"
+
+
 def _mcp_payload(result: McpToolResult) -> Any:
     structured = result.raw_result.get("structuredContent")
     if isinstance(structured, dict) and "result" in structured:
@@ -1662,17 +1716,24 @@ def _missing_web_key(provider: str, key_env: str, query: str) -> ExternalCall:
 
 
 def _web_error(provider: str, query: str, exc: Exception, elapsed: float) -> ExternalCall:
+    error_text = str(exc)
+    quota_exceeded = failure_class_from_exception(RuntimeError(error_text)) == "quota"
     return ExternalCall(
         tool="web_search",
         source=WEB_SEARCH_SOURCE,
         status="error",
-        summary_text=f"{provider} 웹검색 실패: {str(exc)}",
+        summary_text=(
+            f"{provider} 웹검색 조회 한도 초과"
+            if quota_exceeded
+            else f"{provider} 웹검색 실패: {error_text}"
+        ),
         render_data={
             "provider": provider,
             "query": query,
             "items": [],
             "message": "웹검색 실패",
-            "error": str(exc),
+            "error": error_text,
+            **({"error_type": "quota"} if quota_exceeded else {}),
             "external_claim_policy": "web_results_unverified",
         },
         elapsed_ms=elapsed,

@@ -193,17 +193,7 @@ def public_retrieval_notice(
             "조회가 완료되지 않아 확인할 수 없습니다."
         )
     if event.status == "quota":
-        if event.tool == "web":
-            return (
-                f"{prefix or '웹 검색 '}사용량 한도 초과로 "
-                "외부 조회가 실패해 확인할 수 없습니다."
-            )
-        if event.tool in {"nedrug", "patent"}:
-            return "식품의약품안전처 조회 한도 초과로 확인할 수 없습니다."
-        return (
-            f"{prefix}제공자 사용량 한도 초과로 외부 조회가 실패해 "
-            "확인할 수 없습니다."
-        )
+        return provider_quota_notice(event.tool, label=label)
     if event.status == "upstream":
         if event.reason_code == "AUTH_FAILED":
             return f"{prefix}외부 조회 인증에 실패해 확인할 수 없습니다."
@@ -225,6 +215,20 @@ def public_retrieval_notice(
             "이 항목은 확인하지 못했습니다."
         )
     return f"{prefix}조회가 완료되었습니다."
+
+
+def provider_quota_notice(provider: str, *, label: str | None = None) -> str:
+    """Return a provider-specific public notice without leaking error codes."""
+
+    normalized = str(provider or "").strip().casefold()
+    if normalized in {"web", "web_search", "tavily", "tavily_mcp"}:
+        return "웹 검색은 조회 한도를 초과해 이번 답변에 반영되지 않았습니다."
+    if normalized in {"nedrug", "nedrug_mcp"}:
+        return "식약처 조회는 일일 한도를 초과해 이번 답변에 반영되지 않았습니다."
+    if normalized in {"hira", "hira_mcp", "hira_disease", "hira_procedure"}:
+        return "HIRA 조회는 일일 한도를 초과해 이번 답변에 반영되지 않았습니다."
+    source_label = str(label or provider or "외부 자료").strip()
+    return f"{source_label} 조회는 제공자 한도를 초과해 이번 답변에 반영되지 않았습니다."
 
 
 def _exposure_layer(status: RetrievalStatus) -> FailureExposure:

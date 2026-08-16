@@ -977,7 +977,11 @@ def test_d_retrieval_four_states_never_turn_failures_into_absence() -> None:
     cases = (
         ("empty", None, "이번 조회 조건에 맞는 레코드 0건"),
         ("timeout", "read timed out", "조회가 완료되지 않아 확인할 수 없습니다"),
-        ("quota", "usage limit exceeded", "외부 조회가 실패해 확인할 수 없습니다"),
+        (
+            "quota",
+            "usage limit exceeded",
+            "웹 검색은 조회 한도를 초과해 이번 답변에 반영되지 않았습니다",
+        ),
         ("upstream", "HTTP 503", "외부 조회가 실패해 확인할 수 없습니다"),
         ("parse_error", "malformed response", "검증 가능한 레코드로 변환하지 못했습니다"),
     )
