@@ -506,7 +506,7 @@ class V4Runtime:
                 self._executor,
                 execution_plan,
                 session_id=session_id,
-                total_timeout_s=min(50.0, _remaining(deadline)),
+                total_timeout_s=min(total_timeout_s(), _remaining(deadline)),
                 answer_sources=plan.answer_sources,
                 settle_sources=("mart",),
                 soft_deadline_s=6.0,
@@ -1483,8 +1483,37 @@ def _time_window(question: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(periods))
 
 
-_DEFAULT_PER_TOOL_TIMEOUT_S = 45.0
+PER_TOOL_TIMEOUT_ENV = "CHAT_V4_PER_TOOL_TIMEOUT_SECONDS"
+TOTAL_TIMEOUT_ENV = "CHAT_V4_TOTAL_TIMEOUT_SECONDS"
+
+# One tool's share of the wave. Raised from 45.0: at 45 the market lane was cut
+# five seconds before the wave itself ended, so an ingredient expansion could
+# lose a brand to a limit that protected nothing -- the wave was going to stop
+# it anyway. Above the wave budget this limit no longer fires on its own, which
+# is the intent: the wave is the one thing that bounds the answer.
+_DEFAULT_PER_TOOL_TIMEOUT_S = 90.0
+
+# The wave, and with it the whole retrieval stage. Deliberately NOT raised.
+# Ten measured answers put planner+synthesis+assembly at up to 77.4 s, and an
+# earlier round observed synthesis alone at 69.5 s. Against the 130 s ceiling
+# this leaves the wave 43.5-52.6 s, so 50.0 is already at the top of its band
+# and raising it would buy retrieval time by spending the answer's deadline.
 _DEFAULT_TOTAL_TIMEOUT_S = 50.0
+
+
+def per_tool_timeout_s() -> float:
+    return _timeout_from_env(PER_TOOL_TIMEOUT_ENV, _DEFAULT_PER_TOOL_TIMEOUT_S)
+
+
+def total_timeout_s() -> float:
+    """The single wave budget.
+
+    Read here by both the executor's own cap and the first wave's call-site
+    clamp. They used to be two independent copies of ``50.0``, so raising the
+    environment override moved one and the other silently clamped it back:
+    the setting could only ever lower the budget. One reader, one value.
+    """
+    return _timeout_from_env(TOTAL_TIMEOUT_ENV, _DEFAULT_TOTAL_TIMEOUT_S)
 
 
 def _timeout_from_env(name: str, default: float) -> float:
@@ -1513,12 +1542,8 @@ def build_default_runtime() -> V4Runtime:
         planner=V4Planner(planner_client()),
         executor=ParallelSourceExecutor(
             adapters=build_source_adapters(),
-            per_tool_timeout_s=_timeout_from_env(
-                "CHAT_V4_PER_TOOL_TIMEOUT_SECONDS", _DEFAULT_PER_TOOL_TIMEOUT_S
-            ),
-            total_timeout_s=_timeout_from_env(
-                "CHAT_V4_TOTAL_TIMEOUT_SECONDS", _DEFAULT_TOTAL_TIMEOUT_S
-            ),
+            per_tool_timeout_s=per_tool_timeout_s(),
+            total_timeout_s=total_timeout_s(),
         ),
         synthesizer=V4Synthesizer(synthesizer_client()),
         state_store=SessionStateStore.from_env(),

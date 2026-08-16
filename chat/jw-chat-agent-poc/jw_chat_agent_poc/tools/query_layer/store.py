@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
+from functools import wraps
 import json
 import logging
 import math
@@ -20,6 +21,113 @@ startup_timing_logger = logging.getLogger("uvicorn.error")
 FAILED_VALUE_STATUSES: Final[frozenset[str]] = frozenset(
     {"query_failed", "mapping_failed", "incomplete_split", "missing", "error"}
 )
+
+
+@dataclass(slots=True)
+class SnapshotMemo:
+    """Answers already derived from one snapshot, kept beside that snapshot.
+
+    Counters are reported so a hit is never taken silently. ``entries`` is
+    exact; ``hits`` and ``misses`` are incremented without a lock because the
+    lookups they count run on every mart row of every worker thread, and taking
+    a lock there would cost more than the recomputation being avoided. Under
+    concurrent readers they are therefore a lower bound, which is stated here
+    rather than presented as an exact count.
+    """
+
+    # Off until the snapshot finishes assembling itself. Building the derived
+    # index walks every row and period exactly once, so recording that pass
+    # cannot save a later one -- it would only hold a million entries that never
+    # get a hit. Staying off also means a snapshot never keeps an answer it
+    # worked out about itself before it was finished.
+    armed: bool = False
+    table: dict[tuple[Any, ...], Any] = field(default_factory=dict)
+    # Objects a key was derived from by identity. Holding them here keeps those
+    # identities from being recycled under a key that is still in the table.
+    # Keyed by identity so one row costs one reference no matter how many of its
+    # periods are in the table -- a list would hold a million duplicates.
+    retained: dict[int, Any] = field(default_factory=dict)
+    hits: int = 0
+    misses: int = 0
+
+    def lookups_recorded(self) -> int:
+        return self.hits + self.misses
+
+    def observability(self) -> dict[str, int | float]:
+        total = self.hits + self.misses
+        return {
+            "lookups": total,
+            "hits": self.hits,
+            "misses": self.misses,
+            "entries": len(self.table),
+            "hit_ratio": round(self.hits / total, 4) if total else 0.0,
+        }
+
+
+def _memoised_on_snapshot(
+    key: Callable[..., tuple[Any, ...]],
+    *,
+    detach: Callable[[Any], Any] | None = None,
+    retain: Callable[..., Any] | None = None,
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Derive a pure snapshot answer once per distinct argument tuple.
+
+    The decorated methods read nothing but ``self.records``, which is frozen for
+    the life of the snapshot, so the same arguments cannot produce a different
+    answer. A TTL refresh does not mutate a snapshot; it builds a new one, whose
+    memo starts empty. A stale answer therefore has no path to a caller: the
+    cache cannot outlive the data it was derived from.
+
+    ``key`` must name every argument that selects rows -- dropping ``source`` or
+    ``measure`` would let a UBIST question read an IQVIA answer. ``detach`` is
+    for methods that hand back a structure the caller goes on to annotate; it
+    returns a private copy so one caller's edit cannot reach the next.
+    ``retain`` names an argument the key identifies by object identity, so the
+    memo can hold it and keep that identity from being reused.
+    """
+
+    def decorate(function: Callable[..., Any]) -> Callable[..., Any]:
+        name = function.__name__
+
+        @wraps(function)
+        def wrapper(self: "MartSnapshot", *args: Any, **kwargs: Any) -> Any:
+            memo = self.memo
+            if not memo.armed:
+                return function(self, *args, **kwargs)
+            entry_key = (name, *key(*args, **kwargs))
+            try:
+                cached = memo.table[entry_key]
+            except KeyError:
+                memo.misses += 1
+                value = function(self, *args, **kwargs)
+                if retain is not None:
+                    retained = retain(*args, **kwargs)
+                    memo.retained[id(retained)] = retained
+                memo.table[entry_key] = value
+                return detach(value) if detach is not None else value
+            memo.hits += 1
+            return detach(cached) if detach is not None else cached
+
+        wrapper.__wrapped_uncached__ = function  # type: ignore[attr-defined]
+        return wrapper
+
+    return decorate
+
+
+def _record_key(record: "MartRecord", period: str) -> tuple[Any, ...]:
+    """Identify the row itself, not a description of it.
+
+    ``MartRecord`` carries dicts and so is unhashable, and two rows can share
+    ml_id/brand/source/measure while holding different histories, which would
+    make a descriptive key conflate them. Identity avoids both problems; the
+    memo retains the record (see ``retain``) so the identity behind a live key
+    cannot be handed to a different object.
+    """
+    return (id(record), period)
+
+
+def _first_argument(record: "MartRecord", _period: str) -> "MartRecord":
+    return record
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,11 +194,16 @@ class MartSnapshot:
     records: tuple[MartRecord, ...]
     loaded_at: float
     derived: Any = field(init=False, repr=False, compare=False)
+    memo: SnapshotMemo = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         from jw_chat_agent_poc.tools.query_layer.derived import DerivedSnapshotIndex
 
+        object.__setattr__(self, "memo", SnapshotMemo())
         object.__setattr__(self, "derived", DerivedSnapshotIndex.build(self))
+        # Only now, with every row in place and the derived index built, does
+        # an answer about this snapshot become one worth keeping.
+        self.memo.armed = True
 
     def market_id_for_brand(self, brand: str) -> str | None:
         markets = self.market_ids_for_brand(brand)
@@ -119,6 +232,9 @@ class MartSnapshot:
             )
         )
 
+    @_memoised_on_snapshot(
+        lambda market_id, source="ubist", measure="sales": (market_id, source, measure)
+    )
     def market_records(self, market_id: str, source: str = "ubist", measure: str = "sales") -> tuple[MartRecord, ...]:
         source_key = _source_key(source)
         return tuple(
@@ -127,12 +243,18 @@ class MartSnapshot:
             if record.ml_id == market_id and record.source == source_key and record.measure == measure
         )
 
+    @_memoised_on_snapshot(
+        lambda market_id, brand, source="ubist", measure="sales": (market_id, brand, source, measure)
+    )
     def record(self, market_id: str, brand: str, source: str = "ubist", measure: str = "sales") -> MartRecord:
         for record in self.market_records(market_id, source, measure):
             if record.brand_name == brand:
                 return record
         raise LookupError(f"mart brand not found: market={market_id} source={source} brand={brand}")
 
+    @_memoised_on_snapshot(
+        lambda market_id, source="ubist", measure="sales": (market_id, source, measure)
+    )
     def periods(self, market_id: str, source: str = "ubist", measure: str = "sales") -> tuple[str, ...]:
         values: set[str] = set()
         for record in self.market_records(market_id, source, measure):
@@ -149,6 +271,7 @@ class MartSnapshot:
         periods = tuple(sorted(period for period in record.metric_history if self.value_or_none(record, period) is not None))
         return periods[-1] if periods else None
 
+    @_memoised_on_snapshot(_record_key, retain=_first_argument)
     def value_status(self, record: MartRecord, period: str) -> str:
         if len(period) == 4 and period.isdigit():
             statuses = tuple(
@@ -175,6 +298,7 @@ class MartSnapshot:
             return "missing"
         return _row_status(row)
 
+    @_memoised_on_snapshot(_record_key, retain=_first_argument)
     def value_or_none(self, record: MartRecord, period: str) -> float | None:
         if len(period) == 4 and period.isdigit():
             matching_periods = [key for key in sorted(record.metric_history) if key.startswith(f"{period}-")]
@@ -196,6 +320,9 @@ class MartSnapshot:
     def value(self, record: MartRecord, period: str) -> float | None:
         return self.value_or_none(record, period)
 
+    @_memoised_on_snapshot(
+        lambda market_id, period, source="ubist", measure="sales": (market_id, period, source, measure)
+    )
     def market_value_or_none(self, market_id: str, period: str, source: str = "ubist", measure: str = "sales") -> float | None:
         records = self.market_records(market_id, source, measure)
         values = [self.value_or_none(record, period) for record in records]
@@ -233,6 +360,12 @@ class MartSnapshot:
                 return int(row["rank"])
         return None
 
+    @_memoised_on_snapshot(
+        lambda market_id, period, source="ubist", measure="sales": (market_id, period, source, measure),
+        # Callers annotate the rows they get back, so every caller is handed its
+        # own rows rather than the ones held in the memo.
+        detach=lambda rows: [dict(row) for row in rows],
+    )
     def ranked_brands(self, market_id: str, period: str, source: str = "ubist", measure: str = "sales") -> list[dict[str, Any]]:
         records = self.market_records(market_id, source, measure)
         total = self.market_value_or_none(market_id, period, source, measure)
@@ -622,11 +755,15 @@ class TtlStrategicMartStore:
                 market_point_count = 0
                 brand_point_count = 0
                 snapshot_age_seconds = None
+                # Reported even when there is no snapshot, so an absent memo is
+                # told apart from a memo that was never consulted.
+                memo = SnapshotMemo().observability()
             else:
                 row_count = len(snapshot.records)
                 market_point_count = len(snapshot.derived.market_points)
                 brand_point_count = len(snapshot.derived.brand_points)
                 snapshot_age_seconds = round(max(0.0, time.monotonic() - snapshot.loaded_at), 3)
+                memo = snapshot.memo.observability()
             return {
                 "row_count": row_count,
                 "derived_point_count": market_point_count + brand_point_count,
@@ -637,6 +774,11 @@ class TtlStrategicMartStore:
                 "refresh_failures": self._refresh_failures,
                 "refresh_skips": self._refresh_skips,
                 "refreshing": self._refreshing,
+                "snapshot_memo_lookups": memo["lookups"],
+                "snapshot_memo_hits": memo["hits"],
+                "snapshot_memo_misses": memo["misses"],
+                "snapshot_memo_entries": memo["entries"],
+                "snapshot_memo_hit_ratio": memo["hit_ratio"],
             }
 
 
