@@ -89,6 +89,7 @@ from jw_chat_agent_poc.service.v4.source_labels import (
 from jw_chat_agent_poc.service.v4.source_tiers import (
     entity_completion_rows,
     fan_out_tier_zero_queries,
+    render_axis_tokens,
     tier_funnel,
 )
 from jw_chat_agent_poc.service.v4.surface_binding import sanitize_bound_surface
@@ -1052,6 +1053,7 @@ class V4Runtime:
             "linked_clinical_query_normalization": linked_clinical_normalization,
             "tool_results": [
                 {
+                    "sequence": index,
                     "source": result.source,
                     "query": result.query,
                     "status": result.status,
@@ -1066,7 +1068,7 @@ class V4Runtime:
                     ],
                     "payload": result.payload,
                 }
-                for result in results
+                for index, result in enumerate(results, start=1)
             ],
             "synthesizer": synthesis.trace,
             "synth_usage": synth_usage,
@@ -1127,6 +1129,9 @@ class V4Runtime:
             "entity_completion": {
                 "rows": list(entity_completion.rows),
                 "scope_notice": entity_completion.scope_notice,
+                "excluded_render_axes": list(
+                    render_axis_tokens(plan.requested_answer_shape.entities)
+                ),
                 "surface": entity_surface_trace,
                 "snapshot_sha256": sha256(
                     repr(entity_completion.rows).encode("utf-8")

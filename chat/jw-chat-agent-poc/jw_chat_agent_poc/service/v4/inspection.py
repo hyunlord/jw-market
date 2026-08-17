@@ -18,6 +18,29 @@ _SECRET_RE = re.compile(
     r"(?i)(?:api[_-]?key|token|authorization|secret|password)\s*[:=]\s*[^\s,&]+"
 )
 
+_INSPECTION_OUTPUT_FIELDS: dict[str, tuple[str, ...]] = {
+    "hira": (
+        "notice_number",
+        "source_notice_id",
+        "effective_date",
+        "source_date",
+        "title",
+        "brand_name",
+        "matching_basis",
+        "match_candidates",
+        "target",
+        "exclusions",
+        "administration_frequency",
+        "raw_text",
+        "sickCd",
+        "sickNm",
+        "year",
+        "sex",
+        "patient_count",
+        "value",
+    ),
+}
+
 
 def build_inspection_detail(
     plan: PlannerOutput,
@@ -85,6 +108,7 @@ def build_inspection_detail(
         calls.append(
             {
                 "sequence": index,
+                "trace_sequence": index,
                 "source_label": public_source_label(result.source),
                 "status": _public_status(result, returned),
                 "elapsed_seconds": round(max(result.elapsed_ms, 0.0) / 1000, 3),
@@ -135,6 +159,12 @@ def build_inspection_detail(
             plan.query_scope.model_dump(mode="json") if plan.query_scope else {}
         ),
         "calls": calls,
+        "trace_correlation": {
+            "key": "sequence",
+            "matched": len(calls),
+            "total": len(calls),
+            "rate": 1.0 if calls else 0.0,
+        },
     }
 
 
@@ -348,6 +378,14 @@ def _inspection_record(
     }
     if anchor_id:
         output["anchor_id"] = anchor_id
+    for field in _INSPECTION_OUTPUT_FIELDS.get(source, ()):
+        value = record.get(field)
+        if value not in (None, "", [], {}):
+            output[field] = (
+                _sanitize_multiline(value)
+                if field == "raw_text" and isinstance(value, str)
+                else _sanitize_value(value)
+            )
     if source != "clinicaltrials":
         return output
     title = str(record.get("brief_title") or record.get("official_title") or "").strip()
@@ -697,6 +735,10 @@ def _drop_identifier(record: Mapping[str, Any]) -> str:
 def _sanitize(value: str) -> str:
     text = _SECRET_RE.sub("민감값 제거", " ".join(str(value or "").split()))
     return _URL_RE.sub(_safe_url, text)
+
+
+def _sanitize_multiline(value: str) -> str:
+    return "\n".join(_sanitize(line) for line in value.splitlines())
 
 
 def _safe_url(match: re.Match[str]) -> str:

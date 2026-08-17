@@ -28,6 +28,44 @@ _ATTRIBUTE_QUERY_LABELS = {
     "clinical_trials": "임상현황",
 }
 
+_RENDER_AXIS_TOKENS = frozenset(
+    {
+        "월별",
+        "분기별",
+        "연도별",
+        "반기",
+        "주간",
+        "입원/외래",
+        "성별",
+        "연령",
+        "채널",
+        "지역",
+    }
+)
+_RECENT_MONTH_AXIS_RE = re.compile(r"최근\s*\d{1,3}\s*개월")
+
+
+def render_axis_tokens(entities: Sequence[str]) -> tuple[str, ...]:
+    return tuple(entity for entity in entities if _is_render_axis_token(entity))
+
+
+def _completion_entities(plan: PlannerOutput) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            entity.strip()
+            for entity in plan.requested_answer_shape.entities
+            if entity.strip() and ":" not in entity and not _is_render_axis_token(entity)
+        )
+    )
+
+
+def _is_render_axis_token(value: str) -> bool:
+    normalized = " ".join(value.split())
+    return (
+        normalized in _RENDER_AXIS_TOKENS
+        or _RECENT_MONTH_AXIS_RE.fullmatch(normalized) is not None
+    )
+
 
 def source_tier(plan: PlannerOutput, source: str) -> int:
     if source in plan.answer_sources:
@@ -38,13 +76,7 @@ def source_tier(plan: PlannerOutput, source: str) -> int:
 
 
 def fan_out_tier_zero_queries(plan: PlannerOutput) -> PlannerOutput:
-    entities = tuple(
-        dict.fromkeys(
-            entity.strip()
-            for entity in plan.requested_answer_shape.entities
-            if entity.strip() and ":" not in entity
-        )
-    )
+    entities = _completion_entities(plan)
     if len(entities) < 2:
         return plan
 
@@ -130,13 +162,7 @@ def entity_completion_rows(
     plan: PlannerOutput,
     results: Sequence[SourceResult],
 ) -> EntityCompletion:
-    entities = tuple(
-        dict.fromkeys(
-            entity
-            for entity in plan.requested_answer_shape.entities
-            if ":" not in entity
-        )
-    )
+    entities = _completion_entities(plan)
     assignments = _assign_results(entities, results)
     rows: list[dict[str, str]] = []
     confirmed: list[str] = []

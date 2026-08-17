@@ -22,13 +22,21 @@ from jw_chat_agent_poc.service.v4.lossless_contracts import (
 from jw_chat_agent_poc.service.v4.deterministic_render import _source_refs
 from jw_chat_agent_poc.service.v4.evidence_set_support import public_anchor_id
 from jw_chat_agent_poc.service.v4.evidence_sets import build_evidence_sets
-from jw_chat_agent_poc.service.v4.inspection import _inspection_output
+from jw_chat_agent_poc.service.v4.inspection import (
+    _inspection_output,
+    _request_parameters,
+    build_inspection_detail,
+)
 from jw_chat_agent_poc.service.v4.lossless_spine import (
     _merged_source_block,
     compose_lossless_answer,
 )
+from jw_chat_agent_poc.service.v4.render_policy import render_policy
 from jw_chat_agent_poc.service.v4.synthesizer import _synthesis_messages
-from jw_chat_agent_poc.service.v4.source_tiers import entity_completion_rows
+from jw_chat_agent_poc.service.v4.source_tiers import (
+    entity_completion_rows,
+    fan_out_tier_zero_queries,
+)
 
 
 def _rendered(*nodes: RenderNode, notices: tuple[str, ...] = (), bindings: tuple[dict[str, object], ...] = ()) -> DeterministicRender:
@@ -589,3 +597,181 @@ def test_entity_alias_miss_is_described_as_link_failure_not_retrieval_failure() 
 
     assert "조회 결과와 연결하지 못했습니다" in completion.scope_notice
     assert "미도착" not in completion.scope_notice
+
+
+def test_policy_body_omits_full_raw_text_while_inspection_preserves_public_fields(
+) -> None:
+    raw_text = (
+        "고시 제2021-245호\n"
+        "고시 개정 사유\n"
+        "pitavastatin calcium, ezetimibe 복합 경구제 급여기준을 개정합니다."
+    )
+    payload = {
+        "notice_number": "고시 제2021-245호",
+        "effective_date": "2021-10-01",
+        "title": "고지혈증 치료제 급여기준",
+        "raw_text": raw_text,
+    }
+    record = EvidenceRecord(
+        evidence_id="hira:notice:2021-245",
+        anchor_id="hira:notice:2021-245",
+        source="hira",
+        result_kind="policy_document",
+        payload=payload,
+    )
+    evidence = EvidenceSet(
+        source="hira",
+        retrieved_at="2026-08-17T00:00:00+00:00",
+        coverage=CoverageLedger(records_received=1, records_unique=1),
+        records=(record,),
+    )
+
+    nodes, _required = render_policy(evidence)
+    body = "\n\n".join(node.text for node in nodes)
+    output, _metrics = _inspection_output(
+        (payload,),
+        1,
+        source="hira",
+        evidence_records=(record,),
+        unique_anchor_ids=frozenset({"hira:notice:2021-245"}),
+    )
+
+    assert "## 공식 원문 전문" not in body
+    assert body.count("pitavastatin calcium, ezetimibe 복합 경구제") == 1
+    assert output["records"][0]["notice_number"] == "고시 제2021-245호"
+    assert output["records"][0]["effective_date"] == "2021-10-01"
+    assert output["records"][0]["title"] == "고지혈증 치료제 급여기준"
+    assert output["records"][0]["raw_text"] == raw_text
+
+
+def test_render_axes_are_not_treated_as_entities_for_completion_or_fanout() -> None:
+    render_axes = (
+        "월별",
+        "분기별",
+        "연도별",
+        "반기",
+        "주간",
+        "최근 12개월",
+        "입원/외래",
+        "성별",
+        "연령",
+        "채널",
+        "지역",
+    )
+    plan = PlannerOutput(
+        resolved_question="리바로 2026년 월별 성별 입원/외래 매출",
+        expanded_intents=("월별 성별 입원/외래 매출",),
+        answer_sources=("mart",),
+        tool_queries=ToolQueries(
+            mart=("리바로 2026년 월별 매출",),
+            nedrug=("리바로",),
+            hira=("리바로",),
+            openfda=("리바로",),
+            clinicaltrials=("리바로",),
+            web=("리바로",),
+            patent=("리바로",),
+        ),
+        linking_plan="single wave",
+        requested_answer_shape=RequestedAnswerShape(
+            entities=("리바로", *render_axes),
+            measure_or_attribute=("sales",),
+            granularity="month",
+            period_from="2026-01",
+            period_to="2026-12",
+        ),
+    )
+    results = (
+        SourceResult(
+            source="mart",
+            query="리바로 2026년 월별 매출",
+            status="ok",
+            payload={"brand": "리바로", "period": "2026-06", "sales": 85.87},
+        ),
+    )
+
+    completion = entity_completion_rows(plan, results)
+    expanded = fan_out_tier_zero_queries(plan)
+
+    assert completion.rows == ({"entity": "리바로", "status": "COMPLETE"},)
+    assert completion.scope_notice == ""
+    assert expanded.tool_queries.mart == ("리바로 2026년 월별 매출",)
+    assert expanded.requested_answer_shape.granularity == "month"
+
+
+def test_unlisted_entity_token_keeps_existing_completion_behavior() -> None:
+    plan = PlannerOutput(
+        resolved_question="리바로 국가별 매출",
+        expanded_intents=("국가별 매출",),
+        answer_sources=("mart",),
+        tool_queries=ToolQueries(
+            mart=("리바로 매출",),
+            nedrug=("리바로",),
+            hira=("리바로",),
+            openfda=("리바로",),
+            clinicaltrials=("리바로",),
+            web=("리바로",),
+            patent=("리바로",),
+        ),
+        linking_plan="single wave",
+        requested_answer_shape=RequestedAnswerShape(entities=("리바로", "국가별")),
+    )
+    result = SourceResult(
+        source="mart",
+        query="리바로 매출",
+        status="ok",
+        payload={"brand": "리바로", "sales": 85.87},
+    )
+
+    completion = entity_completion_rows(plan, (result,))
+
+    assert completion.rows == (
+        {"entity": "리바로", "status": "COMPLETE"},
+        {"entity": "국가별", "status": "FAILED"},
+    )
+
+
+def test_inspection_separates_display_query_from_actual_hira_request() -> None:
+    result = SourceResult(
+        source="hira",
+        query="리바로젯 급여기준 알려줘",
+        status="ok",
+        payload={
+            "calls": [
+                {
+                    "render_data": {
+                        "notice_number": "고시 제2021-245호",
+                        "request": {
+                            "brand": "리바로젯",
+                            "lookup_mode": "brand_first_reimbursement",
+                        },
+                    }
+                }
+            ]
+        },
+    )
+
+    parameters = _request_parameters(result)
+
+    assert parameters["query"] == "리바로젯 급여기준 알려줘"
+    assert parameters["calls"] == [
+        {"brand": "리바로젯", "lookup_mode": "brand_first_reimbursement"},
+    ]
+
+
+def test_inspection_uses_result_sequence_as_trace_correlation_key() -> None:
+    plan = _plan("리바로젯 급여기준")
+    results = (
+        SourceResult(source="hira", query="리바로젯 급여기준", status="ok"),
+        SourceResult(source="web", query="리바로젯 급여기준 뉴스", status="timeout"),
+    )
+    rendered = _rendered()
+
+    detail = build_inspection_detail(plan, results, (), rendered)
+
+    assert [call["trace_sequence"] for call in detail["calls"]] == [1, 2]
+    assert detail["trace_correlation"] == {
+        "key": "sequence",
+        "matched": 2,
+        "total": 2,
+        "rate": 1.0,
+    }

@@ -75,16 +75,6 @@ def render_policy(evidence_set: EvidenceSet) -> tuple[list[RenderNode], tuple[st
                     sections.get("revision_reason"),
                     record.evidence_id,
             ),
-            (
-                RenderNode(
-                    block_id=f"{prefix}:raw",
-                    record_ids=(record.evidence_id,),
-                    surface_fields=("raw_text",),
-                    text="## 공식 원문 전문\n" + raw,
-                )
-                if raw
-                else None
-            ),
         ]
         nodes.extend(node for node in record_nodes if node is not None)
     return nodes, POLICY_REQUIRED_FIELDS

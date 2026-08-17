@@ -1733,7 +1733,13 @@ def build_source_adapters() -> dict[SourceName, Any]:
                 source="hira_reimbursement",
                 status="ok",
                 summary_text=criterion.raw_text,
-                render_data=asdict(criterion),
+                render_data={
+                    **asdict(criterion),
+                    "request": {
+                        "brand": brand,
+                        "lookup_mode": "brand_first_reimbursement",
+                    },
+                },
                 safe_url=criterion.source_url,
             )
             result = external_calls("hira", query, [call])

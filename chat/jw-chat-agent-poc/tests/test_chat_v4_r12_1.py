@@ -1435,7 +1435,7 @@ def test_lossless_patent_renderer_surfaces_as_of_date_for_us_only_records() -> N
     assert rendered.required_field_surface_rate == 1.0
 
 
-def test_lossless_policy_renderer_retains_sections_and_full_raw_text() -> None:
+def test_lossless_policy_renderer_retains_sections_without_repeating_full_raw_text() -> None:
     raw_text = """고시 제2026-101호
 시행일 2026-08-01
 1) 투여대상
@@ -1484,7 +1484,8 @@ def test_lossless_policy_renderer_retains_sections_and_full_raw_text() -> None:
         heading in rendered.text
         for heading in ("## 투여대상", "## 제외기준", "## 투여 방법 및 횟수", "## 개정 사유")
     )
-    assert raw_text in rendered.text
+    assert raw_text not in rendered.text
+    assert "## 공식 원문 전문" not in rendered.text
     assert rendered.required_field_surface_rate == 1.0
 
     composed = compose_lossless_answer(
@@ -1502,7 +1503,6 @@ def test_lossless_policy_renderer_retains_sections_and_full_raw_text() -> None:
             "황반변성 환자 중 기준을 충족한 경우",
             "치료 효과가 없는 경우",
             "4주 간격으로 투여하며 초기 3회",
-            raw_text,
         )
     )
     assert "구체적인 답을 구성하지 못했습니다" not in composed.text
@@ -1860,7 +1860,7 @@ def test_runtime_fallback_retains_full_patent_facts(monkeypatch) -> None:
     assert answer.trace["lossless_spine"]["fallback_detail_retention_rate"] == 1.0
 
 
-def test_runtime_fallback_retains_full_hira_policy(monkeypatch) -> None:
+def test_runtime_fallback_keeps_policy_facts_and_moves_full_text_to_inspection(monkeypatch) -> None:
     raw_text = """고시 제2026-101호
 시행일 2026-08-01
 투여대상 황반변성 환자
@@ -1904,7 +1904,8 @@ def test_runtime_fallback_retains_full_hira_policy(monkeypatch) -> None:
     assert "황반변성 환자" in answer.text
     assert "치료 효과가 없는 경우" in answer.text
     assert "4주 간격으로 초기 3회" in answer.text
-    assert raw_text in answer.text
+    assert raw_text not in answer.text
+    assert answer.trace["inspection_detail"]["calls"][0]["output"]["records"][0]["raw_text"] == raw_text
     assert "구체적인 답을 구성하지 못했습니다" not in answer.text
     assert answer.trace["lossless_spine"]["fallback_detail_retention_rate"] == 1.0
 
