@@ -532,7 +532,19 @@ def _align_commentary_to_axis(blocks: Sequence[str], axis: str) -> list[str]:
     if axis != "reimbursement":
         return list(blocks)
     aligned: list[str] = []
+    deferred_market: list[str] = []
     for block in blocks:
+        if block.startswith("## 핵심 답\n"):
+            body = block.removeprefix("## 핵심 답\n")
+            retained: list[str] = []
+            for paragraph in re.split(r"\n\s*\n", body):
+                if "[출처: 내부 데이터마트]" in paragraph:
+                    deferred_market.append(paragraph.strip())
+                elif paragraph.strip():
+                    retained.append(paragraph.strip())
+            if retained:
+                aligned.append("## 핵심 답\n" + "\n\n".join(retained))
+            continue
         if not block.startswith("## 종합 인사이트\n"):
             aligned.append(block)
             continue
@@ -544,6 +556,8 @@ def _align_commentary_to_axis(blocks: Sequence[str], axis: str) -> list[str]:
             aligned.append(block)
         else:
             aligned.append("## 참고: 인접 연구\n" + body)
+    if deferred_market:
+        aligned.append("## 참고: 인접 연구\n" + "\n\n".join(deferred_market))
     return aligned
 
 

@@ -242,7 +242,16 @@ def _repair_patent_status(
         if registered
         else f"이번 조회에서 확인된 등재특허 {len(records)}건은 모두 소멸 상태입니다."
     )
-    return _PATENT_GLOBAL_EXPIRY_RE.sub(replacement, text)
+    replaced = False
+
+    def replace_once(_match: re.Match[str]) -> str:
+        nonlocal replaced
+        if replaced:
+            return ""
+        replaced = True
+        return replacement
+
+    return _PATENT_GLOBAL_EXPIRY_RE.sub(replace_once, text)
 
 
 def scrub_internal_release_tokens(text: str) -> tuple[str, int]:

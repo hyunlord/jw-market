@@ -26,6 +26,7 @@ from jw_chat_agent_poc.service.v4.lossless_contracts import (
 )
 from jw_chat_agent_poc.service.v4.lossless_spine import compose_lossless_answer
 from jw_chat_agent_poc.service.v4.render_policy import render_policy
+from jw_chat_agent_poc.service.v4.reason_code_enforcement import enforce_reason_codes
 from jw_chat_agent_poc.service.v4.runtime import (
     _attach_entity_completion_to_inspection,
     _inject_entity_completion_surface,
@@ -447,6 +448,55 @@ def test_reimbursement_moves_market_only_insight_to_reference_section() -> None:
 
     assert "## 종합 인사이트\n매출은" not in composed.text
     assert "## 참고: 인접 연구\n매출은 증가했습니다." in composed.text
+
+
+def test_reimbursement_moves_market_paragraph_out_of_core() -> None:
+    rendered = _rendered(
+        RenderNode(
+            block_id="policy:1:info",
+            record_ids=("hira:notice:matched",),
+            text="## 고시 정보\n| 항목 | 값 |\n| --- | --- |\n| 고시번호 | 제2021-245호 |",
+        )
+    )
+
+    composed = compose_lossless_answer(
+        rendered,
+        (
+            "## 핵심 답\n리바로젯 급여기준은 제2021-245호에서 확인했습니다.\n\n"
+            "리바로젯 매출은 124.54억원입니다 [출처: 내부 데이터마트]."
+        ),
+        synthesis_trace={"status": "synthesized"},
+        mode="inject",
+        question="리바로젯 급여기준 알려줘",
+    )
+
+    core = composed.text.split("## 핵심 답\n", 1)[1].split("\n## ", 1)[0]
+    assert "급여기준은 제2021-245호" in core
+    assert "124.54억원" not in core
+    assert "## 참고: 인접 연구\n리바로젯 매출은 124.54억원" in composed.text
+
+
+def test_patent_status_repair_keeps_one_sentence_when_input_repeats() -> None:
+    sentence = "이번 조회에서 확인된 등재특허 8건은 모두 소멸 상태입니다."
+    result = SourceResult(
+        source="patent",
+        query="리바로젯 특허",
+        status="ok",
+        payload={
+            "patent_lanes": {
+                "kr_primary": {
+                    "records": [
+                        {"patent_no": f"KR-{index}", "status": "소멸"}
+                        for index in range(8)
+                    ]
+                }
+            }
+        },
+    )
+
+    repaired, _trace = enforce_reason_codes(sentence * 4, (result,))
+
+    assert repaired.count(sentence) == 1
 
 
 def test_multiturn_layout_uses_current_turn_and_requested_measure_not_resolved_noise() -> None:
