@@ -102,6 +102,19 @@ def test_hira_semantic_gate_failure_injection_disabled_restores_bad_claims() -> 
     assert bad not in enabled.text
 
 
+def test_hira_semantic_gate_blocks_live_care_pathway_wording_without_inpatient_term() -> None:
+    bad = (
+        "대부분의 환자가 외래 진료를 통해 만성적으로 질환을 관리하고 있는 "
+        "것으로 해석될 수 있습니다."
+    )
+
+    realized = realize_semantic_surface(bad, _hira_context())
+
+    assert bad not in realized.text
+    assert "진료 방식이나 만성 관리 여부를 판단하지 않습니다" in realized.text
+    assert realized.transformations[0]["from"] == "HIRA_CARE_PATHWAY_INTERPRETATION"
+
+
 def test_hira_semantic_gate_blocks_table_cells_and_mixed_limitation_claims() -> None:
     answer = "\n".join(
         (
