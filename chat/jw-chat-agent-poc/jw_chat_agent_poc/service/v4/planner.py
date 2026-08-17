@@ -32,6 +32,7 @@ from jw_chat_agent_poc.service.v4.clinical_query_policy import (
 )
 from jw_chat_agent_poc.service.v4.llm import (
     CompletionResult,
+    CompletionTransportError,
     GenOSV4Client,
     thinking_observability,
 )
@@ -106,6 +107,7 @@ class V4Planner:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
+            attempt_budget_s = budget_s if attempt == 0 else remaining
             try:
                 attempt_messages = messages + (
                     [{"role": "system", "content": "The prior output was invalid. Return only valid JSON matching the schema."}]
@@ -116,20 +118,16 @@ class V4Planner:
                 if callable(detailed):
                     completion = detailed(
                         attempt_messages,
-                        budget_s=remaining,
+                        budget_s=attempt_budget_s,
                         max_tokens=4096,
                     )
                     raw = completion.text
                 else:
-                    raw = self._client.complete(attempt_messages, budget_s=remaining)
-                plan = _parse_plan(raw)
-                direct_sources = _direct_answer_sources(question)
-                if direct_sources:
-                    plan = plan.model_copy(update={"answer_sources": direct_sources})
-                plan = _lock_exact_anchor(question, plan)
-                plan = _anchor_relative_years(question, plan, observed_on)
-                plan = _attach_lossless_contracts(question, plan)
-                plan = _limit_first_wave_queries(plan)
+                    raw = self._client.complete(
+                        attempt_messages,
+                        budget_s=attempt_budget_s,
+                    )
+                plan = _prepare_plan(question, raw, observed_on=observed_on)
                 return PlannerOutcome(
                     plan=plan,
                     trace={
@@ -143,6 +141,34 @@ class V4Planner:
                             getattr(self._client, "thinking_level", None),
                             completion.usage if completion else {},
                         ),
+                    },
+                )
+            except CompletionTransportError as exc:
+                error = exc
+                completion = exc.partial
+                try:
+                    plan = _prepare_plan(
+                        question,
+                        exc.partial.text,
+                        observed_on=observed_on,
+                    )
+                except (ValueError, json.JSONDecodeError):
+                    break
+                return PlannerOutcome(
+                    plan=plan,
+                    trace={
+                        "status": "partial_recovered",
+                        "elapsed_ms": exc.partial.elapsed_ms,
+                        "finish_reason": exc.partial.finish_reason,
+                        "usage": _normalized_usage(exc.partial.usage),
+                        "serving_id": exc.partial.serving_id,
+                        "model": exc.partial.model,
+                        "thinking": thinking_observability(
+                            getattr(self._client, "thinking_level", None),
+                            exc.partial.usage,
+                        ),
+                        "degradation_reason": exc.kind,
+                        "partial_plan_recovered": True,
                     },
                 )
             except requests.RequestException as exc:
@@ -178,6 +204,8 @@ class V4Planner:
                     completion.usage if completion else {},
                 ),
                 "error_type": type(error).__name__ if error else "InvalidPlannerOutput",
+                "degradation_reason": _planner_degradation_reason(error),
+                "partial_plan_recovered": False,
             },
         )
 
@@ -445,6 +473,17 @@ def _parse_plan(raw: str) -> PlannerOutput:
     return PlannerOutput.model_validate_json(cleaned[start : end + 1])
 
 
+def _prepare_plan(question: str, raw: str, *, observed_on: date) -> PlannerOutput:
+    plan = _parse_plan(raw)
+    direct_sources = _direct_answer_sources(question)
+    if direct_sources:
+        plan = plan.model_copy(update={"answer_sources": direct_sources})
+    plan = _lock_exact_anchor(question, plan)
+    plan = _anchor_relative_years(question, plan, observed_on)
+    plan = _attach_lossless_contracts(question, plan)
+    return _limit_first_wave_queries(plan)
+
+
 def _limit_first_wave_queries(plan: PlannerOutput) -> PlannerOutput:
     try:
         limit = int(os.environ.get("CHAT_V4_MAX_SOURCE_QUERIES", "1"))
@@ -704,6 +743,18 @@ def _direct_answer_sources(question: str) -> tuple[SourceName, ...]:
     if any(token in lowered for token in ("안전성", "부작용", "이상사례")):
         return ("openfda",)
     return ()
+
+
+def _planner_degradation_reason(error: Exception | None) -> str:
+    if isinstance(error, CompletionTransportError):
+        return error.kind
+    if isinstance(error, requests.Timeout):
+        return "transport_timeout"
+    if isinstance(error, requests.RequestException):
+        return "transport_error"
+    if isinstance(error, (ValueError, json.JSONDecodeError)):
+        return "invalid_output"
+    return "no_output"
 
 
 def _normalized_usage(usage: dict[str, object]) -> dict[str, int | None]:

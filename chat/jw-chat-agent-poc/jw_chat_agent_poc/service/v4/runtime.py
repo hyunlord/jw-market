@@ -247,6 +247,25 @@ def _retrieval_shortfall_notice(results: Sequence[Any]) -> str | None:
     return "\n".join(notices) if notices else None
 
 
+_PLANNER_FALLBACK_NOTICE = (
+    "질문 해석이 시간 내 완료되지 않아 축소된 범위로 조회했습니다. "
+    "이 답변은 제한된 조회 범위를 기준으로 확인해 주세요."
+)
+_PLANNER_PARTIAL_NOTICE = (
+    "질문 해석 응답이 완전히 종료되기 전에 확인된 조회 계획을 사용했습니다. "
+    "일부 확장 정보가 포함되지 않았을 수 있습니다."
+)
+
+
+def _planner_degradation_notice(trace: Mapping[str, Any]) -> str | None:
+    status = str(trace.get("status") or "")
+    if status == "fallback":
+        return _PLANNER_FALLBACK_NOTICE
+    if status == "partial_recovered":
+        return _PLANNER_PARTIAL_NOTICE
+    return None
+
+
 def _query_scope_notice(plan: Any) -> str | None:
     scope = getattr(plan, "query_scope", None)
     if scope is None:
@@ -403,6 +422,14 @@ class V4Runtime:
                     "elapsed_ms": (time.monotonic() - planner_started) * 1000,
                     "usage": _empty_usage(),
                 },
+            )
+        planner_degradation_notice = _planner_degradation_notice(planner_outcome.trace)
+        if planner_degradation_notice:
+            LOGGER.warning(
+                "v4 planner degraded status=%s reason=%s partial_plan_recovered=%s",
+                planner_outcome.trace.get("status"),
+                planner_outcome.trace.get("degradation_reason", "unknown"),
+                planner_outcome.trace.get("partial_plan_recovered", False),
             )
         plan = _bind_always_on_mart_query(planner_outcome.plan, question)
         plan = _bind_session_state_contract(plan, question, session_state)
@@ -805,6 +832,7 @@ class V4Runtime:
         request_context_notices = tuple(
             notice
             for notice in (
+                planner_degradation_notice,
                 _session_inheritance_notice(question, session_state),
                 _query_scope_notice(plan),
                 _retrieval_shortfall_notice(results),
@@ -831,6 +859,11 @@ class V4Runtime:
             request_satisfaction_mode=request_satisfaction_mode,
         )
         final_text = composition.text
+        if (
+            planner_degradation_notice
+            and planner_degradation_notice not in final_text
+        ):
+            final_text = f"{planner_degradation_notice}\n\n{final_text}".strip()
         completed_at = utc_now()
         retrieval_events = tuple(
             retrieval_event_from_result(
@@ -1004,7 +1037,15 @@ class V4Runtime:
             "planner_model": planner_outcome.trace.get("model", "not_applicable"),
             "synth_serving": synthesis.trace.get("serving_id", "not_applicable"),
             "synth_model": synthesis.trace.get("model", "not_applicable"),
-            "fallback": plan.linking_plan.startswith("planner fallback;"),
+            "fallback": planner_outcome.trace.get("status") == "fallback",
+            "planner_degradation": {
+                "status": planner_outcome.trace.get("status", "unknown"),
+                "reason": planner_outcome.trace.get("degradation_reason"),
+                "partial_plan_recovered": planner_outcome.trace.get(
+                    "partial_plan_recovered", False
+                ),
+                "notice_shown": planner_degradation_notice is not None,
+            },
             "planner": plan.model_dump(mode="json"),
             "clinical_query_normalization": clinical_query_normalization,
             "planner_usage": planner_usage,
