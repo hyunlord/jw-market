@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
+from hashlib import sha256
 from typing import Any
 from urllib.parse import urlparse
 
@@ -41,13 +42,15 @@ def generic_evidence_set(
             for record_index, raw_record in enumerate(call_records, start=1):
                 evidence_id = f"{source}:{result_index}:{call_index}:{record_index}"
                 record = normalize_generic_record(source, raw_record)
+                anchor_id = public_anchor_id(source, record)
                 records.append(
                     EvidenceRecord(
                         evidence_id=evidence_id,
+                        anchor_id=anchor_id,
                         source=source,
                         result_kind=f"{source}_record",
                         payload={**record, "evidence_id": evidence_id},
-                        source_refs=record_refs(record),
+                        source_refs=record_refs(record, anchor_id=anchor_id),
                     )
                 )
     refs = dedupe_refs(
@@ -406,7 +409,11 @@ def result_refs(result: SourceResult) -> tuple[SourceReference, ...]:
     )
 
 
-def record_refs(record: Mapping[str, Any]) -> tuple[SourceReference, ...]:
+def record_refs(
+    record: Mapping[str, Any],
+    *,
+    anchor_id: str | None = None,
+) -> tuple[SourceReference, ...]:
     url = text(record.get("url") or record.get("source_url"))
     if not url:
         return ()
@@ -415,6 +422,7 @@ def record_refs(record: Mapping[str, Any]) -> tuple[SourceReference, ...]:
             url=url,
             title=_source_reference_title(record),
             published_at=text(record.get("published_at") or record.get("published_date")) or None,
+            anchor_id=anchor_id,
         ),
     )
 
@@ -446,12 +454,96 @@ def _source_reference_title(record: Mapping[str, Any]) -> str | None:
 
 def dedupe_refs(groups: Iterable[Iterable[SourceReference]]) -> tuple[SourceReference, ...]:
     by_url: dict[str, SourceReference] = {}
+    anchors_by_url: dict[str, set[str]] = {}
     for group in groups:
         for ref in group:
+            if ref.anchor_id:
+                anchors_by_url.setdefault(ref.url, set()).add(ref.anchor_id)
             current = by_url.get(ref.url)
             if current is None or (not current.title and ref.title):
                 by_url[ref.url] = ref
-    return tuple(by_url.values())
+    return tuple(
+        ref.model_copy(
+            update={
+                "anchor_id": (
+                    min(anchors_by_url.get(url, ()))
+                    if len(anchors_by_url.get(url, ())) == 1
+                    else None
+                )
+            }
+        )
+        for url, ref in by_url.items()
+    )
+
+
+def public_anchor_id(source: str, record: Mapping[str, Any]) -> str | None:
+    """Return a stable semantic anchor, never one derived from list position."""
+    if source == "nedrug":
+        value = text(record.get("item_seq") or record.get("ITEM_SEQ"))
+        return f"nedrug:{value}" if value else None
+    if source == "web":
+        value = text(record.get("url"))
+        return _hashed_anchor("web", (value,)) if value else None
+    if source == "mart":
+        parts = (
+            text(record.get("brand") or record.get("anchor_brand")),
+            text(
+                record.get("market_identifier")
+                or record.get("market")
+                or record.get("market_name")
+                or record.get("atc4")
+            ),
+            text(record.get("period") or record.get("date")),
+        )
+        return _hashed_anchor("mart", parts) if parts[0] and parts[2] else None
+    if source == "hira":
+        parts = (
+            text(record.get("sickCd") or record.get("sick_cd")),
+            text(record.get("year") or record.get("period") or record.get("date")),
+            text(record.get("sex") or record.get("gender")),
+            text(record.get("age") or record.get("age_group")),
+        )
+        return _hashed_anchor("hira:stat", parts) if parts[0] and parts[1] else None
+    if source == "document":
+        parts = (
+            text(record.get("document_name") or record.get("file_name")),
+            text(record.get("page") or record.get("page_number") or record.get("slide")),
+            text(record.get("chunk_id") or record.get("record_id")),
+        )
+        return _hashed_anchor("document", parts) if parts[0] and any(parts[1:]) else None
+    if source == "openfda":
+        parts = (
+            text(record.get("application_number") or record.get("set_id") or record.get("id")),
+            text(record.get("product_name") or record.get("brand_name")),
+        )
+        return _hashed_anchor("openfda", parts) if any(parts) else None
+    return None
+
+
+def patent_anchor_id(lane: str, record: Mapping[str, Any]) -> str | None:
+    jurisdiction = {"kr_primary": "KR", "us_secondary": "US", "news": "NEWS"}[lane]
+    patent_number = text(
+        record.get("patent_no")
+        or record.get("PATENT_NO")
+        or record.get("patent_number")
+    )
+    if patent_number:
+        return f"patent:{jurisdiction}:{patent_number}"
+    if lane == "us_secondary":
+        parts = (
+            text(record.get("application_number")),
+            text(record.get("product_number") or record.get("product_no")),
+        )
+        return _hashed_anchor("patent:US", parts) if all(parts) else None
+    if lane == "news":
+        url = text(record.get("url"))
+        return _hashed_anchor("patent:NEWS", (url,)) if url else None
+    return None
+
+
+def _hashed_anchor(prefix: str, parts: Sequence[str]) -> str:
+    canonical = "\x1f".join(part.casefold().strip() for part in parts)
+    return f"{prefix}:{sha256(canonical.encode('utf-8')).hexdigest()[:20]}"
 
 
 def retrieved_at(results: Sequence[SourceResult], observed_on: date) -> str:

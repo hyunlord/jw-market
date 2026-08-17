@@ -26,10 +26,13 @@ class SourceReference(_StrictModel):
     url: str
     title: str | None = None
     published_at: str | None = None
+    source: str | None = None
+    anchor_id: str | None = None
 
 
 class EvidenceRecord(_StrictModel):
     evidence_id: str
+    anchor_id: str | None = None
     source: str
     result_kind: str
     payload: dict[str, Any]

@@ -1951,7 +1951,9 @@ def test_runtime_trace_and_answer_keep_all_external_source_references(
     }
 
     assert set(expected_urls) <= trace_urls
-    assert all(url in answer.text for url in expected_urls)
+    assert sum(url in answer.text for url in expected_urls) == 1
+    assert "ClinicalTrials.gov" in answer.text
+    assert "외 6건" in answer.text
 
 
 def test_as_of_date_is_dynamic_in_planner_synthesizer_and_mart_periods(

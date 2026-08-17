@@ -169,7 +169,7 @@ def entity_completion_rows(
         missing_text = "·".join(missing)
         scope_notice = (
             f"확인된 {len(confirmed)}개 {entity_label}({'·'.join(confirmed)}) 기준으로 비교했으며, "
-            f"{missing_text}{_topic_particle(missing_text)} 미도착으로 제외했습니다."
+            f"{missing_text}{_topic_particle(missing_text)} 조회 결과와 연결하지 못했습니다."
         )
     missing_rows = "\n".join(
         f"| {row['entity']} | {row['status']} |"

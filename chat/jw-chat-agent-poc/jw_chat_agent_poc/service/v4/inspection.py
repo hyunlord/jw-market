@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from collections import Counter
 import os
 import re
 from typing import Any
 from urllib.parse import urlparse
 
 from jw_chat_agent_poc.service.v4.contracts import PlannerOutput, SourceResult
+from jw_chat_agent_poc.service.v4.evidence_set_support import public_anchor_id
 from jw_chat_agent_poc.service.v4.lossless_contracts import DeterministicRender, EvidenceSet
 from jw_chat_agent_poc.service.v4.source_labels import public_source_label
 
@@ -36,6 +38,15 @@ def build_inspection_detail(
         if isinstance(argument, Mapping) and argument.get("record_id")
     }
     sets_by_source = {item.source: item for item in evidence_sets}
+    anchor_counts = Counter(
+        record.anchor_id
+        for evidence_set in evidence_sets
+        for record in evidence_set.records
+        if record.anchor_id
+    )
+    unique_anchor_ids = frozenset(
+        anchor_id for anchor_id, count in anchor_counts.items() if count == 1
+    )
     source_result_counts: dict[str, int] = {}
     for result in results:
         source_result_counts[result.source] = (
@@ -64,6 +75,13 @@ def build_inspection_detail(
         surfaced = _surfaced_record_count(raw_records, answer_text)
         rendered_count = max(len(source_ids & rendered_ids), surfaced)
         narrated = max(len(source_ids & narrated_ids), surfaced)
+        inspection_output, anchor_metrics = _inspection_output(
+            raw_records,
+            returned,
+            source=result.source,
+            evidence_records=evidence_records,
+            unique_anchor_ids=unique_anchor_ids,
+        )
         calls.append(
             {
                 "sequence": index,
@@ -71,11 +89,8 @@ def build_inspection_detail(
                 "status": _public_status(result, returned),
                 "elapsed_seconds": round(max(result.elapsed_ms, 0.0) / 1000, 3),
                 "request_parameters": _request_parameters(result),
-                "output": _inspection_output(
-                    raw_records,
-                    returned,
-                    source=result.source,
-                ),
+                "output": inspection_output,
+                "anchor_binding": anchor_metrics,
                 "counts": {
                     "returned": returned,
                     "parsed": parsed,
@@ -288,20 +303,51 @@ def _inspection_output(
     returned: int,
     *,
     source: str,
-) -> dict[str, Any]:
+    evidence_records: Sequence[Any] = (),
+    unique_anchor_ids: frozenset[str] = frozenset(),
+) -> tuple[dict[str, Any], dict[str, int]]:
+    projected: list[dict[str, Any]] = []
+    eligible = 0
+    assigned = 0
+    duplicate = 0
+    for record in records:
+        candidate_anchors = _record_anchor_candidates(
+            record,
+            source=source,
+            evidence_records=evidence_records,
+        )
+        if candidate_anchors:
+            eligible += 1
+        unique = candidate_anchors & unique_anchor_ids
+        anchor_id = min(unique) if len(unique) == 1 else None
+        if anchor_id:
+            assigned += 1
+        elif candidate_anchors:
+            duplicate += 1
+        projected.append(_inspection_record(record, source=source, anchor_id=anchor_id))
+    metrics = {
+        "eligible": eligible,
+        "assigned": assigned,
+        "duplicate": duplicate,
+        "unassigned": len(records) - assigned,
+    }
     return {
         "returned": returned,
-        "records": [
-            _inspection_record(record, source=source)
-            for record in records
-        ],
-    }
+        "records": projected,
+    }, metrics
 
 
-def _inspection_record(record: Mapping[str, Any], *, source: str) -> dict[str, Any]:
+def _inspection_record(
+    record: Mapping[str, Any],
+    *,
+    source: str,
+    anchor_id: str | None = None,
+) -> dict[str, Any]:
     output: dict[str, Any] = {
         "identifiers": sorted(_display_identifiers(record)) or ["식별자 없음"]
     }
+    if anchor_id:
+        output["anchor_id"] = anchor_id
     if source != "clinicaltrials":
         return output
     title = str(record.get("brief_title") or record.get("official_title") or "").strip()
@@ -317,6 +363,27 @@ def _inspection_record(record: Mapping[str, Any], *, source: str) -> dict[str, A
     if relevance_status:
         output["relevance_status"] = _sanitize(relevance_status)
     return output
+
+
+def _record_anchor_candidates(
+    record: Mapping[str, Any],
+    *,
+    source: str,
+    evidence_records: Sequence[Any],
+) -> frozenset[str]:
+    semantic_anchor = public_anchor_id(source, record)
+    raw_identifiers = _public_identifiers(record)
+    candidates: set[str] = set()
+    for evidence_record in evidence_records:
+        anchor_id = getattr(evidence_record, "anchor_id", None)
+        if not anchor_id:
+            continue
+        if semantic_anchor and anchor_id == semantic_anchor:
+            candidates.add(anchor_id)
+            continue
+        if raw_identifiers & _public_identifiers(evidence_record.payload):
+            candidates.add(anchor_id)
+    return frozenset(candidates)
 
 
 def _inspection_text_list(value: Any, *, preferred_key: str) -> list[str]:

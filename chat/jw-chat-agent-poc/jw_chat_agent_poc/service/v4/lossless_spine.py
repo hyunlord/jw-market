@@ -563,6 +563,8 @@ def _partition_lead_commentary(blocks: Sequence[str]) -> tuple[list[str], list[s
     for block in blocks:
         if block.startswith("## 핵심 답\n") and not lead:
             lead.append(block)
+        elif not lead and not block.startswith("## "):
+            lead.append(f"## 핵심 답\n{block}")
         else:
             deferred.append(block)
     return lead, deferred
@@ -957,13 +959,18 @@ def _merged_source_block(
     del source_bodies
     lines: list[str] = []
     seen_urls: set[str] = set()
+    refs_by_source: dict[str, list[Any]] = {}
     for ref in rendered.source_refs:
         if not is_public_source_url(ref.url) or ref.url in seen_urls:
             continue
-        label = ref.title or "원문"
-        suffix = f" ({ref.published_at})" if ref.published_at else ""
-        lines.append(f"- [{label}]({ref.url}){suffix}")
         seen_urls.add(ref.url)
+        source = ref.source or ref.url
+        refs_by_source.setdefault(source, []).append(ref)
+    for source, refs in refs_by_source.items():
+        first = refs[0]
+        label = _SOURCE_LABELS.get(source, first.title or "원문")
+        extra = f" · 외 {len(refs) - 1}건" if len(refs) > 1 else ""
+        lines.append(f"- [{label}]({first.url}){extra}")
     return "" if not lines else "## 출처\n" + "\n".join(lines)
 
 

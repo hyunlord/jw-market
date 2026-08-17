@@ -1839,7 +1839,7 @@ def _inject_entity_completion_surface(
     status_labels = {
         "COMPLETE": "완료",
         "PARTIAL": "부분 수집",
-        "FAILED": "미도착",
+        "FAILED": "조회 결과와 연결하지 못했습니다",
     }
     table_lines = [
         "## 조회 대상별 수집 상태",

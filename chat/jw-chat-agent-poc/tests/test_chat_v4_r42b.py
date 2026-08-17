@@ -1,17 +1,34 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 
 import pytest
 
-from jw_chat_agent_poc.service.v4.contracts import PlannerOutput, SourceResult, ToolQueries
+from jw_chat_agent_poc.service.v4.contracts import (
+    PlannerOutput,
+    RequestedAnswerShape,
+    SourceResult,
+    ToolQueries,
+)
 from jw_chat_agent_poc.service.v4.lossless_contracts import (
     CoverageLedger,
     DeterministicRender,
+    EvidenceRecord,
+    EvidenceSet,
     RenderNode,
+    SourceReference,
 )
-from jw_chat_agent_poc.service.v4.lossless_spine import compose_lossless_answer
+from jw_chat_agent_poc.service.v4.deterministic_render import _source_refs
+from jw_chat_agent_poc.service.v4.evidence_set_support import public_anchor_id
+from jw_chat_agent_poc.service.v4.evidence_sets import build_evidence_sets
+from jw_chat_agent_poc.service.v4.inspection import _inspection_output
+from jw_chat_agent_poc.service.v4.lossless_spine import (
+    _merged_source_block,
+    compose_lossless_answer,
+)
 from jw_chat_agent_poc.service.v4.synthesizer import _synthesis_messages
+from jw_chat_agent_poc.service.v4.source_tiers import entity_completion_rows
 
 
 def _rendered(*nodes: RenderNode, notices: tuple[str, ...] = (), bindings: tuple[dict[str, object], ...] = ()) -> DeterministicRender:
@@ -387,3 +404,188 @@ def test_comparison_facts_require_a_separate_grounded_advisory_section() -> None
     assert contract["cite_fact_section"] is True
     assert contract["new_numbers_forbidden"] is True
     assert contract["assertive_recommendations_forbidden"] is True
+
+
+def test_sources_are_grouped_to_one_link_per_source_with_anchor_metadata() -> None:
+    records = tuple(
+        EvidenceRecord(
+            evidence_id=f"ct:NCT0000000{index}",
+            anchor_id=f"ct:NCT0000000{index}",
+            source="clinicaltrials",
+            result_kind="structured_clinical_record",
+            payload={"nct_id": f"NCT0000000{index}"},
+            source_refs=(
+                SourceReference(
+                    url=f"https://clinicaltrials.gov/study/NCT0000000{index}",
+                    title=f"NCT0000000{index}",
+                    anchor_id=f"ct:NCT0000000{index}",
+                ),
+            ),
+        )
+        for index in range(1, 6)
+    )
+    evidence = EvidenceSet(
+        source="clinicaltrials",
+        retrieved_at="2026-08-17T00:00:00+00:00",
+        coverage=CoverageLedger(records_received=5, records_unique=5),
+        records=records,
+        source_refs=tuple(ref for record in records for ref in record.source_refs),
+    )
+    refs = _source_refs((evidence,))
+    rendered = DeterministicRender(profile="market_analysis", source_refs=refs)
+
+    block = _merged_source_block(rendered, ())
+
+    assert block.count("https://") == 1
+    assert "ClinicalTrials.gov" in block
+    assert "외 4건" in block
+    assert refs[0].anchor_id == "ct:NCT00000001"
+    assert refs[0].source == "clinicaltrials"
+
+
+def test_duplicate_anchor_is_removed_in_source_refs() -> None:
+    duplicate = "web:duplicate"
+    records = tuple(
+        EvidenceRecord(
+            evidence_id=f"web:{index}",
+            anchor_id=duplicate,
+            source="web",
+            result_kind="web_record",
+            payload={"url": f"https://example.com/{index}"},
+            source_refs=(
+                SourceReference(
+                    url=f"https://example.com/{index}",
+                    anchor_id=duplicate,
+                ),
+            ),
+        )
+        for index in range(2)
+    )
+    evidence = EvidenceSet(
+        source="web",
+        retrieved_at="2026-08-17T00:00:00+00:00",
+        coverage=CoverageLedger(records_received=2, records_unique=2),
+        records=records,
+        source_refs=tuple(ref for record in records for ref in record.source_refs),
+    )
+
+    refs = _source_refs((evidence,))
+
+    assert all(ref.anchor_id is None for ref in refs)
+
+
+def test_inspection_projects_same_unique_anchor_as_record() -> None:
+    record = {"nct_id": "NCT05151731", "brief_title": "시험"}
+    evidence_record = EvidenceRecord(
+        evidence_id="ct:NCT05151731",
+        anchor_id="ct:NCT05151731",
+        source="clinicaltrials",
+        result_kind="structured_clinical_record",
+        payload=record,
+    )
+
+    output, metrics = _inspection_output(
+        (record,),
+        1,
+        source="clinicaltrials",
+        evidence_records=(evidence_record,),
+        unique_anchor_ids=frozenset({"ct:NCT05151731"}),
+    )
+
+    assert output["records"][0]["anchor_id"] == "ct:NCT05151731"
+    assert metrics == {"eligible": 1, "assigned": 1, "duplicate": 0, "unassigned": 0}
+
+
+def test_duplicate_or_missing_identifier_never_fabricates_anchor() -> None:
+    duplicate_anchor = public_anchor_id("web", {"url": "https://example.com/shared"})
+    assert duplicate_anchor is not None
+    duplicate_records = tuple(
+        EvidenceRecord(
+            evidence_id=f"web:{index}",
+            anchor_id=duplicate_anchor,
+            source="web",
+            result_kind="web_record",
+            payload={"url": "https://example.com/shared"},
+        )
+        for index in range(2)
+    )
+
+    duplicate_output, duplicate_metrics = _inspection_output(
+        ({"url": "https://example.com/shared"},),
+        1,
+        source="web",
+        evidence_records=duplicate_records,
+        unique_anchor_ids=frozenset(),
+    )
+    missing_output, missing_metrics = _inspection_output(
+        ({"description": "식별자 없음"},),
+        1,
+        source="web",
+        evidence_records=(),
+        unique_anchor_ids=frozenset(),
+    )
+
+    assert "anchor_id" not in duplicate_output["records"][0]
+    assert duplicate_metrics["duplicate"] == 1
+    assert "anchor_id" not in missing_output["records"][0]
+    assert missing_metrics["assigned"] == 0
+
+
+def test_uppercase_domestic_patent_number_binds_the_same_public_anchor() -> None:
+    raw_record = {
+        "PATENT_NO": "10-1234567",
+        "ITEM_SEQ": "202105578",
+        "url": "https://example.com/patent/10-1234567",
+    }
+    result = SourceResult(
+        source="patent",
+        query="리바로 특허",
+        status="ok",
+        payload={
+            "patent_lanes": {
+                "kr_primary": {
+                    "records_received": 1,
+                    "records_unique": 1,
+                    "records": [raw_record],
+                }
+            }
+        },
+    )
+
+    evidence = build_evidence_sets(
+        _plan("리바로 특허"),
+        (result,),
+        observed_on=date(2026, 8, 17),
+    )[0]
+    anchor_id = evidence.records[0].anchor_id
+    output, metrics = _inspection_output(
+        (raw_record,),
+        1,
+        source="patent",
+        evidence_records=evidence.records,
+        unique_anchor_ids=frozenset({anchor_id} if anchor_id else ()),
+    )
+
+    assert anchor_id == "patent:KR:10-1234567"
+    assert output["records"][0]["anchor_id"] == anchor_id
+    assert metrics["assigned"] == 1
+
+
+def test_entity_alias_miss_is_described_as_link_failure_not_retrieval_failure() -> None:
+    plan = _plan("Alpha, Beta 매출 현황").model_copy(
+        update={
+            "answer_sources": ("mart",),
+            "requested_answer_shape": RequestedAnswerShape(entities=("Alpha", "Beta")),
+        }
+    )
+    result = SourceResult(
+        source="mart",
+        query="Alpha Beta sales",
+        status="ok",
+        payload={"rows": [{"brand": "Alpha", "sales_krw": "100"}]},
+    )
+
+    completion = entity_completion_rows(plan, (result,))
+
+    assert "조회 결과와 연결하지 못했습니다" in completion.scope_notice
+    assert "미도착" not in completion.scope_notice

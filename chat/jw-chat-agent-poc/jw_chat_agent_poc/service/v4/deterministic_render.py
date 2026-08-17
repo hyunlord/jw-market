@@ -291,12 +291,26 @@ def _insert_auxiliary_nodes(
 def _source_refs(
     evidence_sets: Sequence[EvidenceSet],
 ) -> tuple[SourceReference, ...]:
+    anchor_counts = Counter(
+        record.anchor_id
+        for evidence_set in evidence_sets
+        for record in evidence_set.records
+        if record.anchor_id
+    )
     refs: dict[str, SourceReference] = {}
     for evidence_set in evidence_sets:
         for ref in evidence_set.source_refs:
+            anchor_id = (
+                ref.anchor_id
+                if ref.anchor_id and anchor_counts[ref.anchor_id] == 1
+                else None
+            )
+            candidate = ref.model_copy(
+                update={"source": evidence_set.source, "anchor_id": anchor_id}
+            )
             current = refs.get(ref.url)
-            if current is None or (not current.title and ref.title):
-                refs[ref.url] = ref
+            if current is None or (not current.title and candidate.title):
+                refs[ref.url] = candidate
     return tuple(refs.values())
 
 

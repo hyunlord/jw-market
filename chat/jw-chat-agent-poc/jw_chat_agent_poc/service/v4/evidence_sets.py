@@ -17,6 +17,7 @@ from jw_chat_agent_poc.service.v4.evidence_set_support import (
     mapping,
     mapping_list,
     optional_int,
+    patent_anchor_id,
     patent_evidence_id,
     record_refs,
     result_failure,
@@ -143,10 +144,14 @@ def _clinical_set(results: Sequence[SourceResult], observed_on: date) -> Evidenc
     records = tuple(
         EvidenceRecord(
             evidence_id=f"ct:{text(record.get('nct_id')).upper()}",
+            anchor_id=f"ct:{text(record.get('nct_id')).upper()}",
             source="clinicaltrials",
             result_kind="structured_clinical_record",
             payload={**record, "evidence_id": f"ct:{text(record.get('nct_id')).upper()}"},
-            source_refs=record_refs(record),
+            source_refs=record_refs(
+                record,
+                anchor_id=f"ct:{text(record.get('nct_id')).upper()}",
+            ),
         )
         for record in merged
         if text(record.get("nct_id"))
@@ -236,14 +241,16 @@ def _patent_set(results: Sequence[SourceResult], observed_on: date) -> EvidenceS
             for index, raw_record in enumerate(mapping_list(lane.get("records")), start=1):
                 record = {**raw_record, "as_of_date": observed_on.isoformat()}
                 evidence_id = patent_evidence_id(lane_name, record, index)
+                anchor_id = patent_anchor_id(lane_name, record)
                 result_kind = "web_document" if lane_name == "news" else "structured_patent_record"
                 records.append(
                     EvidenceRecord(
                         evidence_id=evidence_id,
+                        anchor_id=anchor_id,
                         source="patent",
                         result_kind=result_kind,
                         payload={**record, "evidence_id": evidence_id},
-                        source_refs=record_refs(record),
+                        source_refs=record_refs(record, anchor_id=anchor_id),
                     )
                 )
     records = dedupe_records(records)
@@ -287,14 +294,23 @@ def _policy_set(results: Sequence[SourceResult], observed_on: date) -> EvidenceS
                 or str(call_index)
             )
             evidence_id = f"hira:notice:{identifier}"
+            stable_identifier = text(
+                render_data.get("notice_number") or render_data.get("source_notice_id")
+            )
+            anchor_id = f"hira:notice:{stable_identifier}" if stable_identifier else None
             records.append(
                 EvidenceRecord(
                     evidence_id=evidence_id,
+                    anchor_id=anchor_id,
                     source="hira",
                     result_kind="policy_document",
                     payload={**render_data, "evidence_id": evidence_id},
                     source_refs=record_refs(
-                        {**render_data, "url": render_data.get("source_url") or call.get("safe_url")}
+                        {
+                            **render_data,
+                            "url": render_data.get("source_url") or call.get("safe_url"),
+                        },
+                        anchor_id=anchor_id,
                     ),
                 )
             )
