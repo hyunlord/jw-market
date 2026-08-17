@@ -90,11 +90,15 @@ from jw_chat_agent_poc.service.v4.source_tiers import (
     entity_completion_rows,
     fan_out_tier_zero_queries,
     render_axis_tokens,
+    sanitize_planner_entities,
     tier_funnel,
 )
 from jw_chat_agent_poc.service.v4.surface_binding import sanitize_bound_surface
 from jw_chat_agent_poc.service.v4.time_context import current_kst_date
-from jw_chat_agent_poc.service.v4.query_scope import apply_source_call_cap
+from jw_chat_agent_poc.service.v4.query_scope import (
+    apply_source_call_cap,
+    route_queries_by_grain,
+)
 from jw_chat_agent_poc.service.v4.synthesis_policy import (
     SynthesisPolicy,
     prune_unsupported_source_queries,
@@ -335,11 +339,13 @@ class V4Runtime:
         executor: ParallelSourceExecutor,
         synthesizer: V4Synthesizer,
         state_store: SessionStateStore | Any | None = None,
+        entity_resolver: Any | None = None,
     ) -> None:
         self._planner = planner
         self._executor = executor
         self._synthesizer = synthesizer
         self._state_store = state_store
+        self._entity_resolver = entity_resolver
         self._synthesis_policy = SynthesisPolicy.from_env()
         self._total_timeout_s = self._synthesis_policy.total_request_budget_s
         self._session_results: OrderedDict[str, tuple[SourceResult, ...]] = OrderedDict()
@@ -408,15 +414,23 @@ class V4Runtime:
         plan = _bind_always_on_mart_query(planner_outcome.plan, question)
         plan = _bind_session_state_contract(plan, question, session_state)
         plan = _preserve_period_in_answer_queries(plan)
+        plan, entity_hygiene_trace = sanitize_planner_entities(
+            question,
+            plan,
+            resolver=self._entity_resolver,
+        )
         plan = fan_out_tier_zero_queries(plan)
         parameter_expansion = expand_parameter_axes(
             plan,
             question,
             observed_on=current_kst_date(),
         )
-        plan = apply_source_call_cap(parameter_expansion.plan)
+        plan, grain_routing_trace = route_queries_by_grain(parameter_expansion.plan)
+        plan = apply_source_call_cap(plan)
         plan, pruning_trace = prune_unsupported_source_queries(plan)
         parameter_expansion.trace["unsupported_source_pruning"] = pruning_trace
+        parameter_expansion.trace["entity_hygiene"] = entity_hygiene_trace
+        parameter_expansion.trace["grain_routing"] = grain_routing_trace
         parameter_expansion.trace["query_scope"] = (
             plan.query_scope.model_dump(mode="json") if plan.query_scope else None
         )
@@ -429,6 +443,8 @@ class V4Runtime:
             plan,
             clinical_query_anchor=clinical_query_anchor,
         )
+        execution_plan, execution_grain_trace = route_queries_by_grain(execution_plan)
+        parameter_expansion.trace["execution_grain_routing"] = execution_grain_trace
         plan = plan.model_copy(update={"query_scope": execution_plan.query_scope})
         parameter_expansion.trace["query_scope"] = (
             plan.query_scope.model_dump(mode="json") if plan.query_scope else None
@@ -1611,15 +1627,19 @@ def _timeout_from_env(name: str, default: float) -> float:
 
 
 def build_default_runtime() -> V4Runtime:
+    from jw_chat_agent_poc.agent_loop.factory import build_chat_agent_dependencies
+
+    dependencies = build_chat_agent_dependencies(external_mode="live")
     return V4Runtime(
         planner=V4Planner(planner_client()),
         executor=ParallelSourceExecutor(
-            adapters=build_source_adapters(),
+            adapters=build_source_adapters(dependencies=dependencies),
             per_tool_timeout_s=per_tool_timeout_s(),
             total_timeout_s=total_timeout_s(),
         ),
         synthesizer=V4Synthesizer(synthesizer_client()),
         state_store=SessionStateStore.from_env(),
+        entity_resolver=dependencies.resolver,
     )
 
 

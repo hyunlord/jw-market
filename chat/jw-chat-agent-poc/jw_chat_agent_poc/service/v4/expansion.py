@@ -4,6 +4,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 import re
+import unicodedata
 from typing import Any
 
 from jw_chat_agent_poc.service.v4.contracts import PlannerOutput, SourceResult
@@ -78,6 +79,7 @@ def expand_parameter_axes(
     question: str,
     *,
     observed_on: date,
+    molecule_reader: Any | None = None,
 ) -> ExpansionOutcome:
     interpreted = " ".join(
         (
@@ -125,39 +127,59 @@ def expand_parameter_axes(
                     for year in years
                 )
             )
-    anchor_brands, brand_source = (
-        disease_brand_set(interpreted)
-        if plan.tool_queries.patent and "특허" in question
-        else ((), None)
-    )
+    anchor_brands, brand_source = disease_brand_set(interpreted)
     anchor_brands = anchor_brands[: configured_entity_limit()]
+    molecule_expansion = _expand_disease_molecules(
+        plan,
+        question,
+        interpreted,
+        codes=codes,
+        seed_brands=anchor_brands,
+        molecule_reader=molecule_reader,
+    )
+    if molecule_expansion is not None:
+        for source, queries in molecule_expansion["requests"].items():
+            updates[source] = tuple(
+                dict.fromkeys((*updates.get(source, ()), *queries))
+            )
+        entity_expansion = {
+            key: value
+            for key, value in molecule_expansion.items()
+            if key != "requests"
+        }
+        entity_expansion["requests"] = {
+            source: list(queries)
+            for source, queries in molecule_expansion["requests"].items()
+        }
     if anchor_brands:
         patent_queries = tuple(f"{brand} 특허현황" for brand in anchor_brands)
-        updates["patent"] = patent_queries
-        updates["mart"] = tuple(f"{brand} 내부 시장 데이터" for brand in anchor_brands)
-        entity_expansion = {
-            "status": "expanded",
-            "source": "query_expansion_data",
-            "source_detail": brand_source,
-            "entities": list(anchor_brands),
-            "requests": {
-                "patent": list(patent_queries),
-                "mart": list(updates["mart"]),
-            },
-        }
+        if "특허" in question:
+            updates["patent"] = patent_queries
+            updates["mart"] = tuple(
+                f"{brand} 내부 시장 데이터" for brand in anchor_brands
+            )
+            entity_expansion = {
+                "status": "expanded",
+                "source": "query_expansion_data",
+                "source_detail": brand_source,
+                "entities": list(anchor_brands),
+                "requests": {
+                    "patent": list(patent_queries),
+                    "mart": list(updates["mart"]),
+                },
+            }
+        else:
+            entity_expansion.update(
+                {
+                    "status": "expanded",
+                    "source_detail": brand_source,
+                    "fixture_brands": list(anchor_brands),
+                    "display_scope": "query_only",
+                }
+            )
     plan_updates: dict[str, Any] = {}
     if updates:
         plan_updates["tool_queries"] = plan.tool_queries.model_copy(update=updates)
-    if anchor_brands:
-        plan_updates["requested_answer_shape"] = plan.requested_answer_shape.model_copy(
-            update={
-                "entities": tuple(
-                    dict.fromkeys(
-                        (*plan.requested_answer_shape.entities, *anchor_brands)
-                    )
-                )
-            }
-        )
     expanded = (
         plan.model_copy(update=plan_updates)
         if plan_updates
@@ -210,9 +232,6 @@ def build_second_hop_expansion(
         update={
             "tool_queries": plan.tool_queries.model_copy(update=updates),
             "needs_second_hop": False,
-            "requested_answer_shape": plan.requested_answer_shape.model_copy(
-                update={"entities": tuple(entity for entity, _origin in selected)}
-            ),
         }
     )
     return ExpansionOutcome(
@@ -230,6 +249,129 @@ def build_second_hop_expansion(
             "deterministic": True,
         },
     )
+
+
+def _expand_disease_molecules(
+    plan: PlannerOutput,
+    question: str,
+    interpreted: str,
+    *,
+    codes: Sequence[str],
+    seed_brands: Sequence[str],
+    molecule_reader: Any | None,
+) -> dict[str, Any] | None:
+    candidates = tuple(
+        dict.fromkeys(
+            ingredient.strip()
+            for concept in plan.clinical_query_specs
+            for ingredient in concept.ingredients
+            if _is_molecule_candidate(ingredient, question)
+        )
+    )
+    if not (candidates or seed_brands) or not (codes or disease_kcd_codes(interpreted)):
+        return None
+    if molecule_reader is None:
+        from jw_chat_agent_poc.agent_loop.factory import default_brand_molecule_reader
+
+        molecule_reader = default_brand_molecule_reader()
+    rows = tuple(molecule_reader.brand_molecules()) if molecule_reader is not None else ()
+    candidate_keys = {_exact_key(candidate): candidate for candidate in candidates}
+    brand_keys = {_exact_key(brand) for brand in seed_brands}
+    matched_rows = tuple(
+        row
+        for row in rows
+        if _exact_key(str(row.get("molecule_norm") or "")) in candidate_keys
+        or _exact_key(str(row.get("molecule_display") or "")) in candidate_keys
+        or _exact_key(str(row.get("brand_name") or "")) in brand_keys
+    )
+    matched_candidate_keys = {
+        _exact_key(str(value))
+        for row in matched_rows
+        for value in (row.get("molecule_norm"), row.get("molecule_display"))
+        if value
+    }
+    validated = tuple(
+        dict.fromkeys(
+            str(row.get("molecule_display") or row.get("molecule_norm") or "").strip()
+            for row in matched_rows
+            if str(row.get("molecule_display") or row.get("molecule_norm") or "").strip()
+        )
+    )
+    brands = tuple(
+        dict.fromkeys(
+            (
+                *seed_brands,
+                *(
+                    str(row.get("brand_name") or "").strip()
+                    for row in matched_rows
+                    if str(row.get("brand_name") or "").strip()
+                ),
+            )
+        )
+    )[: configured_entity_limit()]
+    atc4_codes = tuple(
+        dict.fromkeys(
+            str(row.get("atc4_code") or "").strip().upper()
+            for row in matched_rows
+            if str(row.get("atc4_code") or "").strip()
+        )
+    )[: configured_entity_limit()]
+    mart_queries = tuple(
+        dict.fromkeys(
+            (
+                *(f"{brand} 내부 시장 데이터" for brand in brands),
+                *(f"{molecule} 성분 시장 데이터" for molecule in validated),
+                *(f"{atc4} 일반 시장 데이터" for atc4 in atc4_codes),
+            )
+        )
+    )
+    external_candidates = tuple(dict.fromkeys((*validated, *candidates)))[
+        : configured_entity_limit()
+    ]
+    requests: dict[str, tuple[str, ...]] = {
+        "nedrug": tuple(f"{value} 성분 허가 정보" for value in external_candidates),
+        "openfda": tuple(f"{value} active ingredient" for value in external_candidates),
+        "patent": tuple(
+            dict.fromkeys(
+                (
+                    *(f"{value} 특허현황" for value in external_candidates),
+                    *(f"{brand} 특허현황" for brand in brands),
+                )
+            )
+        ),
+        "web": tuple(f"{question} {value}" for value in external_candidates),
+    }
+    if mart_queries:
+        requests["mart"] = mart_queries
+    return {
+        "status": "expanded",
+        "source": "planner_candidate_plus_mart_brand_molecule",
+        "display_scope": "query_only",
+        "original_entities": list(plan.requested_answer_shape.entities),
+        "candidates": list(candidates),
+        "validated_molecules": list(validated),
+        "brands": list(brands),
+        "atc4_codes": list(atc4_codes),
+        "unvalidated_candidates": [
+            candidate
+            for candidate in candidates
+            if _exact_key(candidate) not in matched_candidate_keys
+        ],
+        "requests": requests,
+        "deterministic_validation": "normalized_exact_match",
+    }
+
+
+def _exact_key(value: str) -> str:
+    return "".join(unicodedata.normalize("NFKC", value).split()).casefold()
+
+
+def _is_molecule_candidate(value: str, question: str) -> bool:
+    normalized = " ".join(value.split())
+    if not normalized or _exact_key(normalized) == _exact_key(question):
+        return False
+    lowered = normalized.casefold()
+    return not any(token in lowered for token in ("알려줘", "보여줘", "시장 현황"))
 
 
 def _kcd_codes(question: str) -> tuple[str, ...]:

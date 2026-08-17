@@ -277,6 +277,7 @@ def _lock_exact_anchor(question: str, plan: PlannerOutput) -> PlannerOutput:
         return plan
     is_nct = anchor.startswith("NCT")
     is_product_code = _PRODUCT_CODE_ANCHOR_RE.search(question) is not None
+    is_kcd = not is_nct and not is_product_code
     suffixes = {
         "mart": "내부 시장 데이터",
         "nedrug": "국내 허가 정보",
@@ -293,6 +294,15 @@ def _lock_exact_anchor(question: str, plan: PlannerOutput) -> PlannerOutput:
         if is_product_code
         else plan.answer_sources
     )
+    if is_kcd:
+        return plan.model_copy(
+            update={
+                "tool_queries": plan.tool_queries.model_copy(
+                    update={"hira": (f"{anchor} {suffixes['hira']}",)}
+                ),
+                "needs_second_hop": False,
+            }
+        )
     return plan.model_copy(
         update={
             "answer_sources": answer_sources,
@@ -394,6 +404,9 @@ def _planner_messages(
                 "For clinical trials, populate clinical_query_specs with searchable concepts rather than "
                 "document filler phrases: ingredients, brands, intervention/condition search area, both/any "
                 "matching, countries, statuses, and the corresponding source_queries. "
+                "When a disease is requested for any analysis, put plausible Korean and English active "
+                "ingredient names in clinical_query_specs.ingredients as query-expansion candidates. "
+                "Candidates are search terms only and must not be stated as facts without retrieved records. "
                 "Populate requested_answer_shape.entities with every distinct entity resolved from the "
                 "question and recent-turn context. When the interpretation names KCD codes or products, "
                 "preserve the complete set in that structured field. "

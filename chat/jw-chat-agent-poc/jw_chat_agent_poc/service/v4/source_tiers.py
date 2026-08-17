@@ -52,7 +52,87 @@ _QUESTION_FRAGMENT_SUFFIXES = (
     "기준으로도 알려줘",
     "기준으로도 보여줘",
 )
-_GENERIC_ENTITY_NOUNS = frozenset({"제품", "매출", "현황", "기준", "정보"})
+_GENERIC_ENTITY_NOUNS = frozenset(
+    {"제품", "매출", "현황", "기준", "정보", "자료", "데이터", "시장", "통계"}
+)
+_FANOUT_INTENT_TOKENS = frozenset(
+    {
+        "매출",
+        "점유율",
+        "환자수",
+        "특허",
+        "급여",
+        "임상",
+        "허가",
+        "안전성",
+        "단가",
+        "처방량",
+    }
+)
+_INSTITUTION_ENTITIES = frozenset(
+    {
+        "보건복지부",
+        "식약처",
+        "식품의약품안전처",
+        "심평원",
+        "건강보험심사평가원",
+        "특허청",
+        "fda",
+    }
+)
+
+
+def sanitize_planner_entities(
+    question: str,
+    plan: PlannerOutput,
+    *,
+    resolver: Any | None = None,
+) -> tuple[PlannerOutput, dict[str, Any]]:
+    """Remove planner-only noise before it can participate in deterministic fan-out."""
+
+    question_folded = " ".join(question.split()).casefold()
+    retained: list[str] = []
+    excluded: list[dict[str, str]] = []
+    canonicalized: list[dict[str, str]] = []
+    for raw_entity in plan.requested_answer_shape.entities:
+        entity = " ".join(raw_entity.split())
+        folded = entity.casefold()
+        reason: str | None = None
+        if entity in _GENERIC_ENTITY_NOUNS:
+            reason = "generic_noun"
+        elif folded in _INSTITUTION_ENTITIES and folded not in question_folded:
+            reason = "planner_only_institution"
+        elif _is_render_axis_token(entity):
+            reason = "render_axis"
+        elif _is_question_fragment(entity):
+            reason = "question_fragment"
+        if reason is not None:
+            excluded.append({"entity": entity, "reason": reason})
+            continue
+        canonicalize = getattr(resolver, "canonicalize_exact", None)
+        canonical = canonicalize(entity) if callable(canonicalize) else None
+        if canonical and canonical != entity:
+            canonicalized.append({"input": entity, "canonical": canonical})
+            entity = canonical
+        if entity and entity not in retained:
+            retained.append(entity)
+
+    if tuple(retained) == plan.requested_answer_shape.entities:
+        sanitized = plan
+    else:
+        sanitized = plan.model_copy(
+            update={
+                "requested_answer_shape": plan.requested_answer_shape.model_copy(
+                    update={"entities": tuple(retained)}
+                )
+            }
+        )
+    return sanitized, {
+        "retained": retained,
+        "excluded": excluded,
+        "canonicalized": canonicalized,
+        "deterministic": True,
+    }
 
 
 def render_axis_tokens(entities: Sequence[str]) -> tuple[str, ...]:
@@ -115,6 +195,9 @@ def fan_out_tier_zero_queries(plan: PlannerOutput) -> PlannerOutput:
             if not tail:
                 tail = fallback_tail
             if not tail:
+                passthrough.append(query)
+                continue
+            if not _tail_is_relevant(plan, tail):
                 passthrough.append(query)
                 continue
             if tail not in intent_tails:
@@ -317,6 +400,23 @@ def _entity_query_tail(query: str, entities: Sequence[str]) -> str:
     tail = re.sub(r"[,，:·/]+", " ", tail)
     tail = re.sub(r"(?:^|\s)(?:및|와|과)(?=\s|$)", " ", tail)
     return " ".join(tail.split()).strip()
+
+
+def _tail_is_relevant(plan: PlannerOutput, tail: str) -> bool:
+    context = " ".join(
+        (
+            plan.resolved_question,
+            *plan.expanded_intents,
+            *plan.requested_answer_shape.measure_or_attribute,
+        )
+    ).casefold()
+    tokens = tuple(
+        token.casefold()
+        for token in re.findall(r"[0-9A-Za-z가-힣]+", tail)
+        if len(token) >= 2
+    )
+    overlap = tuple(token for token in tokens if token in context)
+    return len(overlap) >= 2 or any(token in _FANOUT_INTENT_TOKENS for token in overlap)
 
 
 def _entity_mentions(text: str, ordered_entities: Sequence[str]) -> list[str]:

@@ -1216,7 +1216,7 @@ def _clinical_lossless_external_call(
     )
 
 
-def build_source_adapters() -> dict[SourceName, Any]:
+def build_source_adapters(*, dependencies: Any | None = None) -> dict[SourceName, Any]:
     from jw_chat_agent_poc.agent_loop.factory import build_chat_agent_dependencies
     from jw_chat_agent_poc.service.general_view_routing import GeneralRoute, GeneralViewService
     from jw_chat_agent_poc.tools.external.client import ExternalCall
@@ -1226,7 +1226,7 @@ def build_source_adapters() -> dict[SourceName, Any]:
         configured_reimbursement_store,
     )
 
-    dependencies = build_chat_agent_dependencies(external_mode="live")
+    dependencies = dependencies or build_chat_agent_dependencies(external_mode="live")
     external = dependencies.external
     general_view = GeneralViewService.from_env(dependencies.resolver)
     reimbursement = ReimbursementLookupService(

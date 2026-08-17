@@ -175,3 +175,46 @@ def apply_source_call_cap(plan: Any) -> Any:
             ),
         }
     )
+
+
+def route_queries_by_grain(plan: Any) -> tuple[Any, dict[str, Any]]:
+    """Keep KCD literals on the HIRA lane and report every skipped request."""
+
+    from jw_chat_agent_poc.service.v4.contracts import QueryScope
+
+    kcd_pattern = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]\d{2}(?:\.?\d)?(?![A-Za-z0-9])")
+    updates: dict[str, tuple[str, ...]] = {}
+    omitted_trace: dict[str, list[dict[str, str]]] = {}
+    previous = plan.query_scope
+    requested = dict(previous.requested_calls) if previous else {}
+    executed = dict(previous.executed_calls) if previous else {}
+    omitted = dict(previous.omitted_queries) if previous else {}
+    for source, queries in plan.tool_queries.items():
+        if source == "hira":
+            continue
+        rejected = tuple(query for query in queries if kcd_pattern.search(query))
+        if not rejected:
+            continue
+        retained = tuple(query for query in queries if query not in rejected)
+        updates[source] = retained
+        requested[source] = max(requested.get(source, 0), len(queries))
+        executed[source] = len(retained)
+        omitted[source] = tuple(dict.fromkeys((*omitted.get(source, ()), *rejected)))
+        omitted_trace[source] = [
+            {"query": query, "reason": "grain_mismatch_kcd"} for query in rejected
+        ]
+    if not updates:
+        return plan, {"applied": False, "omitted": {}}
+    return (
+        plan.model_copy(
+            update={
+                "tool_queries": plan.tool_queries.model_copy(update=updates),
+                "query_scope": QueryScope(
+                    requested_calls=requested,
+                    executed_calls=executed,
+                    omitted_queries=omitted,
+                ),
+            }
+        ),
+        {"applied": True, "omitted": omitted_trace},
+    )

@@ -182,6 +182,16 @@ class BrandResolver:
             )
         )
 
+    def canonicalize_exact(self, value: str) -> str | None:
+        """Return a canonical brand only when the complete value is an exact alias."""
+
+        items = self._items()
+        index, _window = self._alias_lookup(items)
+        candidates = index.get(self._normalize(value), ())
+        if len(candidates) != 1:
+            return None
+        return str(candidates[0]["canonical_brand"])
+
     def supported_brand_count(self) -> int:
         return len(self._items())
 
