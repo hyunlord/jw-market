@@ -849,6 +849,7 @@ class V4Runtime:
             mode=lossless_mode,
             requested_fields_mode=requested_fields_mode,
             request_satisfaction_mode=request_satisfaction_mode,
+            question=plan.resolved_question,
         )
         final_text = composition.text
         if (

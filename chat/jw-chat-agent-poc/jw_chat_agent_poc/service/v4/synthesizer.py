@@ -109,6 +109,9 @@ _SYNTHESIS_SYSTEM_PROMPT = (
     "재계산한 주장만 포함하므로 서술에 반영하되, 그 목록에 없는 레코드 간 관계를 새로 만들지 않는다. "
     "핵심 답은 질문에 직접 답하고, 근거와 맥락은 사실 간 관계를, "
     "종합 인사이트는 의사결정상 함의를 설명한다. 한 문단은 최대 4문장으로 쓰고, "
+    "종합 인사이트는 사실면과 분리된 절에 두고, 해석마다 근거가 된 사실 구획을 이름으로 밝힌다. "
+    "근거에 없는 새 수치를 만들지 않으며 단정 대신 가능성 또는 검토할 함의로 표현한다. "
+    "해석할 재료가 있으면 종합 인사이트를 반드시 작성하고, 재료가 없으면 해석하지 못한 이유를 적는다. "
     "고시·허가사항은 투여대상·제외기준·투여방법·투여횟수처럼 의미 단위 불릿으로 요약한다. 근거 본문은 "
     "활용하되 다운로드 안내문이나 담당부서 연락 안내는 답변에 복사하지 않는다. gap_fill로 표시된 웹 근거는 "
     "공식 통계 표나 시계열에 섞지 말고 별도 문단에서 '공식 통계 아님'을 밝혀 서술한다. TIER1 또는 TIER2가 "
@@ -591,6 +594,18 @@ def _synthesis_messages(
         }
     if comparison_facts:
         prompt["COMPARISON_FACTS"] = comparison_facts
+        prompt["advisory_contract"] = {
+            "section": "종합 인사이트",
+            "required_when_facts_exist": True,
+            "separate_from_fact_surface": True,
+            "cite_fact_section": True,
+            "new_numbers_forbidden": True,
+            "assertive_recommendations_forbidden": True,
+            "instruction": (
+                "COMPARISON_FACTS와 내부 데이터마트 사실을 해석하되 사실면의 수치를 재작성하지 말고, "
+                "근거가 된 사실 구획을 밝혀 의사결정상 함의를 한 문단 이상 작성한다"
+            ),
+        }
     if any("entity_bundle" in _mart_block(result) for result in mart):
         prompt["entity_bundle_contract"] = {
             "same_period_and_denominator_only": True,

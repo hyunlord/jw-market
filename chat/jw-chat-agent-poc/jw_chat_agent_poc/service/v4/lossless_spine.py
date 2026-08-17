@@ -32,6 +32,41 @@ _INSIGHT_HEADINGS = {"종합 인사이트", "인사이트"}
 _LIMIT_HEADINGS = {"해석 상한", "해석상 주의점", "미확인 요소", "한계"}
 _TABLE_SEPARATOR_CELL_RE = re.compile(r"^:?-{3,}:?$")
 _UNPROVIDED_CELL = "원천 미제공"
+_COVERAGE_RE = re.compile(
+    r"원천 검색 (?P<total>[^·]+?)건\s*·\s*수신 (?P<received>[\d,]+)건\s*·\s*"
+    r"중복 제거 후 (?P<unique>[\d,]+)건\s*·\s*상세 표시 (?P<shown>[\d,]+)건"
+)
+_AXIS_RULES: tuple[tuple[str, tuple[str, ...], tuple[str, ...], str], ...] = (
+    ("sales", ("매출", "실적"), ("market:",), "mart"),
+    ("market_share", ("점유율", "시장점유"), ("market:",), "mart"),
+    ("patient_statistics", ("환자수", "환자 수", "통계"), ("hira-statistics:",), "hira"),
+    ("clinical", ("임상", "nct"), ("clinical:",), "clinicaltrials"),
+    ("patent", ("특허",), ("patent:",), "patent"),
+    ("reimbursement", ("급여기준", "급여 기준", "고시"), ("policy:",), "hira"),
+    ("approval", ("허가", "품목"), ("nedrug:", "openfda:"), "nedrug"),
+    ("document", ("문서", "파일", "첨부"), ("document:",), "document"),
+)
+_SOURCE_LABELS = {
+    "mart": "내부 데이터마트",
+    "hira": "건강보험심사평가원",
+    "clinicaltrials": "ClinicalTrials.gov",
+    "patent": "특허 자료",
+    "nedrug": "식품의약품안전처 의약품 정보",
+    "openfda": "미국 의약품 공개 정보",
+    "web": "공개 웹 자료",
+    "document": "업로드 문서",
+}
+_AXIS_LABELS = {
+    "sales": "매출",
+    "market_share": "점유율",
+    "patient_statistics": "환자수",
+    "clinical": "임상 현황",
+    "patent": "특허 현황",
+    "reimbursement": "급여기준",
+    "approval": "허가 정보",
+    "document": "문서 내용",
+}
+_PRIMARY_TABLE_ROW_LIMIT = 15
 
 
 def configured_lossless_mode() -> LosslessMode:
@@ -129,6 +164,7 @@ def compose_lossless_answer(
     mode: LosslessMode,
     requested_fields_mode: RequestedFieldsMode = "shadow",
     request_satisfaction_mode: RequestSatisfactionMode = "inject",
+    question: str = "",
 ) -> CompositionResult:
     commentary = _drop_empty_bold_headings(commentary)
     if mode == "inject":
@@ -184,6 +220,15 @@ def compose_lossless_answer(
         "identifier_only_sentence_count": rendered.identifier_only_sentence_count,
         "selection_rule": rendered.selection_rule,
         "selection_is_ranked": rendered.selection_is_ranked,
+        "answer_axis": "unknown",
+        "primary_source": None,
+        "axis_fallback_preserved_order": True,
+        "primary_axis_absence": None,
+        "secondary_records_compacted": 0,
+        "primary_table_row_limit": _PRIMARY_TABLE_ROW_LIMIT,
+        "primary_table_rows_hidden": 0,
+        "comparison_observation_sections_removed": 0,
+        "mechanical_narratives_compacted": 0,
         "facts_injected_after_synthesis": False,
         "synthesis_prompt_chars": synthesis_trace.get("prompt_chars"),
         "render_nodes": [
@@ -241,6 +286,8 @@ def compose_lossless_answer(
             fallback=fallback,
             requested_fields_mode=requested_fields_mode,
             request_notice=rendered.request_notice if inject_request_notice else None,
+            question=question,
+            layout_trace=trace,
         )
     text, numeric_separator_repairs = _repair_numeric_separators(text)
     text = append_automatic_fact_notices(text, _rendered_notice_sources(rendered))
@@ -306,6 +353,8 @@ def _assemble_injected_answer(
     fallback: bool,
     requested_fields_mode: RequestedFieldsMode,
     request_notice: str | None,
+    question: str,
+    layout_trace: dict[str, Any],
 ) -> str:
     preamble, commentary_sections = _markdown_sections(commentary)
     source_bodies = [
@@ -323,9 +372,14 @@ def _assemble_injected_answer(
         fallback_text="## 핵심 답\n해설은 생성하지 못했고 조회 결과만 표시합니다.",
     )
 
-    fact_coverage: list[str] = []
+    axis, primary_prefixes, primary_source = _question_axis(question)
+    layout_trace["answer_axis"] = axis
+    layout_trace["primary_source"] = primary_source
+    layout_trace["axis_fallback_preserved_order"] = axis == "unknown"
+
+    coverage_nodes: list[RenderNode] = []
     fact_narratives: list[str] = []
-    fact_tables: list[str] = []
+    fact_nodes: list[tuple[RenderNode, str]] = []
     fact_limits: list[str] = []
     omitted_columns: list[str] = []
     nodes = rendered.nodes or (
@@ -349,13 +403,13 @@ def _assemble_injected_answer(
         if not visible_text:
             continue
         if node.block_id.endswith(":coverage"):
-            fact_coverage.append(visible_text)
+            coverage_nodes.append(node.model_copy(update={"text": visible_text}))
         elif node.block_id.startswith("narrative:"):
             fact_narratives.append(visible_text)
         elif node.block_id.endswith(":limits"):
             fact_limits.append(visible_text)
         else:
-            fact_tables.append(visible_text)
+            fact_nodes.append((node, visible_text))
 
     limits: list[tuple[str, str]] = []
     if request_notice:
@@ -378,18 +432,253 @@ def _assemble_injected_answer(
             )
         )
 
-    primary_narrative = [*fact_narratives, *commentary_blocks]
-    blocks = [
-        *primary_narrative,
-        *fact_coverage,
-        *fact_tables,
-        *fact_limits,
-        *(_render_sections(limits)),
-    ]
+    if axis == "unknown":
+        blocks = [
+            *fact_narratives,
+            *commentary_blocks,
+            *(_consolidated_coverage(coverage_nodes)),
+            *(text for _, text in fact_nodes),
+            *fact_limits,
+            *(_render_sections(limits)),
+        ]
+    else:
+        comparison_blocks = [
+            block for block in commentary_blocks if block.startswith("## 비교 관측\n")
+        ]
+        if comparison_blocks:
+            commentary_blocks = [
+                block for block in commentary_blocks if block not in comparison_blocks
+            ]
+            layout_trace["comparison_observation_sections_removed"] = len(comparison_blocks)
+        primary_nodes = [
+            (node, text)
+            for node, text in fact_nodes
+            if node.block_id.startswith(primary_prefixes)
+        ]
+        secondary_nodes = [
+            (node, text)
+            for node, text in fact_nodes
+            if not node.block_id.startswith(primary_prefixes)
+        ]
+        lead_blocks, deferred_commentary = _partition_lead_commentary(commentary_blocks)
+        absence_block, absence_reason = _primary_absence_block(
+            axis,
+            primary_source,
+            primary_nodes,
+            rendered.source_notice_bindings,
+        )
+        if absence_block:
+            lead_blocks.insert(0, absence_block)
+            layout_trace["primary_axis_absence"] = absence_reason
+        compacted, compacted_records = _compact_secondary_nodes(secondary_nodes)
+        layout_trace["secondary_records_compacted"] = compacted_records
+        limited_primary: list[str] = []
+        hidden_primary_rows = 0
+        for node, text in primary_nodes:
+            limited, hidden = _limit_markdown_table_rows(
+                text,
+                row_limit=_PRIMARY_TABLE_ROW_LIMIT,
+            )
+            limited_primary.append(limited)
+            hidden_primary_rows += hidden
+        layout_trace["primary_table_rows_hidden"] = hidden_primary_rows
+        layout_trace["mechanical_narratives_compacted"] = len(fact_narratives)
+        blocks = [
+            *lead_blocks,
+            *limited_primary,
+            *deferred_commentary,
+            *compacted,
+            *(_consolidated_coverage(coverage_nodes)),
+            *fact_limits,
+            *(_render_sections(limits)),
+        ]
     source_block = _merged_source_block(rendered, source_bodies)
     if source_block:
         blocks.append(source_block)
     return "\n\n".join(block for block in blocks if block.strip()).strip()
+
+
+def _question_axis(question: str) -> tuple[str, tuple[str, ...], str | None]:
+    normalized = " ".join(question.casefold().split())
+    for axis, tokens, prefixes, source in _AXIS_RULES:
+        if any(token in normalized for token in tokens):
+            return axis, prefixes, source
+    return "unknown", (), None
+
+
+def _node_source(block_id: str) -> str:
+    prefix = block_id.split(":", 1)[0]
+    return {
+        "market": "mart",
+        "hira-statistics": "hira",
+        "policy": "hira",
+        "clinical": "clinicaltrials",
+        "patent": "patent",
+        "nedrug": "nedrug",
+        "openfda": "openfda",
+        "web": "web",
+        "document": "document",
+    }.get(prefix, prefix)
+
+
+def _consolidated_coverage(nodes: Sequence[RenderNode]) -> list[str]:
+    rows: list[str] = []
+    for node in nodes:
+        match = _COVERAGE_RE.search(node.text)
+        if match is None:
+            body = _markdown_sections(node.text)[1]
+            detail = body[0][1] if body else node.text
+            rows.append(
+                f"| {_SOURCE_LABELS.get(_node_source(node.block_id), _node_source(node.block_id))} "
+                f"| {detail.replace('|', '\\|')} | - | - | - |"
+            )
+            continue
+        rows.append(
+            "| "
+            + " | ".join(
+                (
+                    _SOURCE_LABELS.get(_node_source(node.block_id), _node_source(node.block_id)),
+                    match.group("total").strip(),
+                    match.group("received"),
+                    match.group("unique"),
+                    match.group("shown"),
+                )
+            )
+            + " |"
+        )
+    if not rows:
+        return []
+    return [
+        "## 조사 범위와 완전성\n"
+        "| 자료원 | 원천 | 수신 | 중복 제거 후 | 표시 |\n"
+        "| --- | ---: | ---: | ---: | ---: |\n"
+        + "\n".join(rows)
+    ]
+
+
+def _partition_lead_commentary(blocks: Sequence[str]) -> tuple[list[str], list[str]]:
+    lead: list[str] = []
+    deferred: list[str] = []
+    for block in blocks:
+        if block.startswith("## 핵심 답\n") and not lead:
+            lead.append(block)
+        else:
+            deferred.append(block)
+    return lead, deferred
+
+
+def _primary_absence_block(
+    axis: str,
+    primary_source: str | None,
+    primary_nodes: Sequence[tuple[RenderNode, str]],
+    bindings: Sequence[Mapping[str, Any]],
+) -> tuple[str | None, str | None]:
+    if primary_nodes or primary_source is None:
+        return None, None
+    matching = next(
+        (
+            binding
+            for binding in bindings
+            if str(binding.get("tool") or "") == primary_source
+        ),
+        None,
+    )
+    reason_code = str(matching.get("reason_code") or "") if matching else ""
+    reason = _public_absence_reason(reason_code)
+    suffix = f"({reason})" if reason else ""
+    label = _AXIS_LABELS.get(axis, "요청하신 정보")
+    return f"## 핵심 답\n요청하신 {label}는 이번 조회에서 확인하지 못했습니다{suffix}.", reason_code or None
+
+
+def _public_absence_reason(reason_code: str) -> str | None:
+    normalized = reason_code.casefold()
+    if normalized in {"query_not_generated", "source_not_selected", "not_executed"}:
+        return "실행 안 함"
+    if "timeout" in normalized:
+        return "응답 시간 초과"
+    if normalized == "empty_result":
+        return "성공했으나 0건"
+    if any(token in normalized for token in ("quota", "limit", "rate")):
+        return "쿼터·한도 소진"
+    return None
+
+
+def _compact_secondary_nodes(
+    nodes: Sequence[tuple[RenderNode, str]],
+) -> tuple[list[str], int]:
+    grouped: dict[str, list[tuple[RenderNode, str]]] = {}
+    for node, visible_text in nodes:
+        grouped.setdefault(_secondary_group_key(node.block_id), []).append((node, visible_text))
+
+    lines: list[str] = []
+    compacted_records = 0
+    for grouped_nodes in grouped.values():
+        record_ids = tuple(
+            dict.fromkeys(
+                record_id
+                for node, _visible_text in grouped_nodes
+                for record_id in node.record_ids
+            )
+        )
+        count = len(record_ids)
+        if count == 0:
+            continue
+        first_node, first_text = grouped_nodes[0]
+        heading, representative = _summary_parts(first_text)
+        label = heading or _SOURCE_LABELS.get(_node_source(first_node.block_id), "참고 자료")
+        representative_text = f" · 대표: {representative}" if representative else ""
+        lines.append(
+            f"- {label} {count}건{representative_text} · 상세 항목은 조회 상세에서 확인할 수 있습니다."
+        )
+        compacted_records += count
+    return (["## 참고 자료\n" + "\n".join(lines)] if lines else []), compacted_records
+
+
+def _secondary_group_key(block_id: str) -> str:
+    parts = block_id.split(":")
+    if parts[0] == "patent" and len(parts) > 1:
+        return ":".join(parts[:2])
+    return parts[0]
+
+
+def _summary_parts(text: str) -> tuple[str, str | None]:
+    _preamble, sections = _markdown_sections(text)
+    heading = sections[0][0] if sections else ""
+    body = sections[0][1] if sections else text
+    table_rows = [
+        row
+        for line in body.splitlines()
+        if (row := _split_markdown_row(line)) is not None
+    ]
+    if len(table_rows) >= 3 and table_rows[2]:
+        return heading, table_rows[2][0]
+    first_line = next((line.strip("- ") for line in body.splitlines() if line.strip()), "")
+    return heading, first_line or None
+
+
+def _limit_markdown_table_rows(text: str, *, row_limit: int) -> tuple[str, int]:
+    lines = text.splitlines()
+    table_indexes = [
+        index for index, line in enumerate(lines) if _split_markdown_row(line) is not None
+    ]
+    if len(table_indexes) <= row_limit + 2:
+        return text, 0
+    first = table_indexes[0]
+    contiguous: list[int] = []
+    for index in table_indexes:
+        if not contiguous or index == contiguous[-1] + 1:
+            contiguous.append(index)
+        elif index > first:
+            break
+    data_indexes = contiguous[2:]
+    if len(data_indexes) <= row_limit:
+        return text, 0
+    hidden = len(data_indexes) - row_limit
+    keep = set(contiguous[: row_limit + 2])
+    output = [line for index, line in enumerate(lines) if index not in contiguous or index in keep]
+    insert_at = max(keep) + 1
+    output.insert(insert_at, f"전체 {len(data_indexes)}건 중 {row_limit}건 표시 · 나머지는 조회 상세에서 확인")
+    return "\n".join(output), hidden
 
 
 def _question_driven_blocks(
