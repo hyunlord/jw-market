@@ -529,9 +529,10 @@ def _consolidated_coverage(nodes: Sequence[RenderNode]) -> list[str]:
             body = _markdown_sections(node.text)[1]
             detail = body[0][1] if body else node.text
             detail = "<br>".join(line.strip() for line in detail.splitlines() if line.strip())
+            escaped_detail = detail.replace("|", "\\|")
             rows.append(
                 f"| {_SOURCE_LABELS.get(_node_source(node.block_id), _node_source(node.block_id))} "
-                f"| {detail.replace('|', '\\|')} | - | - | - |"
+                f"| {escaped_detail} | - | - | - |"
             )
             continue
         rows.append(
