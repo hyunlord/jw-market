@@ -106,8 +106,6 @@ def expand_parameter_axes(
             )
         else:
             updates["hira"] = tuple(f"{code} {base}" for code in codes)
-        if set(plan.answer_sources) == {"hira"}:
-            updates["web"] = ()
     elif len(years) > 1:
         for source in plan.answer_sources:
             queries = getattr(plan.tool_queries, source)

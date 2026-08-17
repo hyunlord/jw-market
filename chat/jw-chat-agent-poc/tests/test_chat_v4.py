@@ -964,7 +964,7 @@ def test_v4_synthesizer_retries_internal_surface_once() -> None:
     assert "hira_disease_name_code" not in answer
 
 
-def test_v4_synthesizer_replaces_repeated_internal_block_and_adds_hira_footnote() -> None:
+def test_v4_synthesizer_does_not_add_hira_footnote_without_a_surfaced_fact() -> None:
     class Client:
         def complete(self, _messages, *, budget_s=None, max_tokens=None) -> str:
             return "설명입니다.\n\nhira_disease_name_code MCP returned totalCount=1"
@@ -981,7 +981,7 @@ def test_v4_synthesizer_replaces_repeated_internal_block_and_adds_hira_footnote(
     assert "MCP returned" not in answer
     assert "totalCount" not in answer
     assert "hira_disease_name_code" not in answer
-    assert "주상병 기준 청구 실인원" in answer
+    assert "주상병 기준 청구 실인원" not in answer
 
 
 def test_v4_synthesizer_retries_once_when_requested_hira_value_is_missing() -> None:
@@ -2519,7 +2519,7 @@ def test_hira_coverage_notice_is_not_appended_to_answer() -> None:
     gated = apply_v4_gates("D693 환자수 최근 5년", synthesized, (result,))
 
     assert "2026년은 조회 완료됐으나 해당 데이터가 없습니다" not in gated.text
-    assert "HIRA 환자수는 주상병 기준 청구 실인원" in gated.text
+    assert "HIRA 환자수는 주상병 기준 청구 실인원" not in gated.text
     assert "모델이 만든 출처" not in gated.text
 
 

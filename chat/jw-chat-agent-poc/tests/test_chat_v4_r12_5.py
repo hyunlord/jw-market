@@ -908,7 +908,7 @@ def test_d_compacted_summary_surfaces_only_approved_relation_operators() -> None
     ]
 
 
-def test_d_auxiliary_clinical_records_do_not_enter_patent_body() -> None:
+def test_d_auxiliary_clinical_records_receive_their_own_fact_block() -> None:
     patent = EvidenceSet(
         source="patent",
         retrieved_at="2026-08-13T00:00:00Z",
@@ -963,9 +963,9 @@ def test_d_auxiliary_clinical_records_do_not_enter_patent_body() -> None:
     )
     surface = "\n".join(node.text for node in rendered.nodes)
     assert "## 국내 특허 조회 범위" in surface
-    assert "ClinicalTrials.gov에서 확인된 레코드는" not in surface
-    assert "NCT00000011" not in surface
-    assert "## 임상시험 요약" not in surface
+    assert "ClinicalTrials.gov에서 확인된 레코드는" in surface
+    assert "NCT00000011" in surface
+    assert "## 임상시험 상세" in surface
 
 
 def test_d_missing_source_fields_are_not_rendered_as_internal_raw_field_names() -> None:

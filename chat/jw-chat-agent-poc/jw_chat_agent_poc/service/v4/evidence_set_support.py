@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, date, datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any
 from urllib.parse import urlparse
 
@@ -23,6 +24,7 @@ def generic_evidence_set(
 ) -> EvidenceSet:
     records: list[EvidenceRecord] = []
     failures: list[dict[str, Any]] = []
+    total_reported = 0
     for result_index, result in enumerate(results, start=1):
         if result.status != "ok":
             failures.append(result_failure(result))
@@ -34,6 +36,8 @@ def generic_evidence_set(
                 failures.append(call_failure(call))
                 continue
             call_records = generic_call_records(source, call)
+            call_total = optional_int(mapping(call.get("render_data")).get("totalCount"))
+            total_reported += max(call_total or 0, len(call_records))
             for record_index, raw_record in enumerate(call_records, start=1):
                 evidence_id = f"{source}:{result_index}:{call_index}:{record_index}"
                 record = normalize_generic_record(source, raw_record)
@@ -54,7 +58,7 @@ def generic_evidence_set(
         query_spec=tuple(dict.fromkeys(result.query for result in results)),
         retrieved_at=retrieved_at(results, observed_on),
         coverage=CoverageLedger(
-            total_reported=len(records),
+            total_reported=max(total_reported, len(records)),
             records_received=len(records),
             records_unique=len(records),
         ),
@@ -88,10 +92,62 @@ def generic_call_records(source: str, call: Mapping[str, Any]) -> list[dict[str,
     for candidate in candidates:
         records = mapping_list(candidate)
         if records:
+            if source == "hira":
+                return _hira_call_records(call, render_data, records)
             return [dict(record) for record in records]
+    if source == "web" and any(
+        render_data.get(field) not in (None, "")
+        for field in ("title", "url", "snippet", "summary", "content")
+    ):
+        return [dict(render_data)]
     if source == "mart" and render_data:
+        series = mapping_list(render_data.get("brand_value_series_10pt"))
+        if series:
+            brand = text(render_data.get("brand") or render_data.get("anchor_brand"))
+            return [
+                {
+                    **dict(point),
+                    "brand": brand or None,
+                    "sales_krw": _eok_to_krw(point.get("value_억원")),
+                }
+                for point in series
+            ]
         return [dict(render_data)]
     return [dict(call)]
+
+
+def _hira_call_records(
+    call: Mapping[str, Any],
+    render_data: Mapping[str, Any],
+    records: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    request = mapping(render_data.get("request"))
+    total_count = optional_int(render_data.get("totalCount"))
+    request_limit = optional_int(render_data.get("request_limit"))
+    received_count = len(records)
+    tool = text(call.get("tool"))
+    expanded: list[dict[str, Any]] = []
+    for raw_record in records:
+        record = dict(raw_record)
+        breakdown = mapping_list(record.get("sexBreakdown"))
+        rows = breakdown or [record]
+        parent = {key: value for key, value in record.items() if key != "sexBreakdown"}
+        for row in rows:
+            merged = {**parent, **dict(row)} if breakdown else dict(row)
+            if request.get("year") not in (None, ""):
+                merged.setdefault("year", request["year"])
+            if request.get("sickCd") not in (None, ""):
+                merged.setdefault("sickCd", request["sickCd"])
+            merged.update(
+                {
+                    "_source_tool": tool,
+                    "_source_total_count": total_count,
+                    "_source_received_count": received_count,
+                    "_source_request_limit": request_limit,
+                }
+            )
+            expanded.append(merged)
+    return expanded
 
 
 def normalize_generic_record(source: str, raw_record: Mapping[str, Any]) -> dict[str, Any]:
@@ -151,6 +207,7 @@ def normalize_generic_record(source: str, raw_record: Mapping[str, Any]) -> dict
                 "product_name": _first_text(
                     record.get("product_name")
                     or record.get("brand_name")
+                    or record.get("title")
                     or openfda.get("brand_name")
                 ) or None,
                 "active_ingredient": _first_text(
@@ -201,7 +258,7 @@ def _mart_public_fields(record: Mapping[str, Any]) -> dict[str, Any]:
         {},
     )
     sales = _first_present(candidate, "sales_krw", "brand_sales_krw", "value")
-    market_share = _first_present(candidate, "ms_recent_pct")
+    market_share = _first_present(candidate, "market_share", "ms_recent_pct", "ms_pct")
     if market_share is None:
         market_share = _first_present(segment, "ms_recent_pct")
     return {
@@ -214,6 +271,15 @@ def _mart_public_fields(record: Mapping[str, Any]) -> dict[str, Any]:
         }.items()
         if value not in (None, "")
     }
+
+
+def _eok_to_krw(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(Decimal(str(value)) * Decimal("100000000"))
+    except (InvalidOperation, ValueError):
+        return None
 
 
 def _first_present(mapping_value: Mapping[str, Any], *keys: str) -> Any | None:

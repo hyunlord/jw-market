@@ -17,6 +17,7 @@ from jw_chat_agent_poc.service.v4.lossless_contracts import (
     RenderNode,
 )
 from jw_chat_agent_poc.service.v4.source_labels import normalize_public_source_surface
+from jw_chat_agent_poc.service.v4.surface_notices import append_automatic_fact_notices
 from jw_chat_agent_poc.service.v4.synthesis_policy import limit_evidence_sets_for_render
 
 
@@ -90,6 +91,15 @@ def build_lossless_render(
         plan,
         render_sets,
         observed_on=observed_on,
+    )
+    rendered = rendered.model_copy(
+        update={
+            "selection_rule": limit_trace.get(
+                "selection_rule",
+                "leading_records_in_upstream_order",
+            ),
+            "selection_is_ranked": limit_trace.get("selection_is_ranked", False),
+        }
     )
     if limit_trace["applied"]:
         # Say how the shown ones were chosen. They are the leading records in the
@@ -172,6 +182,10 @@ def compose_lossless_answer(
         "average_narrated_field_count": rendered.average_narrated_field_count,
         "loaded_field_narrative_use_rate": rendered.loaded_field_narrative_use_rate,
         "identifier_only_sentence_count": rendered.identifier_only_sentence_count,
+        "selection_rule": rendered.selection_rule,
+        "selection_is_ranked": rendered.selection_is_ranked,
+        "facts_injected_after_synthesis": False,
+        "synthesis_prompt_chars": synthesis_trace.get("prompt_chars"),
         "render_nodes": [
             {
                 "block_id": node.block_id,
@@ -181,11 +195,7 @@ def compose_lossless_answer(
             for node in rendered.nodes
         ],
     }
-    inject_facts = bool(
-        mode == "inject"
-        and rendered.profile != "market_analysis"
-        and facts
-    )
+    inject_facts = bool(mode == "inject" and facts)
     inject_request_notice = bool(
         rendered.request_notice and request_satisfaction_mode == "inject"
     )
@@ -233,6 +243,7 @@ def compose_lossless_answer(
             request_notice=rendered.request_notice if inject_request_notice else None,
         )
     text, numeric_separator_repairs = _repair_numeric_separators(text)
+    text = append_automatic_fact_notices(text, _rendered_notice_sources(rendered))
     text, public_source_rewrites = normalize_public_source_surface(text)
     text, duplicate_leading_sentences_removed = _deduplicate_sentences(text)
     trace["answer_mutation"] = True
@@ -261,11 +272,30 @@ def compose_lossless_answer(
     )
     trace["request_notice_injected"] = inject_request_notice
     trace["source_notices_injected"] = inject_source_notices
+    trace["facts_injected_after_synthesis"] = inject_facts
     return CompositionResult(
         text=text.strip(),
         answer_mutated=True,
         fallback_detail_retention_rate=retention,
         trace=trace,
+    )
+
+
+def _rendered_notice_sources(rendered: DeterministicRender) -> tuple[str, ...]:
+    source_by_prefix = {
+        "hira-statistics": "hira",
+        "openfda": "openfda",
+        "clinical": "clinicaltrials",
+        "patent": "patent",
+    }
+    return tuple(
+        dict.fromkeys(
+            source
+            for node in rendered.nodes
+            if node.record_ids
+            for prefix, source in source_by_prefix.items()
+            if node.block_id.startswith(f"{prefix}:")
+        )
     )
 
 
@@ -309,9 +339,12 @@ def _assemble_injected_answer(
             continue
         if not _has_visible_node_content(node):
             continue
-        visible_text, node_omitted_columns = _omit_fully_unprovided_columns(
-            node.text.strip()
-        )
+        if node.block_id == "market:records":
+            visible_text, node_omitted_columns = node.text.strip(), ()
+        else:
+            visible_text, node_omitted_columns = _omit_fully_unprovided_columns(
+                node.text.strip()
+            )
         omitted_columns.extend(node_omitted_columns)
         if not visible_text:
             continue

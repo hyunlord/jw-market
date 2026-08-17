@@ -90,6 +90,8 @@ class DeterministicRender(_StrictModel):
     average_narrated_field_count: float = 0.0
     loaded_field_narrative_use_rate: float = 0.0
     identifier_only_sentence_count: int = 0
+    selection_rule: str | None = None
+    selection_is_ranked: bool | None = None
 
 
 class CompositionResult(_StrictModel):

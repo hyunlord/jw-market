@@ -179,7 +179,7 @@ def test_partial_preservation_reaches_the_body_notice() -> None:
     assert lines[0] == "시장 데이터 조회 1건 중 1건에서 자료를 확보했습니다."
     assert "그중 1건은 대상 4개 중 2개까지만 조회했고" in lines[1]
     assert "나머지 2개는 조회 시간이 초과되어 반영되지 않았습니다" in lines[1]
-    assert "리피토" in notice and "크레스토" in notice
+    assert "리피토" not in notice and "크레스토" not in notice
     assert "partial_preservation" not in notice
 
 

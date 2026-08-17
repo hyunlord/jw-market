@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from datetime import date
 import json
 import re
 from typing import Any
 
-from jw_chat_agent_poc.service.v4.contracts import PlannerOutput, SourceResult
+from jw_chat_agent_poc.service.v4.contracts import SOURCE_NAMES, PlannerOutput, SourceResult
 from jw_chat_agent_poc.service.v4.lossless_contracts import (
     DeterministicRender,
     EvidenceRecord,
@@ -25,6 +26,14 @@ from jw_chat_agent_poc.service.v4.render_clinical import (
     render_clinical,
 )
 from jw_chat_agent_poc.service.v4.render_common import text
+from jw_chat_agent_poc.service.v4.render_market import (
+    render_document,
+    render_hira_statistics,
+    render_market,
+    render_nedrug,
+    render_openfda,
+    render_web,
+)
 from jw_chat_agent_poc.service.v4.render_patent import render_patent
 from jw_chat_agent_poc.service.v4.render_policy import render_policy
 from jw_chat_agent_poc.service.v4.retrieval_events import (
@@ -44,7 +53,7 @@ def render_deterministic_facts(
 ) -> DeterministicRender:
     profile = select_render_profile(plan, evidence_sets)
     source_notices, source_notice_bindings = (
-        _source_failure_notices(evidence_sets)
+        _source_failure_notices(plan, evidence_sets)
         if _source_notices_enabled(plan, profile, evidence_sets)
         else ((), ())
     )
@@ -52,7 +61,11 @@ def render_deterministic_facts(
         evidence_set.source: source_tier(plan, evidence_set.source)
         for evidence_set in evidence_sets
     }
-    if profile == "market_analysis":
+    selected = _selected_set(profile, evidence_sets)
+    populated_sets = tuple(item for item in evidence_sets if item.records)
+    if selected is None and populated_sets:
+        selected = next((item for item in populated_sets), None)
+    if selected is None:
         return DeterministicRender(
             profile=profile,
             source_refs=_source_refs(evidence_sets),
@@ -61,33 +74,24 @@ def render_deterministic_facts(
             source_notice_bindings=source_notice_bindings,
             source_tiers=source_tiers,
         )
-
-    selected = _selected_set(profile, evidence_sets)
-    if selected is None:
-        return DeterministicRender(
-            profile="market_analysis",
-            source_notices=source_notices,
-            source_notice_bindings=source_notice_bindings,
-            source_tiers=source_tiers,
-        )
-    if profile in {"clinical_portfolio", "single_record_detail"}:
-        nodes, required = render_clinical(
-            selected,
-            single=profile == "single_record_detail",
-        )
-    elif profile == "patent_portfolio":
-        nodes, required = render_patent(selected, observed_on)
-    else:
-        nodes, required = render_policy(selected)
-
-    nodes = _inject_missing_field_node(nodes, selected, required)
     auxiliary_sets = tuple(
         evidence_set
-        for evidence_set in evidence_sets
+        for evidence_set in populated_sets
         if evidence_set is not selected and evidence_set.records
     )
-    nodes = _insert_auxiliary_nodes(plan, nodes, auxiliary_sets)
     rendered_sets = (selected, *auxiliary_sets)
+    nodes: list[RenderNode] = []
+    required_fields: list[str] = []
+    for evidence_set in rendered_sets:
+        set_nodes, set_required = _render_set(
+            profile,
+            evidence_set,
+            observed_on=observed_on,
+            primary=evidence_set is selected,
+        )
+        nodes.extend(_inject_missing_field_node(set_nodes, evidence_set, set_required))
+        required_fields.extend(set_required)
+    required = tuple(dict.fromkeys(required_fields))
     base_rendered_ids = tuple(
         dict.fromkeys(
             record_id
@@ -203,6 +207,45 @@ def render_deterministic_facts(
     )
 
 
+def _render_set(
+    profile: RenderProfile,
+    evidence_set: EvidenceSet,
+    *,
+    observed_on: date,
+    primary: bool,
+) -> tuple[list[RenderNode], tuple[str, ...]]:
+    source = evidence_set.source
+    if source == "clinicaltrials":
+        return render_clinical(
+            evidence_set,
+            single=primary and profile == "single_record_detail",
+        )
+    if source == "patent":
+        return render_patent(evidence_set, observed_on)
+    if source == "hira":
+        if any(
+            record.result_kind == "policy_document"
+            or any(
+                text(record.payload.get(field))
+                for field in ("notice_number", "raw_text", "effective_date")
+            )
+            for record in evidence_set.records
+        ):
+            return render_policy(evidence_set)
+        return render_hira_statistics(evidence_set)
+    if source == "mart":
+        return render_market(evidence_set)
+    if source == "nedrug":
+        return render_nedrug(evidence_set)
+    if source == "web":
+        return render_web(evidence_set)
+    if source == "document":
+        return render_document(evidence_set)
+    if source == "openfda":
+        return render_openfda(evidence_set)
+    return [], ()
+
+
 def _insert_narrative_nodes(
     nodes: Sequence[RenderNode],
     narrative_nodes: Sequence[RenderNode],
@@ -258,12 +301,25 @@ def _source_refs(
 
 
 def _source_failure_notices(
+    plan: PlannerOutput,
     evidence_sets: Sequence[EvidenceSet],
 ) -> tuple[tuple[str, ...], tuple[dict[str, Any], ...]]:
     notices: list[str] = []
     bindings: list[dict[str, Any]] = []
     for evidence_set in evidence_sets:
         label = public_source_label(evidence_set.source)
+        if not evidence_set.records and not evidence_set.item_failures:
+            notice = f"{label} 조회는 완료됐으나 조건에 맞는 자료가 0건입니다."
+            notices.append(notice)
+            bindings.append(
+                {
+                    "record_id": None,
+                    "notice": notice,
+                    "reason_code": "empty_result",
+                    "exposure_layer": "F-scope",
+                    "tool": evidence_set.source,
+                }
+            )
         for failure in evidence_set.item_failures:
             result = SourceResult(
                 source=evidence_set.source,
@@ -276,7 +332,10 @@ def _source_failure_notices(
                 ),
             )
             event = retrieval_event_from_result(result)
-            notice = public_retrieval_notice(event, label=label)
+            notice = public_retrieval_notice(event, label=label).replace(
+                "레코드",
+                "자료",
+            )
             notices.append(notice)
             bindings.append(
                 {
@@ -287,7 +346,74 @@ def _source_failure_notices(
                     "tool": event.tool,
                 }
             )
-    return tuple(dict.fromkeys(notices)), tuple(bindings)
+    present_sources = {evidence_set.source for evidence_set in evidence_sets}
+    omitted_sources = (
+        {
+            source
+            for source, queries in plan.query_scope.omitted_queries.items()
+            if queries
+        }
+        if plan.query_scope is not None
+        else set()
+    )
+    for source in SOURCE_NAMES:
+        queries = getattr(plan.tool_queries, source)
+        if queries or source in present_sources or source in omitted_sources:
+            continue
+        label = public_source_label(source)
+        if source in plan.answer_sources:
+            reason = "조회 질의가 생성되지 않아 실행되지 않았습니다."
+            reason_code = "query_not_generated"
+        else:
+            reason = "조회 대상으로 선택되지 않아 실행되지 않았습니다."
+            reason_code = "source_not_selected"
+        notice = f"{label} 조회는 {reason}"
+        notices.append(notice)
+        bindings.append(
+            {
+                "record_id": None,
+                "notice": notice,
+                "reason_code": reason_code,
+                "exposure_layer": "F-scope",
+                "tool": source,
+            }
+        )
+    if plan.query_scope is not None:
+        for source, omitted_queries in plan.query_scope.omitted_queries.items():
+            if not omitted_queries:
+                continue
+            label = public_source_label(source)
+            notice = f"{label} {len(omitted_queries)}건은 이번 조회에서 실행되지 않았습니다."
+            notices.append(notice)
+            bindings.append(
+                {
+                    "record_id": None,
+                    "notice": notice,
+                    "reason_code": "not_executed",
+                    "exposure_layer": "F-scope",
+                    "tool": source,
+                }
+            )
+    notice_counts = Counter(notices)
+    grouped_notice_by_text = {
+        notice: (
+            f"{notice} (동일 사유 {notice_counts[notice]}건)"
+            if notice_counts[notice] > 1
+            else notice
+        )
+        for notice in dict.fromkeys(notices)
+    }
+    grouped_notices = tuple(
+        grouped_notice_by_text[notice] for notice in dict.fromkeys(notices)
+    )
+    grouped_bindings = tuple(
+        {
+            **binding,
+            "notice": grouped_notice_by_text.get(binding["notice"], binding["notice"]),
+        }
+        for binding in bindings
+    )
+    return grouped_notices, grouped_bindings
 
 
 def _failure_source_status(failure: Mapping[str, Any]) -> str:
@@ -302,28 +428,19 @@ def _source_notices_enabled(
     profile: RenderProfile,
     evidence_sets: Sequence[EvidenceSet],
 ) -> bool:
+    if any(not getattr(plan.tool_queries, source) for source in SOURCE_NAMES):
+        return True
+    if plan.query_scope is not None and any(plan.query_scope.omitted_queries.values()):
+        return True
     if any(
         str(failure.get("status") or "") == "scope_limit"
         for evidence_set in evidence_sets
         for failure in evidence_set.item_failures
     ):
         return True
-    if profile != "market_analysis":
-        return True
-    normalized = plan.resolved_question.casefold()
-    return any(
-        token in normalized
-        for token in (
-            "임상",
-            "clinical",
-            "nct",
-            "특허",
-            "오렌지북",
-            "orange book",
-            "급여",
-            "보험",
-            "reimbursement",
-        )
+    return profile != "market_analysis" or any(
+        not evidence_set.records or evidence_set.item_failures
+        for evidence_set in evidence_sets
     )
 
 

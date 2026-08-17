@@ -1570,7 +1570,7 @@ def test_market_primary_source_is_not_replaced_by_incidental_clinical_records() 
     )
     assert composed.text.startswith(original)
     assert "NCT00000001" in composed.text
-    assert composed.trace["records_rendered"] == 0
+    assert composed.trace["records_rendered"] == 1
 
 
 def test_source_gate_returns_more_than_five_public_references() -> None:
@@ -1733,7 +1733,8 @@ def test_runtime_market_profile_ignores_model_sources_only_in_inject_mode(
     assert "- UBIST" not in shadow.text
     assert "내부 데이터마트" in shadow.text
     assert "- UBIST" not in inject.text
-    assert inject.text == "## 핵심 답\n기존 시장 답변"
+    assert inject.text.startswith("## 핵심 답\n기존 시장 답변")
+    assert "## 시장 데이터" in inject.text
     assert inject.trace["lossless_spine"]["profile"] == "market_analysis"
     assert inject.trace["lossless_spine"]["model_source_lines_ignored"] == 1
 

@@ -37,10 +37,10 @@ def test_timeout_and_empty_are_reported_separately() -> None:
     )
     assert timeout_line != empty_line
     assert "1건은" in timeout_line
-    assert "피타바스타틴 매출 알려줘" in timeout_line
+    assert "피타바스타틴 매출 알려줘" not in timeout_line
     assert "2건은" in empty_line
-    assert "리바로제트 매출 알려줘" in empty_line
-    assert "JW중외제약 매출 알려줘" in empty_line
+    assert "리바로제트 매출 알려줘" not in empty_line
+    assert "JW중외제약 매출 알려줘" not in empty_line
 
 
 def test_internal_reason_codes_never_reach_the_surface() -> None:
@@ -70,14 +70,14 @@ def test_every_call_timing_out_is_not_reported_as_absence() -> None:
     assert "12건은 조회 시간이 초과되어 이번 답변에 반영되지 않았습니다" in notice
 
 
-def test_query_preview_is_bounded_but_the_count_is_not() -> None:
+def test_query_text_is_hidden_but_the_count_is_not() -> None:
     results = tuple(
         _mart(f"질의{index}", "empty", "mart read-only adapters returned no rows")
         for index in range(9)
     )
     notice = _retrieval_shortfall_notice(results) or ""
     assert "9건은" in notice
-    assert "외 4건" in notice
+    assert "질의0" not in notice
 
 
 def test_unknown_reason_is_still_counted_rather_than_dropped() -> None:
@@ -90,7 +90,7 @@ def test_unknown_reason_is_still_counted_rather_than_dropped() -> None:
     notice = _retrieval_shortfall_notice(results) or ""
     assert "시장 데이터 조회 2건 중 1건에서 자료를 확보했습니다." in notice
     assert "1건은" in notice
-    assert "로수젯 매출 알려줘" in notice
+    assert "로수젯 매출 알려줘" not in notice
 
 
 def test_lanes_are_reported_independently() -> None:

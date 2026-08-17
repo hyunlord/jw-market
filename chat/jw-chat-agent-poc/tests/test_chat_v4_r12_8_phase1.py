@@ -90,7 +90,7 @@ def test_q1_disease_name_expands_to_data_backed_kcd_set() -> None:
     )
 
 
-def test_q1_hira_only_kcd_expansion_does_not_call_web() -> None:
+def test_q1_hira_kcd_expansion_preserves_existing_web_query() -> None:
     expanded = expand_parameter_axes(
         _plan("당뇨병 환자수 알려줘"),
         "당뇨병 환자수 알려줘",
@@ -98,7 +98,7 @@ def test_q1_hira_only_kcd_expansion_does_not_call_web() -> None:
     )
 
     assert expanded.plan.answer_sources == ("hira",)
-    assert expanded.plan.tool_queries.web == ()
+    assert expanded.plan.tool_queries.web == ("당뇨병 환자수 알려줘",)
 
 
 def test_q1_capped_kcd_plan_is_not_fanned_out_again_at_execution() -> None:
@@ -399,10 +399,9 @@ def test_q2_post_expansion_cap_is_visible_to_users_and_trace() -> None:
     assert limited.query_scope.omitted_queries["patent"] == queries[12:]
     assert _query_scope_notice(limited) == (
         "특허 조회는 요청 25건 중 12건을 실행했습니다. "
-        "나머지 13건은 이번 답변의 조회 상한으로 제외했습니다.\n"
-        "제외 질의: 브랜드12 특허현황 · 브랜드13 특허현황 · 브랜드14 특허현황 · "
-        "브랜드15 특허현황 · 브랜드16 특허현황 · 외 8건"
+        "나머지 13건은 이번 답변의 조회 상한으로 제외했습니다."
     )
+    assert "브랜드12 특허현황" not in _query_scope_notice(limited)
 
 
 def test_q2_post_expansion_cap_preserves_first_wave_omissions() -> None:

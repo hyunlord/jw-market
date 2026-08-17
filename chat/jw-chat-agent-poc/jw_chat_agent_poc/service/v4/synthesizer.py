@@ -19,6 +19,7 @@ from jw_chat_agent_poc.service.v4.gates import (
     inspect_requested_hira_surface,
     render_mart_dimension_facts,
 )
+from jw_chat_agent_poc.service.v4.inspection import _raw_records, _surfaced_record_count
 from jw_chat_agent_poc.service.v4.llm import (
     CompletionResult,
     CompletionTransportError,
@@ -34,6 +35,7 @@ from jw_chat_agent_poc.service.v4.synthesis_policy import (
 from jw_chat_agent_poc.service.v4.source_labels import (
     SOURCE_LABELS as _PUBLIC_SOURCE,
 )
+from jw_chat_agent_poc.service.v4.surface_notices import append_automatic_fact_notices
 from jw_chat_agent_poc.service.v4.time_context import (
     as_of_date_instruction,
     current_kst_date as _current_kst_date,
@@ -67,12 +69,6 @@ _SOURCE_SCOPE = {
     "web": "GLOBAL",
     "patent": "GLOBAL",
     "document": "KR",
-}
-_FOOTNOTES = {
-    "hira": "HIRA 환자수는 주상병 기준 청구 실인원이며 유병률과 다릅니다.",
-    "openfda": "FAERS/OpenFDA는 자발적 보고 자료로 인과관계나 발생률 산출에 쓸 수 없습니다.",
-    "clinicaltrials": "ClinicalTrials.gov 모집상태는 갱신이 지연될 수 있습니다.",
-    "patent": "특허 존속기간 만료가 곧 제네릭 진입 시점을 뜻하지 않습니다.",
 }
 _HIRA_FIELD_LABELS = {
     "sickCd": "상병코드",
@@ -145,6 +141,7 @@ class V4Synthesizer:
         budget_s: float = 60.0,
         state: SessionState | None = None,
         deterministic_facts: str | None = None,
+        defer_market_facts: bool = False,
     ) -> str:
         return self.synthesize_with_trace(
             plan,
@@ -153,6 +150,7 @@ class V4Synthesizer:
             budget_s=budget_s,
             state=state,
             deterministic_facts=deterministic_facts,
+            defer_market_facts=defer_market_facts,
         ).text
 
     def synthesize_with_trace(
@@ -164,6 +162,7 @@ class V4Synthesizer:
         budget_s: float = 60.0,
         state: SessionState | None = None,
         deterministic_facts: str | None = None,
+        defer_market_facts: bool = False,
     ) -> SynthesisOutcome:
         observed_on = _current_kst_date()
         synthesis_max_tokens = _synthesis_max_tokens()
@@ -385,6 +384,7 @@ class V4Synthesizer:
             answer,
             usable,
             question=plan.resolved_question,
+            enabled=not defer_market_facts,
         )
         answer = _append_comparison_observations(answer, usable)
         return SynthesisOutcome(
@@ -1512,11 +1512,12 @@ def _replace_internal_blocks(answer: str, results: Sequence[SourceResult]) -> st
 
 
 def _append_automatic_footnotes(answer: str, results: Sequence[SourceResult]) -> str:
-    notes = tuple(dict.fromkeys(_FOOTNOTES[result.source] for result in results if result.source in _FOOTNOTES))
-    if not notes:
-        return answer
-    missing = tuple(note for note in notes if note not in answer)
-    return answer if not missing else f"{answer.rstrip()}\n\n" + "\n".join(f"- {note}" for note in missing)
+    surfaced_sources = tuple(
+        result.source
+        for result in results
+        if _surfaced_record_count(_raw_records(result.payload), answer) > 0
+    )
+    return append_automatic_fact_notices(answer, surfaced_sources)
 
 
 def _finalize_answer(answer: str, results: Sequence[SourceResult]) -> str:
@@ -2024,6 +2025,7 @@ def _inject_deterministic_market_surface(
     results: Sequence[SourceResult],
     *,
     question: str,
+    enabled: bool = True,
 ) -> tuple[str, dict[str, Any]]:
     """Attach the deterministic mart surface to every answer, not just failures.
 
@@ -2037,7 +2039,11 @@ def _inject_deterministic_market_surface(
     sentence the model duplicated verbatim is what collapses instead.
     """
     blocks = _deterministic_market_blocks(results, question=question)
-    pending = [block for block in blocks if block.strip() and block.strip() not in answer]
+    pending = (
+        [block for block in blocks if block.strip() and block.strip() not in answer]
+        if enabled
+        else []
+    )
     trace = {
         "blocks_available": len(blocks),
         "blocks_injected": len(pending),
@@ -2049,6 +2055,7 @@ def _inject_deterministic_market_surface(
             if line.startswith("|") and not set(line) <= set("| -:")
         ),
         "records_discarded": 0,
+        "deferred_to_final_composition": not enabled,
     }
     if not pending:
         return answer, trace
@@ -2313,32 +2320,40 @@ def _hira_patient_facts(payload: Any) -> tuple[str, ...]:
         for row in items:
             if not isinstance(row, Mapping):
                 continue
-            disease_code = disease_code or str(row.get("sickCd") or "")
-            disease_name = disease_name or str(row.get("sickNm") or "")
-            row_year = year or str(row.get("year") or "")
-            if not row_year or row.get("ptntCnt") in (None, ""):
-                continue
-            care_type = hira_row_axis_label(row)
-            values: list[str] = []
-            for field, label, unit in public_fields:
-                raw_value = row.get(field)
-                if raw_value in (None, ""):
+            breakdown = row.get("sexBreakdown")
+            nested_rows = (
+                tuple(item for item in breakdown if isinstance(item, Mapping))
+                if isinstance(breakdown, list) and breakdown
+                else (row,)
+            )
+            for nested in nested_rows:
+                resolved_row = {**row, **nested} if nested is not row else row
+                disease_code = disease_code or str(resolved_row.get("sickCd") or "")
+                disease_name = disease_name or str(resolved_row.get("sickNm") or "")
+                row_year = year or str(resolved_row.get("year") or "")
+                if not row_year or resolved_row.get("ptntCnt") in (None, ""):
                     continue
-                source_units = row.get("units")
-                source_unit = (
-                    str(source_units.get(field) or "")
-                    if isinstance(source_units, Mapping)
-                    else ""
-                )
-                try:
-                    numeric = int(str(raw_value).replace(",", ""))
-                    if field in {"rvdInsupBrdnAmt", "rvdRpeTamtAmt"} and source_unit != "원":
-                        numeric *= 1000
-                    display = f"{numeric:,}"
-                except ValueError:
-                    display = str(raw_value)
-                values.append(f"{label} {display}{unit}")
-            yearly.setdefault(row_year, []).append(f"{care_type} " + ", ".join(values))
+                care_type = hira_row_axis_label(resolved_row)
+                values: list[str] = []
+                for field, label, unit in public_fields:
+                    raw_value = resolved_row.get(field)
+                    if raw_value in (None, ""):
+                        continue
+                    source_units = resolved_row.get("units")
+                    source_unit = (
+                        str(source_units.get(field) or "")
+                        if isinstance(source_units, Mapping)
+                        else ""
+                    )
+                    try:
+                        numeric = int(str(raw_value).replace(",", ""))
+                        if field in {"rvdInsupBrdnAmt", "rvdRpeTamtAmt"} and source_unit != "원":
+                            numeric *= 1000
+                        display = f"{numeric:,}"
+                    except ValueError:
+                        display = str(raw_value)
+                    values.append(f"{label} {display}{unit}")
+                yearly.setdefault(row_year, []).append(f"{care_type} " + ", ".join(values))
     if not yearly:
         return ()
     subject = disease_code

@@ -183,7 +183,7 @@ def test_failures_are_surfaced_with_public_source_and_specific_reason() -> None:
     assert "soft deadline" not in composed.text
 
 
-def test_general_market_question_keeps_lossless_spine_non_mutating() -> None:
+def test_general_market_question_surfaces_a_typed_shortfall() -> None:
     plan = _plan("리바로 매출 알려줘", answer_sources=("mart",))
     rendered = render_deterministic_facts(
         plan,
@@ -209,9 +209,10 @@ def test_general_market_question_keeps_lossless_spine_non_mutating() -> None:
     )
 
     assert rendered.profile == "market_analysis"
-    assert rendered.source_notices == ()
-    assert composed.answer_mutated is False
-    assert composed.trace["answer_mutation"] is False
+    assert len(rendered.source_notices) == 1
+    assert "조회 한도" in rendered.source_notices[0]
+    assert composed.answer_mutated is True
+    assert composed.trace["answer_mutation"] is True
 
 
 def test_quota_empty_result_keeps_provider_quota_reason_in_trace() -> None:
@@ -271,15 +272,13 @@ def test_policy_profile_keeps_primary_and_all_nonempty_auxiliary_sources_bound()
     )
 
     assert rendered.profile == "policy_document"
-    assert rendered_ids < evidence_ids
+    assert rendered_ids == evidence_ids
     assert rendered.coverage.records_rendered == len(rendered_ids)
     assert rendered.coverage.records_unique == len(evidence_ids)
     assert composed.trace["rendered_table_rows"] == composed.trace["lossless_records_rendered"]
     assert composed.trace["lossless_records_rendered"] == len(rendered_ids)
-    assert "## FDA 보조 자료" not in composed.text
-    assert "## 웹 뉴스 보조 자료" not in composed.text
-    assert "| FDA |" not in composed.text
-    assert "| 웹 뉴스 |" not in composed.text
+    assert "## 미국 의약품 공개 정보" in composed.text
+    assert "## 공개 자료" in composed.text
     inspected_sources = {call["source_label"] for call in inspection["calls"]}
     assert inspected_sources == {"건강보험심사평가원", "FDA", "웹 뉴스"}
     assert all(call["output"]["returned"] >= 1 for call in inspection["calls"])

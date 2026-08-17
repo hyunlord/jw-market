@@ -136,19 +136,6 @@ _SHORTFALL_PHRASING: tuple[tuple[str, str], ...] = (
     ("scope_limit", "조회 범위 제한으로 이번 답변에 반영되지 않았습니다"),
     ("upstream_error", "조회에 실패해 이번 답변에 반영되지 않았습니다"),
 )
-_SHORTFALL_QUERY_PREVIEW = 5
-
-
-def _shortfall_query_preview(queries: Sequence[str]) -> str:
-    preview = [str(query).strip() for query in queries[:_SHORTFALL_QUERY_PREVIEW]]
-    preview = [query for query in preview if query]
-    if not preview:
-        return ""
-    remainder = len(queries) - len(preview)
-    suffix = f" · 외 {remainder}건" if remainder > 0 else ""
-    return f": {' · '.join(preview)}{suffix}"
-
-
 def _retrieval_shortfall_notice(results: Sequence[Any]) -> str | None:
     """Name the calls that ran but brought nothing back.
 
@@ -199,16 +186,10 @@ def _retrieval_shortfall_notice(results: Sequence[Any]) -> str | None:
             dropped = int(partial.get("dropped") or 0)
             if dropped <= 0:
                 continue
-            dropped_names = [
-                str(name).strip()
-                for name in (partial.get("dropped_brands") or [])
-                if str(name).strip()
-            ]
             partial_lines.append(
                 f"- 그중 1건은 대상 {int(partial.get('requested') or 0)}개 중 "
                 f"{int(partial.get('preserved') or 0)}개까지만 조회했고, "
                 f"나머지 {dropped}개는 조회 시간이 초과되어 반영되지 않았습니다"
-                f"{_shortfall_query_preview(dropped_names)}"
             )
         if not shortfalls and not partial_lines:
             continue
@@ -237,12 +218,9 @@ def _retrieval_shortfall_notice(results: Sequence[Any]) -> str | None:
                 for provider in providers:
                     notices.append(
                         f"- {len(queries)}건: {provider_quota_notice(provider, label=label)}"
-                        f"{_shortfall_query_preview(queries)}"
                     )
                 continue
-            notices.append(
-                f"- {len(queries)}건은 {phrase}{_shortfall_query_preview(queries)}"
-            )
+            notices.append(f"- {len(queries)}건은 {phrase}")
         notices.extend(partial_lines)
     return "\n".join(notices) if notices else None
 
@@ -283,11 +261,6 @@ def _query_scope_notice(plan: Any) -> str | None:
             f"{executed}건을 실행했습니다. 나머지 {omitted_count}건은 "
             "이번 답변의 조회 상한으로 제외했습니다."
         )
-        preview = tuple(str(query) for query in omitted[:5])
-        if preview:
-            remainder = omitted_count - len(preview)
-            suffix = f" · 외 {remainder}건" if remainder > 0 else ""
-            notices.append(f"제외 질의: {' · '.join(preview)}{suffix}")
     return "\n".join(notices) if notices else None
 
 
@@ -610,6 +583,12 @@ class V4Runtime:
                     linked_plan.resolved_question,
                 ),
             )
+            linked_execution_plan = _exclude_first_hop_queries(
+                execution_plan,
+                linked_execution_plan,
+            )
+            if not linked_execution_plan.answer_sources:
+                linked_execution_plan = None
         else:
             linked_execution_plan = None
             linked_clinical_normalization = _clinical_normalization_trace(None, None)
@@ -619,7 +598,8 @@ class V4Runtime:
                 linked_execution_plan,
                 session_id=session_id,
                 total_timeout_s=min(30.0, _remaining(deadline)),
-                answer_sources=linked_plan.answer_sources,
+                answer_sources=linked_execution_plan.answer_sources,
+                source_filter=linked_execution_plan.answer_sources,
                 soft_deadline_s=6.0,
                 soft_deadline_exempt_sources=_soft_deadline_exempt_sources(
                     linked_plan.resolved_question
@@ -808,7 +788,13 @@ class V4Runtime:
                     selected_turns,
                     budget_s=synthesis_budget_s,
                     state=session_state,
-                    optional_kwargs={"deterministic_facts": deterministic_facts},
+                    optional_kwargs={
+                        "deterministic_facts": deterministic_facts,
+                        "defer_market_facts": bool(
+                            lossless_mode == "inject"
+                            and deterministic_render.profile == "market_analysis"
+                        ),
+                    },
                 )
             except Exception as exc:  # noqa: BLE001 - invariant 3: commentary may fail, facts may not
                 synthesis = _synthesis_failure_outcome(exc)
@@ -822,7 +808,13 @@ class V4Runtime:
                         selected_turns,
                         budget_s=synthesis_budget_s,
                         state=session_state,
-                        optional_kwargs={"deterministic_facts": deterministic_facts},
+                        optional_kwargs={
+                            "deterministic_facts": deterministic_facts,
+                            "defer_market_facts": bool(
+                                lossless_mode == "inject"
+                                and deterministic_render.profile == "market_analysis"
+                            ),
+                        },
                     ),
                     trace={},
                 )
@@ -1089,6 +1081,8 @@ class V4Runtime:
             },
             "stage_timing": stage_timing,
             "gates": gated.trace,
+            "selection_rule": composition.trace.get("selection_rule"),
+            "selection_is_ranked": composition.trace.get("selection_is_ranked"),
             "lossless_spine": {
                 **composition.trace,
                 **final_narrative_metrics,
@@ -1749,6 +1743,32 @@ def _linked_clinical_query_anchor(first_question: str, linked_question: str) -> 
     if not inherited_scope:
         return linked_question
     return f"{linked_question} {inherited_scope}"
+
+
+def _exclude_first_hop_queries(first_plan: Any, linked_plan: Any) -> Any:
+    """Prevent a second-hop wave from re-executing first-hop source/query pairs."""
+    retained_sources: list[str] = []
+    query_updates: dict[str, tuple[str, ...]] = {}
+    for source in linked_plan.answer_sources:
+        first_queries = {
+            " ".join(query.split()).casefold()
+            for query in getattr(first_plan.tool_queries, source)
+        }
+        linked_queries = tuple(
+            query
+            for query in getattr(linked_plan.tool_queries, source)
+            if " ".join(query.split()).casefold() not in first_queries
+        )
+        query_updates[source] = linked_queries
+        if not linked_queries:
+            continue
+        retained_sources.append(source)
+    return linked_plan.model_copy(
+        update={
+            "answer_sources": tuple(retained_sources),
+            "tool_queries": linked_plan.tool_queries.model_copy(update=query_updates),
+        }
+    )
 
 
 def _deterministic_clinical_query_anchor(
