@@ -136,6 +136,26 @@ def test_coverage_sections_are_consolidated_into_one_lane_table() -> None:
     assert "공개 웹 자료" in coverage
 
 
+def test_nonstandard_coverage_detail_stays_inside_one_markdown_table_cell() -> None:
+    rendered = _rendered(
+        RenderNode(
+            block_id="patent:coverage",
+            text="## 조사 범위와 완전성\n원천 500건 → 제품특허 11건\n상류 상한 500건 도달",
+        ),
+        _node("market:records", "시장 데이터", (("2026-01", "83.0억원"),)),
+    )
+
+    composed = compose_lossless_answer(
+        rendered,
+        "## 핵심 답\n매출을 확인했습니다.",
+        synthesis_trace={"status": "synthesized"},
+        mode="inject",
+        question="리바로 매출",
+    )
+
+    assert "원천 500건 → 제품특허 11건<br>상류 상한 500건 도달" in composed.text
+
+
 def test_missing_primary_axis_is_reported_before_auxiliary_context() -> None:
     rendered = _rendered(
         _node("clinical:records", "임상시험 상세", (("NCT1", "3상"),)),
