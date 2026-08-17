@@ -80,6 +80,9 @@ _INSTITUTION_ENTITIES = frozenset(
         "fda",
     }
 )
+_PARENTHETICAL_ENTITY_RE = re.compile(
+    r"^(?P<base>[^()]+?)\s*\((?P<candidate>[^()]+)\)\s*$"
+)
 
 
 def sanitize_planner_entities(
@@ -94,8 +97,21 @@ def sanitize_planner_entities(
     retained: list[str] = []
     excluded: list[dict[str, str]] = []
     canonicalized: list[dict[str, str]] = []
+    parenthetical_normalized: list[dict[str, str]] = []
+    parenthetical_candidates: list[str] = []
     for raw_entity in plan.requested_answer_shape.entities:
         entity = " ".join(raw_entity.split())
+        parenthetical = _PARENTHETICAL_ENTITY_RE.fullmatch(entity)
+        if parenthetical is not None:
+            base = " ".join(parenthetical.group("base").split())
+            candidate = " ".join(parenthetical.group("candidate").split())
+            if base and candidate:
+                parenthetical_normalized.append(
+                    {"input": entity, "base": base, "candidate": candidate}
+                )
+                entity = base
+                if candidate not in parenthetical_candidates:
+                    parenthetical_candidates.append(candidate)
         folded = entity.casefold()
         reason: str | None = None
         if entity in _GENERIC_ENTITY_NOUNS:
@@ -131,6 +147,9 @@ def sanitize_planner_entities(
         "retained": retained,
         "excluded": excluded,
         "canonicalized": canonicalized,
+        "parenthetical_normalized": parenthetical_normalized,
+        "parenthetical_expansion_candidates": parenthetical_candidates,
+        "parenthetical_candidate_scope": "query_only",
         "deterministic": True,
     }
 

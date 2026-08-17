@@ -193,6 +193,43 @@ def test_f13_f14_brand_alias_uses_exact_canonicalization_and_preserves_unknown()
     ]
 
 
+def test_f15_f18_parenthetical_entity_uses_base_and_keeps_inner_query_only() -> None:
+    plan = _plan(
+        "JW 제품 매출 상위 10개",
+        entities=(
+            "리바로 (Pitavastatin)",
+            "리바로젯 (Pitavastatin/Ezetimibe)",
+            "위너프 (Winnuf)",
+        ),
+    )
+
+    sanitized, trace = sanitize_planner_entities(plan.resolved_question, plan)
+
+    assert sanitized.requested_answer_shape.entities == (
+        "리바로",
+        "리바로젯",
+        "위너프",
+    )
+    assert trace["parenthetical_expansion_candidates"] == [
+        "Pitavastatin",
+        "Pitavastatin/Ezetimibe",
+        "Winnuf",
+    ]
+    assert trace["parenthetical_candidate_scope"] == "query_only"
+
+
+def test_f16_f17_parenthetical_normalization_does_not_merge_prefix_brands() -> None:
+    plan = _plan(
+        "브랜드 비교",
+        entities=("리바로", "리바로젯", "위너프", "위너프페리"),
+    )
+
+    sanitized, trace = sanitize_planner_entities(plan.resolved_question, plan)
+
+    assert sanitized.requested_answer_shape.entities == plan.requested_answer_shape.entities
+    assert trace["parenthetical_expansion_candidates"] == []
+
+
 def test_f01_disease_ingredient_expands_through_exact_mart_dictionary() -> None:
     question = "혈우병 치료제 시장 알려줘"
     plan = _plan(
