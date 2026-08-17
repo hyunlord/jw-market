@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import date
 import os
 import re
@@ -446,7 +446,16 @@ def _assemble_injected_answer(
             *(_render_sections(limits)),
         ]
     else:
-        commentary_blocks = _align_commentary_to_axis(commentary_blocks, axis)
+        primary_nodes = [
+            (node, text)
+            for node, text in fact_nodes
+            if node.block_id.startswith(primary_prefixes)
+        ]
+        commentary_blocks = _align_commentary_to_axis(
+            commentary_blocks,
+            axis,
+            primary_nodes=primary_nodes,
+        )
         comparison_blocks = [
             block for block in commentary_blocks if block.startswith("## 비교 관측\n")
         ]
@@ -455,17 +464,16 @@ def _assemble_injected_answer(
                 block for block in commentary_blocks if block not in comparison_blocks
             ]
             layout_trace["comparison_observation_sections_removed"] = len(comparison_blocks)
-        primary_nodes = [
-            (node, text)
-            for node, text in fact_nodes
-            if node.block_id.startswith(primary_prefixes)
-        ]
         secondary_nodes = [
             (node, text)
             for node, text in fact_nodes
             if not node.block_id.startswith(primary_prefixes)
         ]
-        commentary_blocks, dimension_notices = _align_patient_dimension_commentary(
+        (
+            commentary_blocks,
+            dimension_notices,
+            promoted_commentary,
+        ) = _align_patient_dimension_commentary(
             commentary_blocks,
             question=question,
             axis=axis,
@@ -494,10 +502,13 @@ def _assemble_injected_answer(
             limited_primary.append(limited)
             hidden_primary_rows += hidden
         layout_trace["primary_table_rows_hidden"] = hidden_primary_rows
-        homogeneous_patient_narratives = _homogeneous_patient_narrative_count(
-            fact_narratives,
-            axis=axis,
-            primary_nodes=primary_nodes,
+        homogeneous_patient_narratives = (
+            promoted_commentary
+            + _homogeneous_patient_narrative_count(
+                fact_narratives,
+                axis=axis,
+                primary_nodes=primary_nodes,
+            )
         )
         layout_trace["homogeneous_patient_narratives_promoted"] = (
             homogeneous_patient_narratives
@@ -528,20 +539,41 @@ def _question_axis(question: str) -> tuple[str, tuple[str, ...], str | None]:
     return "unknown", (), None
 
 
-def _align_commentary_to_axis(blocks: Sequence[str], axis: str) -> list[str]:
+def _align_commentary_to_axis(
+    blocks: Sequence[str],
+    axis: str,
+    *,
+    primary_nodes: Sequence[tuple[RenderNode, str]],
+) -> list[str]:
     if axis != "reimbursement":
         return list(blocks)
     aligned: list[str] = []
     deferred_market: list[str] = []
+    deferred_notices: list[str] = []
+    allowed_notices = _notice_numbers(text for _node, text in primary_nodes)
     for block in blocks:
         if block.startswith("## 핵심 답\n"):
             body = block.removeprefix("## 핵심 답\n")
             retained: list[str] = []
             for paragraph in re.split(r"\n\s*\n", body):
-                if "[출처: 내부 데이터마트]" in paragraph:
-                    deferred_market.append(paragraph.strip())
-                elif paragraph.strip():
-                    retained.append(paragraph.strip())
+                kept_sentences: list[str] = []
+                for sentence in re.split(r"(?<=[.!?])\s+", paragraph.strip()):
+                    if any(
+                        marker in sentence
+                        for marker in (
+                            "[출처: 내부 데이터마트]",
+                            "[출처: 시장 데이터베이스]",
+                        )
+                    ):
+                        deferred_market.append(sentence.strip())
+                        continue
+                    sentence_notices = _notice_numbers((sentence,))
+                    if sentence_notices and not sentence_notices <= allowed_notices:
+                        deferred_notices.append(sentence.strip())
+                    elif sentence.strip():
+                        kept_sentences.append(sentence.strip())
+                if kept_sentences:
+                    retained.append(" ".join(kept_sentences))
             if retained:
                 aligned.append("## 핵심 답\n" + "\n\n".join(retained))
             continue
@@ -558,7 +590,17 @@ def _align_commentary_to_axis(blocks: Sequence[str], axis: str) -> list[str]:
             aligned.append("## 참고: 인접 연구\n" + body)
     if deferred_market:
         aligned.append("## 참고: 인접 연구\n" + "\n\n".join(deferred_market))
+    if deferred_notices:
+        aligned.append("## 참고: 관련 고시\n" + "\n\n".join(deferred_notices))
     return aligned
+
+
+def _notice_numbers(values: Iterable[str]) -> set[str]:
+    return {
+        match.group(1)
+        for value in values
+        for match in re.finditer(r"(?:고시\s*)?제?(\d{4}-\d+)호", value)
+    }
 
 
 def _node_source(block_id: str) -> str:
@@ -696,19 +738,23 @@ def _align_patient_dimension_commentary(
     question: str,
     axis: str,
     primary_nodes: Sequence[tuple[RenderNode, str]],
-) -> tuple[list[str], tuple[str, ...]]:
+) -> tuple[list[str], tuple[str, ...], int]:
     if axis != "patient_statistics" or not primary_nodes:
-        return list(blocks), ()
+        return list(blocks), (), 0
     primary_text = "\n".join(text for _node, text in primary_nodes)
     has_age_dimension = any(token in primary_text for token in ("연령", "0~9세", "10~19세"))
     if not has_age_dimension:
-        return list(blocks), ()
+        return list(blocks), (), 0
 
-    retained = [
-        block
-        for block in blocks
-        if not block.startswith(("## 근거와 맥락\n", "## 근거\n", "## 종합 인사이트\n"))
-    ]
+    retained: list[str] = []
+    promoted = 0
+    for block in blocks:
+        if block.startswith(("## 근거와 맥락\n", "## 근거\n", "## 종합 인사이트\n")):
+            continue
+        cleaned, count = _remove_patient_restatements(block)
+        promoted += count
+        if cleaned:
+            retained.append(cleaned)
     retained.append(
         "## 종합 인사이트\n"
         "'핵심 답'의 상병코드별 성별·연령대 수치를 종합하면 환자수는 "
@@ -721,7 +767,25 @@ def _align_patient_dimension_commentary(
     notices: list[str] = []
     if "성별" in normalized_question and has_male and not has_female:
         notices.append("여성 연령대별 자료는 이번 조회에서 확인하지 못했습니다.")
-    return retained, tuple(notices)
+    return retained, tuple(notices), promoted
+
+
+_PATIENT_RESTATEMENT_RE = re.compile(
+    r"(?:^|\n)\s*\d{4}년\s+\S+\s+\S+\s*·\s*\S+세\s+환자수\s+"
+    r"[\d,]+명으로\s+확인되었습니다\.\s*"
+    r"(?:\[출처:\s*건강보험심사평가원\])?\s*(?=\n|$)"
+)
+
+
+def _remove_patient_restatements(block: str) -> tuple[str, int]:
+    matches = tuple(_PATIENT_RESTATEMENT_RE.finditer(block))
+    if len(matches) < _HOMOGENEOUS_NARRATIVE_TABLE_THRESHOLD:
+        return block, 0
+    cleaned = _PATIENT_RESTATEMENT_RE.sub("\n", block)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    if cleaned.startswith("## ") and "\n" not in cleaned:
+        cleaned = ""
+    return cleaned, len(matches)
 
 
 def _homogeneous_patient_narrative_count(
@@ -735,10 +799,7 @@ def _homogeneous_patient_narrative_count(
         for _node, text in primary_nodes
     ):
         return 0
-    pattern = re.compile(
-        r"\b\d{4}년\s+\S+\s+\S+\s*·\s*\S+세\s+환자수\s+[\d,]+명으로\s+확인되었습니다\."
-    )
-    return sum(len(pattern.findall(block)) for block in blocks)
+    return sum(len(_PATIENT_RESTATEMENT_RE.findall(block)) for block in blocks)
 
 
 def _public_absence_reason(reason_code: str) -> str | None:

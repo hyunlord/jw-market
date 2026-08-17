@@ -228,6 +228,23 @@ def test_chat_route_preserves_file_peer_for_unrelated_brand(monkeypatch) -> None
     assert calls == [question]
 
 
+def test_active_file_runs_for_market_anchor_without_attachment_keyword(monkeypatch) -> None:
+    question = "JW 제품 매출 상위 10개"
+    answer = "업로드 파일에서 JW 제품 상위 10개를 집계했습니다."
+    monkeypatch.setattr(
+        MarketScopeResolver,
+        "has_explicit_anchor",
+        lambda _self, _question: True,
+    )
+    client, store, calls = _file_client(monkeypatch, {question: answer})
+
+    result = _post_and_result(client, store, question, "active-file-without-keyword")
+
+    assert result["context_scope"] == "MIXED"
+    assert result["mixed_file_result"]["deterministic_file_answer"] == answer
+    assert calls == [question]
+
+
 def test_chat_route_preserves_unsupported_measure_fail_closed(monkeypatch) -> None:
     question = "2035년 재구매율 합계"
     answer = "이 파일에는 재구매율 관련 열이 없습니다."

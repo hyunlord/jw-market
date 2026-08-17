@@ -52,6 +52,7 @@ _QUESTION_FRAGMENT_SUFFIXES = (
     "기준으로도 알려줘",
     "기준으로도 보여줘",
 )
+_GENERIC_ENTITY_NOUNS = frozenset({"제품", "매출", "현황", "기준", "정보"})
 
 
 def render_axis_tokens(entities: Sequence[str]) -> tuple[str, ...]:
@@ -67,6 +68,7 @@ def _completion_entities(plan: PlannerOutput) -> tuple[str, ...]:
             and ":" not in entity
             and not _is_render_axis_token(entity)
             and not _is_question_fragment(entity)
+            and entity not in _GENERIC_ENTITY_NOUNS
         )
     )
 

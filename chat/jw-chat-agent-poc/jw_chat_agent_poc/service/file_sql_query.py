@@ -1852,6 +1852,8 @@ def _file_comparison_subjects(question: str) -> tuple[str, ...]:
 
 
 def _single_manufacturer_subject(question: str) -> str:
+    if re.search(r"(?<![A-Za-z0-9])JW(?=\s*제품(?:명)?(?:\s|$))", question, re.IGNORECASE):
+        return "JW중외제약"
     matches = re.finditer(
         r"([가-힣A-Za-z0-9_-]+(?:제약|약품))(?:의|은|는|이|가|에서)?\s*"
         r"(?:월별\s*)?(?:sell[ -]?out|매출|금액|합계|총액)",
