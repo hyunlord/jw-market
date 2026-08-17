@@ -6,6 +6,7 @@ import pytest
 from jw_chat_agent_poc.service import app as service_app
 from jw_chat_agent_poc.service.app import SessionStore, create_app
 from jw_chat_agent_poc.service.file_search_client import UploadedFileSearchResult
+from jw_chat_agent_poc.tools.metrics.cache_live import StaticMetricsCacheReader
 from jw_chat_agent_poc.tools.metrics.market_scope import MarketScopeResolver
 
 
@@ -26,6 +27,25 @@ class _MarketAgent:
 
 def _market_factory(*, external_mode: str = "live") -> _MarketAgent:
     return _MarketAgent(external_mode=external_mode)
+
+
+def _resolver() -> MarketScopeResolver:
+    return MarketScopeResolver(
+        cache_reader=StaticMetricsCacheReader(
+            cache_brands=[
+                {"brand": "리바로", "market_id": "ml_006", "market_name": "스타틴 시장"},
+                {"brand": "리바로젯", "market_id": "ml_006", "market_name": "스타틴 시장"},
+                {"brand": "동아제약", "market_id": "ml_006", "market_name": "스타틴 시장"},
+                {"brand": "동화약품", "market_id": "ml_006", "market_name": "스타틴 시장"},
+            ],
+            market_status=[],
+        )
+    )
+
+
+@pytest.fixture(autouse=True)
+def _disable_query_spec_observation(monkeypatch) -> None:
+    monkeypatch.setattr(service_app, "_observe_query_spec", lambda *_args, **_kwargs: None)
 
 
 def _uploaded(answer: str) -> UploadedFileSearchResult:
@@ -73,7 +93,23 @@ def _file_client(
 
     monkeypatch.setattr(service_app, "search_uploaded_files", search)
     store = SessionStore()
-    return TestClient(create_app(agent_factory=_market_factory, store=store)), store, calls
+    return (
+        TestClient(
+            create_app(
+                agent_factory=_market_factory,
+                market_scope_resolver=_resolver(),
+                store=store,
+            )
+        ),
+        store,
+        calls,
+    )
+
+
+def _file_result(result: dict) -> dict:
+    assert result["context_scope"] == "MIXED"
+    assert "mixed_market_result" in result
+    return result["mixed_file_result"]
 
 
 @pytest.mark.parametrize(
@@ -101,8 +137,7 @@ def test_chat_route_uses_file_schema_axis_before_scope_clarification(
 
     result = _post_and_result(client, store, question, f"schema-axis-{question}")
 
-    assert result["context_scope"] == "FILE"
-    assert result["deterministic_file_answer"] == answer
+    assert _file_result(result)["deterministic_file_answer"] == answer
     assert calls == [question]
 
 
@@ -124,10 +159,8 @@ def test_chat_route_preserves_verified_file_aggregates(
 
     result = _post_and_result(client, store, question, f"aggregate-{expected}")
 
-    assert result["context_scope"] == "FILE"
-    assert expected in result["deterministic_file_answer"]
+    assert expected in _file_result(result)["deterministic_file_answer"]
     assert calls == [question]
-    assert result["tool_calls"] == []
 
 
 def test_chat_route_keeps_file_comparison_out_of_market_contract(monkeypatch) -> None:
@@ -137,11 +170,10 @@ def test_chat_route_keeps_file_comparison_out_of_market_contract(monkeypatch) ->
 
     result = _post_and_result(client, store, question, "scope-comparison")
 
-    assert result["context_scope"] == "FILE"
-    assert "6,790,008,618" in result["deterministic_file_answer"]
-    assert "시장 도구" not in result["deterministic_file_answer"]
+    file_result = _file_result(result)
+    assert "6,790,008,618" in file_result["deterministic_file_answer"]
+    assert "시장 도구" not in file_result["deterministic_file_answer"]
     assert calls == [question]
-    assert result["tool_calls"] == []
 
 
 def test_chat_route_prefers_file_schema_for_atc4_comparison(monkeypatch) -> None:
@@ -162,46 +194,38 @@ def test_chat_route_prefers_file_schema_for_atc4_comparison(monkeypatch) -> None
 
     monkeypatch.setattr(service_app, "search_uploaded_files", search)
     store = SessionStore()
-    client = TestClient(create_app(agent_factory=_market_factory, store=store))
-
-    # When: the request passes through the public /chat endpoint.
-    result = _post_and_result(client, store, question, "scope-atc4")
-
-    # Then: scope and orchestration both stay on the uploaded-file SQL leg.
-    assert result["context_scope"] == "FILE"
-    assert result["deterministic_file_answer"] == answer
-    assert calls == [question]
-    assert result["tool_calls"] == []
-
-
-def test_chat_route_preserves_market_scope_for_unrelated_brand(monkeypatch) -> None:
-    # Given: the same workbook schema lacks a Livalo brand axis.
-    monkeypatch.setattr(service_app, "has_active_uploaded_file", lambda _conversation_id: True)
-    monkeypatch.setattr(
-        service_app,
-        "fetch_uploaded_file_schema_columns",
-        lambda _conversation_id: SCHEMA_COLUMNS,
-    )
-    monkeypatch.setattr(
-        service_app,
-        "search_uploaded_files",
-        lambda *_args: (_ for _ in ()).throw(AssertionError("MARKET must not run file SQL")),
-    )
-    store = SessionStore()
     client = TestClient(
         create_app(
             agent_factory=_market_factory,
-            market_scope_resolver=MarketScopeResolver(),
+            market_scope_resolver=_resolver(),
             store=store,
         )
     )
 
-    # When: a market-only question is sent through /chat.
-    result = _post_and_result(client, store, "리바로 최근 매출 추이", "scope-market")
+    # When: the request passes through the public /chat endpoint.
+    result = _post_and_result(client, store, question, "scope-atc4")
 
-    # Then: G2 remains MARKET and uses the market metric tool.
-    assert result["context_scope"] == "MARKET"
+    # Then: the uploaded-file answer remains intact beside the market peer leg.
+    assert _file_result(result)["deterministic_file_answer"] == answer
+    assert calls == [question]
+
+
+def test_chat_route_preserves_file_peer_for_unrelated_brand(monkeypatch) -> None:
+    # Given: the workbook lacks a Livalo brand axis but is active in the session.
+    question = "리바로 최근 매출 추이"
+    client, store, calls = _file_client(
+        monkeypatch,
+        {question: "업로드 파일에는 리바로 항목이 없습니다."},
+    )
+
+    # When: a market-only question is sent through /chat.
+    result = _post_and_result(client, store, question, "scope-market")
+
+    # Then: market evidence is retained without suppressing the file leg.
+    assert result["context_scope"] == "MIXED"
     assert [call["tool"] for call in result["tool_calls"]] == ["get_brand_metric"]
+    assert result["mixed_file_result"]["deterministic_file_answer"] == "업로드 파일에는 리바로 항목이 없습니다."
+    assert calls == [question]
 
 
 def test_chat_route_preserves_unsupported_measure_fail_closed(monkeypatch) -> None:
@@ -211,9 +235,9 @@ def test_chat_route_preserves_unsupported_measure_fail_closed(monkeypatch) -> No
 
     result = _post_and_result(client, store, question, "unsupported-measure")
 
-    assert result["context_scope"] == "FILE"
-    assert result["deterministic_file_answer"] == answer
-    assert "386,933,825,518" not in result["deterministic_file_answer"]
+    file_result = _file_result(result)
+    assert file_result["deterministic_file_answer"] == answer
+    assert "386,933,825,518" not in file_result["deterministic_file_answer"]
 
 
 def test_chat_route_preserves_file_multiturn_subject(monkeypatch) -> None:
@@ -231,8 +255,7 @@ def test_chat_route_preserves_file_multiturn_subject(monkeypatch) -> None:
     _post_and_result(client, store, first, "file-multiturn")
     result = _post_and_result(client, store, follow_up, "file-multiturn")
 
-    assert result["context_scope"] == "FILE"
-    assert "15,188,575,523" in result["deterministic_file_answer"]
+    assert "15,188,575,523" in _file_result(result)["deterministic_file_answer"]
     assert calls == [first, resolved_follow_up]
 
 
@@ -251,8 +274,7 @@ def test_chat_route_does_not_turn_ambiguous_analysis_into_inherited_sum(monkeypa
     _post_and_result(client, store, first, "file-ambiguous-followup")
     result = _post_and_result(client, store, broad, "file-ambiguous-followup")
 
-    assert result["context_scope"] == "FILE"
-    assert result["deterministic_file_answer"] == clarification
+    assert _file_result(result)["deterministic_file_answer"] == clarification
     assert calls == [first, broad]
 
 
@@ -263,9 +285,9 @@ def test_chat_route_preserves_bpi_deterministic_result(monkeypatch) -> None:
 
     result = _post_and_result(client, store, question, "bpi")
 
-    assert result["context_scope"] == "FILE"
-    assert "690 / 2,679,529" in result["deterministic_file_answer"]
-    assert "910 / 2,555,501" in result["deterministic_file_answer"]
+    file_result = _file_result(result)
+    assert "690 / 2,679,529" in file_result["deterministic_file_answer"]
+    assert "910 / 2,555,501" in file_result["deterministic_file_answer"]
     assert calls == [question]
 
 
@@ -286,12 +308,17 @@ def test_chat_route_treats_explicit_bpi_sheet_as_file_reference(monkeypatch) -> 
 
     monkeypatch.setattr(service_app, "search_uploaded_files", search)
     store = SessionStore()
-    client = TestClient(create_app(agent_factory=_market_factory, store=store))
+    client = TestClient(
+        create_app(
+            agent_factory=_market_factory,
+            market_scope_resolver=_resolver(),
+            store=store,
+        )
+    )
 
     result = _post_and_result(client, store, question, "bpi-explicit-sheet")
 
-    assert result["context_scope"] == "FILE"
-    assert result["deterministic_file_answer"] == answer
+    assert _file_result(result)["deterministic_file_answer"] == answer
     assert calls == [question]
 
 
@@ -306,14 +333,13 @@ def test_chat_route_period_phrase_reaches_market_parser(monkeypatch) -> None:
     assert "83.184115" in result["answer"]
 
 
-def test_chat_route_file_summary_remains_isolated(monkeypatch) -> None:
+def test_chat_route_file_summary_keeps_market_peer(monkeypatch) -> None:
     question = "이 보고서 요약해줘"
     client, store, _calls = _file_client(monkeypatch, {question: "보고서 요약"})
 
     result = _post_and_result(client, store, question, "file-summary")
 
-    assert result["context_scope"] == "FILE"
-    assert result["tool_calls"] == []
+    assert _file_result(result)["deterministic_file_answer"] == "보고서 요약"
 
 
 def test_chat_route_without_market_anchor_does_not_invent_brand(monkeypatch) -> None:
@@ -322,6 +348,5 @@ def test_chat_route_without_market_anchor_does_not_invent_brand(monkeypatch) -> 
 
     result = _post_and_result(client, store, question, "no-market-anchor")
 
-    assert result["context_scope"] == "FILE"
-    assert result["tool_calls"] == []
-    assert "리바로" not in result["deterministic_file_answer"]
+    file_result = _file_result(result)
+    assert "리바로" not in file_result["deterministic_file_answer"]

@@ -67,6 +67,7 @@ _AXIS_LABELS = {
     "document": "문서 내용",
 }
 _PRIMARY_TABLE_ROW_LIMIT = 15
+_HOMOGENEOUS_NARRATIVE_TABLE_THRESHOLD = 3
 
 
 def configured_lossless_mode() -> LosslessMode:
@@ -166,6 +167,7 @@ def compose_lossless_answer(
     request_satisfaction_mode: RequestSatisfactionMode = "inject",
     question: str = "",
 ) -> CompositionResult:
+    commentary = _normalize_known_bold_headings(commentary)
     commentary = _drop_empty_bold_headings(commentary)
     if mode == "inject":
         commentary, model_source_lines_ignored = _strip_model_source_sections(commentary)
@@ -229,6 +231,8 @@ def compose_lossless_answer(
         "primary_table_rows_hidden": 0,
         "comparison_observation_sections_removed": 0,
         "mechanical_narratives_compacted": 0,
+        "homogeneous_table_promotion_threshold": _HOMOGENEOUS_NARRATIVE_TABLE_THRESHOLD,
+        "homogeneous_patient_narratives_promoted": 0,
         "facts_injected_after_synthesis": False,
         "synthesis_prompt_chars": synthesis_trace.get("prompt_chars"),
         "render_nodes": [
@@ -442,6 +446,7 @@ def _assemble_injected_answer(
             *(_render_sections(limits)),
         ]
     else:
+        commentary_blocks = _align_commentary_to_axis(commentary_blocks, axis)
         comparison_blocks = [
             block for block in commentary_blocks if block.startswith("## 비교 관측\n")
         ]
@@ -460,6 +465,13 @@ def _assemble_injected_answer(
             for node, text in fact_nodes
             if not node.block_id.startswith(primary_prefixes)
         ]
+        commentary_blocks, dimension_notices = _align_patient_dimension_commentary(
+            commentary_blocks,
+            question=question,
+            axis=axis,
+            primary_nodes=primary_nodes,
+        )
+        limits.extend(("미확인 요소", notice) for notice in dimension_notices)
         lead_blocks, deferred_commentary = _partition_lead_commentary(commentary_blocks)
         absence_block, absence_reason = _primary_absence_block(
             axis,
@@ -482,10 +494,20 @@ def _assemble_injected_answer(
             limited_primary.append(limited)
             hidden_primary_rows += hidden
         layout_trace["primary_table_rows_hidden"] = hidden_primary_rows
+        homogeneous_patient_narratives = _homogeneous_patient_narrative_count(
+            fact_narratives,
+            axis=axis,
+            primary_nodes=primary_nodes,
+        )
+        layout_trace["homogeneous_patient_narratives_promoted"] = (
+            homogeneous_patient_narratives
+            if homogeneous_patient_narratives >= _HOMOGENEOUS_NARRATIVE_TABLE_THRESHOLD
+            else 0
+        )
         layout_trace["mechanical_narratives_compacted"] = len(fact_narratives)
+        core_blocks = _merge_primary_into_core(lead_blocks, limited_primary)
         blocks = [
-            *lead_blocks,
-            *limited_primary,
+            *core_blocks,
             *deferred_commentary,
             *compacted,
             *(_consolidated_coverage(coverage_nodes)),
@@ -504,6 +526,25 @@ def _question_axis(question: str) -> tuple[str, tuple[str, ...], str | None]:
         if any(token in normalized for token in tokens):
             return axis, prefixes, source
     return "unknown", (), None
+
+
+def _align_commentary_to_axis(blocks: Sequence[str], axis: str) -> list[str]:
+    if axis != "reimbursement":
+        return list(blocks)
+    aligned: list[str] = []
+    for block in blocks:
+        if not block.startswith("## 종합 인사이트\n"):
+            aligned.append(block)
+            continue
+        body = block.removeprefix("## 종합 인사이트\n")
+        if any(
+            token in body
+            for token in ("급여", "고시", "투여", "인정", "일반원칙", "제외기준")
+        ):
+            aligned.append(block)
+        else:
+            aligned.append("## 참고: 인접 연구\n" + body)
+    return aligned
 
 
 def _node_source(block_id: str) -> str:
@@ -571,6 +612,31 @@ def _partition_lead_commentary(blocks: Sequence[str]) -> tuple[list[str], list[s
     return lead, deferred
 
 
+def _merge_primary_into_core(
+    lead_blocks: Sequence[str],
+    primary_blocks: Sequence[str],
+) -> list[str]:
+    bodies: list[str] = []
+    for block in lead_blocks:
+        body = (
+            block.removeprefix("## 핵심 답\n").strip()
+            if block.startswith("## 핵심 답\n")
+            else block.strip()
+        )
+        if body:
+            bodies.append(body)
+    bodies.extend(
+        _demote_section_headings(block).strip()
+        for block in primary_blocks
+        if block.strip()
+    )
+    return ["## 핵심 답\n" + "\n\n".join(bodies)] if bodies else []
+
+
+def _demote_section_headings(value: str) -> str:
+    return re.sub(r"(?m)^##\s+", "### ", value)
+
+
 def _primary_absence_block(
     axis: str,
     primary_source: str | None,
@@ -591,7 +657,74 @@ def _primary_absence_block(
     reason = _public_absence_reason(reason_code)
     suffix = f"({reason})" if reason else ""
     label = _AXIS_LABELS.get(axis, "요청하신 정보")
-    return f"## 핵심 답\n요청하신 {label}는 이번 조회에서 확인하지 못했습니다{suffix}.", reason_code or None
+    return (
+        f"## 핵심 답\n요청하신 {label}{_topic_particle(label)} 이번 조회에서 "
+        f"확인하지 못했습니다{suffix}.",
+        reason_code or None,
+    )
+
+
+def _topic_particle(value: str) -> str:
+    if not value:
+        return "는"
+    last = value[-1]
+    if last.isdigit():
+        return "은"
+    code = ord(last)
+    if 0xAC00 <= code <= 0xD7A3:
+        return "은" if (code - 0xAC00) % 28 else "는"
+    return "는"
+
+
+def _align_patient_dimension_commentary(
+    blocks: Sequence[str],
+    *,
+    question: str,
+    axis: str,
+    primary_nodes: Sequence[tuple[RenderNode, str]],
+) -> tuple[list[str], tuple[str, ...]]:
+    if axis != "patient_statistics" or not primary_nodes:
+        return list(blocks), ()
+    primary_text = "\n".join(text for _node, text in primary_nodes)
+    has_age_dimension = any(token in primary_text for token in ("연령", "0~9세", "10~19세"))
+    if not has_age_dimension:
+        return list(blocks), ()
+
+    retained = [
+        block
+        for block in blocks
+        if not block.startswith(("## 근거와 맥락\n", "## 근거\n", "## 종합 인사이트\n"))
+    ]
+    retained.append(
+        "## 종합 인사이트\n"
+        "'핵심 답'의 상병코드별 성별·연령대 수치를 종합하면 환자수는 "
+        "상병코드와 연령대에 따라 다릅니다. 수신되지 않은 성별·연령대 조합은 "
+        "전체 경향으로 일반화하지 않았습니다."
+    )
+    normalized_question = " ".join(question.casefold().split())
+    has_male = "| 남 |" in primary_text
+    has_female = "| 여 |" in primary_text
+    notices: list[str] = []
+    if "성별" in normalized_question and has_male and not has_female:
+        notices.append("여성 연령대별 자료는 이번 조회에서 확인하지 못했습니다.")
+    return retained, tuple(notices)
+
+
+def _homogeneous_patient_narrative_count(
+    blocks: Sequence[str],
+    *,
+    axis: str,
+    primary_nodes: Sequence[tuple[RenderNode, str]],
+) -> int:
+    if axis != "patient_statistics" or not any(
+        "| 연령대 |" in text or "| 성별 | 연령대 |" in text
+        for _node, text in primary_nodes
+    ):
+        return 0
+    pattern = re.compile(
+        r"\b\d{4}년\s+\S+\s+\S+\s*·\s*\S+세\s+환자수\s+[\d,]+명으로\s+확인되었습니다\."
+    )
+    return sum(len(pattern.findall(block)) for block in blocks)
 
 
 def _public_absence_reason(reason_code: str) -> str | None:
@@ -842,6 +975,26 @@ def _strip_model_source_sections(value: str) -> tuple[str, int]:
 
 
 _BOLD_HEADING_RE = re.compile(r"^\s*\*\*[^*\n]+\*\*\s*$")
+_KNOWN_BOLD_HEADINGS = frozenset(
+    {
+        "핵심 답",
+        "핵심 요약",
+        "근거와 맥락",
+        "근거",
+        "종합 인사이트",
+        "인사이트",
+        "참고: 인접 연구",
+    }
+)
+
+
+def _normalize_known_bold_headings(value: str) -> str:
+    output: list[str] = []
+    for line in value.splitlines():
+        match = re.fullmatch(r"\s*\*\*([^*\n]+)\*\*\s*", line)
+        heading = match.group(1).strip() if match else ""
+        output.append(f"## {heading}" if heading in _KNOWN_BOLD_HEADINGS else line)
+    return "\n".join(output)
 
 
 def _drop_empty_bold_headings(value: str) -> str:

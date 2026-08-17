@@ -22,8 +22,14 @@ POLICY_REQUIRED_FIELDS = (
 )
 
 
-def render_policy(evidence_set: EvidenceSet) -> tuple[list[RenderNode], tuple[str, ...]]:
+def render_policy(
+    evidence_set: EvidenceSet,
+    *,
+    require_product_match: bool = False,
+) -> tuple[list[RenderNode], tuple[str, ...]]:
     records = [record for record in evidence_set.records if _renderable_policy_record(record.payload)]
+    if require_product_match:
+        records = [record for record in records if _matches_requested_product(record.payload)]
     if not records:
         return [], POLICY_REQUIRED_FIELDS
     nodes: list[RenderNode] = [
@@ -77,6 +83,19 @@ def render_policy(evidence_set: EvidenceSet) -> tuple[list[RenderNode], tuple[st
             ),
         ]
         nodes.extend(node for node in record_nodes if node is not None)
+    if require_product_match and any(
+        "[일반원칙] 고지혈증 치료제" in text(record.payload.get("raw_text"))
+        for record in records
+    ):
+        nodes.append(
+            RenderNode(
+                block_id="policy:limits",
+                text=(
+                    "## 미확인 요소\n"
+                    "세부 급여 인정 조건([일반원칙] 고지혈증 치료제)은 확인하지 못했습니다."
+                ),
+            )
+        )
     return nodes, POLICY_REQUIRED_FIELDS
 
 
@@ -98,6 +117,24 @@ def _renderable_policy_record(payload: dict[str, object]) -> bool:
         text(payload.get(field))
         for field in ("notice_number", "effective_date", "title", "raw_text")
     )
+
+
+def _matches_requested_product(payload: dict[str, object]) -> bool:
+    request = payload.get("request")
+    requested_brand = text(request.get("brand")) if isinstance(request, dict) else ""
+    if not requested_brand:
+        return True
+
+    requested_key = _product_key(requested_brand)
+    candidate_values = [text(payload.get("brand_name"))]
+    match_candidates = payload.get("match_candidates")
+    if isinstance(match_candidates, (list, tuple)):
+        candidate_values.extend(text(candidate) for candidate in match_candidates)
+    return any(_product_key(candidate) == requested_key for candidate in candidate_values)
+
+
+def _product_key(value: str) -> str:
+    return re.sub(r"[^0-9A-Za-z가-힣]", "", value).removesuffix("정").casefold()
 
 
 def _policy_node(
@@ -126,10 +163,13 @@ def _policy_sections(raw: str) -> dict[str, str]:
     )
     found: dict[str, list[str]] = defaultdict(list)
     active: str | None = None
-    for line in raw.splitlines():
+    normalized = re.sub(r"\s+(?=■\s*)", "\n", raw)
+    for line in normalized.splitlines():
         next_key = next((key for key, pattern in markers if pattern.search(line)), None)
         if next_key:
             active = next_key
+        elif line.lstrip().startswith("■"):
+            active = None
         if active:
             found[active].append(line)
     return {key: "\n".join(lines).strip() for key, lines in found.items() if lines}

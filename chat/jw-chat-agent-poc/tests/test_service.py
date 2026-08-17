@@ -1740,7 +1740,7 @@ def test_unanchored_quarter_golden_hides_stale_file_progress_steps(
     assert "첨부 파일 구조 분석" not in public_steps
 
 
-def test_uploaded_file_question_keeps_file_progress_steps(monkeypatch) -> None:
+def test_uploaded_file_question_keeps_file_progress_steps_in_mixed_scope(monkeypatch) -> None:
     events: list[dict] = []
     monkeypatch.setattr(service_app, "has_active_uploaded_file", lambda _conversation_id: True)
     monkeypatch.setattr(
@@ -1766,12 +1766,12 @@ def test_uploaded_file_question_keeps_file_progress_steps(monkeypatch) -> None:
     )
 
     public_steps = {str(event.get("name") or "") for event in events}
-    assert item["result"]["context_scope"] == "FILE"
+    assert item["result"]["context_scope"] == "MIXED"
     assert "첨부 파일 확인" in public_steps
     assert "첨부 파일 구조 분석" in public_steps
 
 
-def test_unanchored_top_five_golden_ignores_stale_file_and_external_turn(
+def test_unanchored_top_five_golden_keeps_active_file_as_peer_source(
     monkeypatch,
 ) -> None:
     store = SessionStore()
@@ -1786,9 +1786,7 @@ def test_unanchored_top_five_golden_ignores_stale_file_and_external_turn(
     monkeypatch.setattr(
         service_app,
         "_delegated_file_context",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("standalone top-five golden must not search stale files")
-        ),
+        lambda *_args, **_kwargs: ("업로드 파일의 임상 근거", (), True, "파일 근거", ()),
     )
 
     def monthly_golden(_value: str, *, anchor_brand: str) -> dict:
@@ -1807,7 +1805,7 @@ def test_unanchored_top_five_golden_ignores_stale_file_and_external_turn(
         use_direct_agent_loop=True,
     )
 
-    assert item["result"]["context_scope"] == "MARKET"
+    assert item["result"]["context_scope"] == "MIXED"
     assert "29.52%" in item["result"]["answer"]
 
 
@@ -2199,11 +2197,18 @@ def test_compute_final_answer_restores_hira_patient_lead_before_table(monkeypatc
     assert "| E78 | 2024 | 외래 | 남 | 1,305,727 |" in final.text
 
 
-def test_answer_question_locks_fresh_document_questions_to_file_scope(monkeypatch) -> None:
-    def fail_direct_dependencies(*, external_mode: str = "fixture"):
-        raise AssertionError("document questions must keep the ChatAgent/RAG facade")
-
-    monkeypatch.setattr(service_app, "build_chat_agent_dependencies", fail_direct_dependencies)
+def test_answer_question_uses_fresh_document_as_a_peer_source(monkeypatch) -> None:
+    monkeypatch.setattr(
+        service_app,
+        "_delegated_file_context",
+        lambda *_args, **_kwargs: (
+            "업로드 파일에서 확인된 경쟁 구도 근거",
+            (),
+            True,
+            "업로드 파일에서 확인된 근거입니다.",
+            (),
+        ),
+    )
     FakeAgent.calls = []
 
     item = service_app._answer_question(
@@ -2217,10 +2222,9 @@ def test_answer_question_locks_fresh_document_questions_to_file_scope(monkeypatc
         use_direct_agent_loop=True,
     )
 
-    assert item["result"]["answer"] == "업로드 파일에서 확인된 근거만 사용해 답변합니다."
-    assert item["result"]["tool_calls"] == []
-    assert item["result"]["context_scope"] == "FILE"
-    assert FakeAgent.calls == []
+    assert item["result"]["context_scope"] == "MIXED"
+    assert item["result"]["mixed_file_result"]["deterministic_file_answer"] == "업로드 파일에서 확인된 근거입니다."
+    assert item["result"]["mixed_market_result"]
 
 
 def test_answer_question_returns_deterministic_file_only_ready_without_agent() -> None:
@@ -2486,6 +2490,23 @@ def test_deterministic_file_aggregate_bypasses_final_llm(monkeypatch) -> None:
 
     assert "386,933,825,518" in final.text
     assert "적용 행 수: 12,269" in final.text
+
+
+def test_file_scope_numeric_contract_keeps_only_uploaded_evidence() -> None:
+    kept, report = service_app.enforce_numeric_copy_contract(
+        "파일 수치 알려줘",
+        "파일 근거는 51.8입니다.\n시장 추정은 99.9입니다.",
+        {
+            "context_scope": "FILE",
+            "file_context": "지정 페이지 원문: 51.8 million",
+            "sources": ["document"],
+            "tool_calls": [],
+        },
+    )
+
+    assert "51.8" in kept
+    assert "99.9" not in kept
+    assert "99.9" in report["blocked_tokens"]
 
 
 def test_file_page_answer_is_not_rewritten_as_market_brand_compare(monkeypatch) -> None:

@@ -114,13 +114,12 @@ def resolve_context_scope(
         if file_directed:
             return ContextScope.FILE
         return ContextScope.MARKET
-    if schema_directed and not explicit_market:
-        return ContextScope.FILE
-    if file_directed and has_market_intent and market_grounded and _COMPARISON_RE.search(query):
+    # An uploaded file is one evidence source among peers. Every non-empty turn
+    # in that session therefore keeps both the file and market legs observable;
+    # the answer assembler decides ordering and density, not whether a leg runs.
+    if query.strip():
         return ContextScope.MIXED
-    if not file_directed and has_market_intent and market_grounded:
-        return ContextScope.MARKET
-    # Fresh uploads and unresolved references remain in the file boundary.
+    # A fresh upload with no question only needs the file-ready response.
     return ContextScope.FILE
 
 

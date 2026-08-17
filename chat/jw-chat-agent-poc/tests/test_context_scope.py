@@ -17,6 +17,7 @@ from jw_chat_agent_poc.service.context_scope import (
 from jw_chat_agent_poc.service.genos_client import GenosClient
 from jw_chat_agent_poc.service.file_search_client import UploadedFileSearchResult
 from jw_chat_agent_poc.service.runtime_provenance import trace_envelope
+from jw_chat_agent_poc.tools.metrics.cache_live import StaticMetricsCacheReader
 from jw_chat_agent_poc.tools.metrics.market_scope import MarketScopeResolver
 
 
@@ -67,7 +68,23 @@ def _factory(*, external_mode: str = "live") -> _ContaminatingAgent:
 
 
 def _resolver() -> MarketScopeResolver:
-    return MarketScopeResolver()
+    return MarketScopeResolver(
+        cache_reader=StaticMetricsCacheReader(
+            cache_brands=[
+                {"brand": "리바로", "market_id": "ml_006", "market_name": "스타틴 시장"},
+                {"brand": "리바로젯", "market_id": "ml_006", "market_name": "스타틴 시장"},
+                {"brand": "동아제약", "market_id": "ml_006", "market_name": "스타틴 시장"},
+            ],
+            market_status=[],
+        )
+    )
+
+
+@pytest.fixture(autouse=True)
+def _disable_query_spec_observation(monkeypatch):
+    """Keep context-routing tests independent from the cluster-only mart cache."""
+
+    monkeypatch.setattr(service_app, "_observe_query_spec", lambda *_args, **_kwargs: None)
 
 
 @pytest.mark.parametrize(
@@ -79,7 +96,7 @@ def _resolver() -> MarketScopeResolver:
     ),
     ids=("A1_real_brand_overlap", "A2_default_brand_fallback", "A3_xlsx_open_question"),
 )
-def test_file_scope_blocks_market_tools_when_uploaded_context_is_active(question: str, documents: list[Path]) -> None:
+def test_active_file_session_keeps_file_and_market_peer_results(question: str, documents: list[Path]) -> None:
     # Given: an active uploaded-file context whose real brand token overlaps the market router.
     # When: the file-directed question is answered.
     item = service_app._answer_question(
@@ -93,7 +110,8 @@ def test_file_scope_blocks_market_tools_when_uploaded_context_is_active(question
         file_context=FILE_CONTEXT,
     )
 
-    # Then: server-side tool provenance is market-free and records FILE scope.
+    # Then: both peer lanes remain visible and the market evidence is not folded
+    # into the file answer.
     result = item["result"]
     trace = trace_envelope(
         question=question,
@@ -103,12 +121,13 @@ def test_file_scope_blocks_market_tools_when_uploaded_context_is_active(question
         timing={},
         conversation_id=item["conversation_id"],
     )
-    assert trace["tools_called"] == []
-    assert trace["scope"] == "FILE"
-    assert "리바로 시장 꼬리" not in result["answer"]
+    assert result["context_scope"] == "MIXED"
+    assert result["mixed_market_result"]["tool_calls"]
+    assert result["mixed_file_result"]["file_context"] == FILE_CONTEXT.strip()
+    assert trace["scope"] == "MIXED"
 
 
-def test_neutral_file_question_remains_market_free() -> None:
+def test_neutral_file_question_keeps_market_as_peer_lane() -> None:
     # Given: an active file and a neutral file-directed question.
     question = "업로드 파일의 승인코드를 알려줘"
     # When: the request is answered.
@@ -116,11 +135,12 @@ def test_neutral_file_question_remains_market_free() -> None:
         SessionStore(), _resolver(), _factory, question, "live", None, file_context=FILE_CONTEXT
     )
 
-    # Then: the existing uncontaminated baseline stays market-free.
-    assert item["result"]["tool_calls"] == []
+    assert item["result"]["context_scope"] == "MIXED"
+    assert "mixed_file_result" in item["result"]
+    assert "mixed_market_result" in item["result"]
 
 
-def test_file_scope_stays_locked_when_search_context_times_out(monkeypatch) -> None:
+def test_file_search_timeout_is_recorded_without_suppressing_market_peer(monkeypatch) -> None:
     # Given: the session owns an uploaded document, but chunk search returned no context yet.
     monkeypatch.setattr(
         service_app,
@@ -132,6 +152,7 @@ def test_file_scope_stays_locked_when_search_context_times_out(monkeypatch) -> N
             has_active_file=True,
         ),
     )
+    monkeypatch.setattr(service_app, "has_active_uploaded_file", lambda _conversation_id: True)
 
     # When: a real market brand appears in a file-directed question.
     item = service_app._answer_question(
@@ -143,28 +164,23 @@ def test_file_scope_stays_locked_when_search_context_times_out(monkeypatch) -> N
         "ctx-with-file",
     )
 
-    # Then: active-file ownership keeps the market path closed despite missing chunks.
-    assert item["result"]["context_scope"] == "FILE"
-    assert item["result"]["tool_calls"] == []
-    assert "리바로 시장 꼬리" not in item["result"]["answer"]
+    assert item["result"]["context_scope"] == "MIXED"
+    assert item["result"]["mixed_file_result"]["mixed_leg_error"]
+    assert item["result"]["mixed_market_result"]["tool_calls"]
 
 
 def test_file_session_market_question_is_not_stuck_in_file_scope(monkeypatch) -> None:
     # Given: a file exists, but the question addresses only a market metric.
     question = "리바로 최근 매출 추이"
-    monkeypatch.setattr(
-        service_app,
-        "_delegated_file_context",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("MARKET must not search files")),
-    )
     # When: the request is answered.
     item = service_app._answer_question(
         SessionStore(), _resolver(), _factory, question, "live", None, file_context=FILE_CONTEXT
     )
 
-    # Then: the active file does not capture the market-only request.
-    assert item["result"]["context_scope"] == "MARKET"
+    # Then: the market fact remains available while the file leg is observable.
+    assert item["result"]["context_scope"] == "MIXED"
     assert [call["tool"] for call in item["result"]["tool_calls"]] == ["get_brand_metric"]
+    assert "mixed_file_result" in item["result"]
 
 
 def test_explicit_mixed_question_keeps_both_sources_and_scope() -> None:
@@ -295,7 +311,7 @@ def test_mixed_file_leg_uses_inherited_file_slots(monkeypatch) -> None:
     assert "VALUES LC SI PRICE 1/2026" in captured[0]
 
 
-def test_mixed_request_without_explicit_market_anchor_keeps_market_leg_closed() -> None:
+def test_active_file_request_without_explicit_market_anchor_keeps_both_legs() -> None:
     item = service_app._answer_question(
         SessionStore(),
         _resolver(),
@@ -306,18 +322,12 @@ def test_mixed_request_without_explicit_market_anchor_keeps_market_leg_closed() 
         file_context=FILE_CONTEXT,
     )
 
-    assert item["result"]["context_scope"] == "FILE"
-    assert item["result"]["tool_calls"] == []
-    assert "리바로 시장 꼬리" not in item["result"]["answer"]
+    assert item["result"]["context_scope"] == "MIXED"
+    assert "mixed_file_result" in item["result"]
+    assert "mixed_market_result" in item["result"]
 
 
-def test_ambiguous_metric_request_with_active_file_asks_for_target(monkeypatch) -> None:
-    monkeypatch.setattr(
-        service_app,
-        "_delegated_file_context",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("ambiguous scope must not search files")),
-    )
-
+def test_ambiguous_metric_request_with_active_file_keeps_both_sources() -> None:
     item = service_app._answer_question(
         SessionStore(),
         _resolver(),
@@ -328,11 +338,12 @@ def test_ambiguous_metric_request_with_active_file_asks_for_target(monkeypatch) 
         file_context=FILE_CONTEXT,
     )
 
-    assert item["result"]["tool_calls"] == []
-    assert "브랜드·시장" in item["result"]["answer"]
+    assert item["result"]["context_scope"] == "MIXED"
+    assert item["result"]["mixed_file_result"]["file_context"] == FILE_CONTEXT.strip()
+    assert item["result"]["mixed_market_result"]["tool_calls"]
 
 
-def test_verified_conversation_brand_anchor_escapes_file_scope() -> None:
+def test_verified_conversation_brand_anchor_keeps_file_peer_lane() -> None:
     store = SessionStore()
     first = service_app._answer_question(
         store,
@@ -353,7 +364,7 @@ def test_verified_conversation_brand_anchor_escapes_file_scope() -> None:
         file_context=FILE_CONTEXT,
     )
 
-    assert item["result"]["context_scope"] == "MARKET"
+    assert item["result"]["context_scope"] == "MIXED"
     assert item["result"]["tool_calls"]
 
 
@@ -456,12 +467,12 @@ def test_question_without_file_context_is_unchanged() -> None:
     ("question", "active", "fresh", "market", "expected"),
     (
         ("리바로 시장점유율", False, False, True, ContextScope.MARKET),
-        ("업로드 파일의 값", True, False, True, ContextScope.FILE),
-        ("첨부 문서 요약", True, False, False, ContextScope.FILE),
-        ("엑셀 시트 구조", True, False, True, ContextScope.FILE),
-        ("처리율은?", True, True, True, ContextScope.FILE),
-        ("처리율은?", True, False, False, ContextScope.FILE),
-        ("리바로 최근 매출 추이", True, False, True, ContextScope.MARKET),
+        ("업로드 파일의 값", True, False, True, ContextScope.MIXED),
+        ("첨부 문서 요약", True, False, False, ContextScope.MIXED),
+        ("엑셀 시트 구조", True, False, True, ContextScope.MIXED),
+        ("처리율은?", True, True, True, ContextScope.MIXED),
+        ("처리율은?", True, False, False, ContextScope.MIXED),
+        ("리바로 최근 매출 추이", True, False, True, ContextScope.MIXED),
         ("리바로 매출과 파일 값을 비교", True, False, True, ContextScope.MIXED),
         ("이 셀아웃과 우리 리바로 시장 데이터 비교", True, False, True, ContextScope.MIXED),
         ("리바로 수치와 문서 결과를 시장 데이터로 대비", True, False, True, ContextScope.MIXED),
@@ -485,7 +496,7 @@ def test_resolve_context_scope(
     ) is expected
 
 
-def test_file_schema_atc4_and_manufacturer_columns_take_priority_over_market_signal() -> None:
+def test_file_schema_atc4_and_manufacturer_columns_keep_peer_lanes() -> None:
     # Given: an active workbook exposes ATC4 and manufacturer columns.
     # When: the question uses an ATC4 code and two manufacturer values.
     scope = resolve_context_scope(
@@ -497,7 +508,7 @@ def test_file_schema_atc4_and_manufacturer_columns_take_priority_over_market_sig
     )
 
     # Then: those terms are interpreted as workbook axes, not a market route.
-    assert scope is ContextScope.FILE
+    assert scope is ContextScope.MIXED
 
 
 @pytest.mark.parametrize(
@@ -518,7 +529,7 @@ def test_plural_report_reference_is_explicitly_file_directed() -> None:
     assert has_file_reference("두 질환 보고서의 파이프라인 구성 차이를 비교해줘")
 
 
-def test_file_schema_does_not_capture_unrelated_market_brand() -> None:
+def test_unrelated_market_brand_still_keeps_file_peer_lane() -> None:
     # Given: the workbook has no brand column or Livalo value axis.
     # When: the user asks a market-only Livalo question in the same session.
     scope = resolve_context_scope(
@@ -530,7 +541,7 @@ def test_file_schema_does_not_capture_unrelated_market_brand() -> None:
     )
 
     # Then: MIXED M1's file-stickiness fix remains intact.
-    assert scope is ContextScope.MARKET
+    assert scope is ContextScope.MIXED
 
 
 def test_named_uploaded_corpus_and_market_source_resolve_to_mixed() -> None:
@@ -556,11 +567,33 @@ def test_mixed_scope_is_composed_without_synthesis_llm(monkeypatch) -> None:
         {
             "context_scope": "MIXED",
             "mixed_market_result": {
-                "general_view_ready": True,
-                "answer": "리바로 매출은 83.18억원입니다.\n\n| 출처 | 기준기간 | 뷰 | 시장정의 | 분모 | 채널 | 단위 |\n|---|---|---|---|---|---|---|\n| UBIST | 2025-04 | 전략뷰 | 리바로 시장 | 555개 | 전체 | 억원 |",
+                "conversation_fallback_ready": True,
+                "answer": "리바로 시장 근거가 확인됐습니다.",
                 "sources": ["UBIST"],
-                "tool_calls": [],
-                "markdown_response": {},
+                "tool_calls": [
+                    {
+                        "tool": "get_brand_metric",
+                        "source": "UBIST",
+                        "render_data": {
+                            "brand": "리바로",
+                            "period": "2025-04",
+                            "sales_억원": 83.18,
+                            "query_spec": {"source": "ubist"},
+                            "brand_value_series_10pt": [
+                                {
+                                    "period": "2025-04",
+                                    "value_억원": 83.18,
+                                    "value_krw": 8_318_000_000,
+                                },
+                            ],
+                        },
+                    }
+                ],
+                "markdown_response": {
+                    "markdown": "리바로 시장 근거가 확인됐습니다.",
+                    "fact_md": "리바로 시장 근거가 확인됐습니다.",
+                    "data_md": "",
+                },
             },
             "mixed_file_result": {
                 "answer": "",
@@ -575,10 +608,10 @@ def test_mixed_scope_is_composed_without_synthesis_llm(monkeypatch) -> None:
         "mixed-final",
     )
 
-    assert "## 시장 데이터" in final.text
+    assert "## 참고: 다른 출처" in final.text
     assert "## 첨부 문서 - report.pdf" in final.text
     assert "—" not in final.text
-    assert "83.18억원" in final.text
+    assert "리바로 시장 근거가 확인됐습니다." in final.text
     assert "1,200억원" in final.text
     assert "직접 비교" in final.text
 
@@ -622,7 +655,7 @@ def test_mixed_partial_failure_preserves_successful_file_leg(monkeypatch) -> Non
 
     assert "시장 데이터 조회를 완료하지 못했습니다. 조회 오류입니다." in final.text
     assert "2026년 예상 매출은 1,200억원입니다. (p.7)" in final.text
-    assert final.text.index("## 시장 데이터") < final.text.index("## 첨부 문서")
+    assert final.text.index("## 첨부 문서") < final.text.index("## 참고: 다른 출처")
 
 
 def test_mixed_file_leg_renders_retrieved_evidence_without_llm(monkeypatch) -> None:

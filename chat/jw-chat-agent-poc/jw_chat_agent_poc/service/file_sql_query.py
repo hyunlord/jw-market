@@ -767,6 +767,7 @@ def _column_list_text(names: Sequence[str], limit: int = 6) -> str:
 def _scope_disclosure_lines(
     period: "PeriodScope | None",
     metric: "MetricScope | None",
+    schema: Mapping[str, Any] | None = None,
     *,
     excluded_total_rows: bool = False,
 ) -> list[str]:
@@ -792,13 +793,55 @@ def _scope_disclosure_lines(
             lines.append(f"기간: {span} · {count}개월{label}")
     if metric is not None:
         suffix = " (질문에 지표가 없어 기본값 사용)" if metric.defaulted else ""
-        lines.append(f"지표: {metric.label}{suffix}")
+        lines.append(f"지표: {_public_metric_label(metric, schema or {})}{suffix}")
     if excluded_total_rows:
         lines.append(
             "집계 제외: 식별 차원이 모두 비어 있는 합계 성격 행 "
             "(파일에는 그대로 남아 있으며 조회 상세에서 확인할 수 있습니다)"
         )
     return lines
+
+
+def _public_metric_label(metric: "MetricScope", schema: Mapping[str, Any]) -> str:
+    source_names = {
+        str(item.get("query_name") or ""): str(item.get("source_name") or "")
+        for item in _schema_columns(schema)
+    }
+    names = " ".join(source_names.get(query_name, "") for _, query_name in metric.columns).casefold()
+    if "values lc si price" in names:
+        return "sell-in 기준 금액"
+    if "sell out" in names or "sell-out" in names or "values lc so price" in names:
+        return "sell-out 기준 금액"
+    if "처방조제" in names or "ubist" in names:
+        return "처방조제액"
+    return metric.label
+
+
+def _amount_value_indices(
+    columns: Sequence[str],
+    applied_index: int,
+    metric: "MetricScope | None",
+) -> frozenset[int]:
+    if metric is None or metric.family != METRIC_AMOUNT:
+        return frozenset()
+    return frozenset(
+        index
+        for index, name in enumerate(columns)
+        if index != applied_index
+        and name.casefold() != "response_count"
+        and re.search(r"(?:total|sum|value|amount|sales|growth|period[_-]?\d+|\d{4}[-_/]\d{1,2})", name, re.IGNORECASE)
+    )
+
+
+def _format_aggregate_value(value: Any, *, amount: bool) -> str:
+    if not _is_number(value):
+        return _markdown_cell(value)
+    if amount:
+        eok = float(value) / 100_000_000
+        if eok and round(eok) == 0:
+            return f"{eok:,.2f}".rstrip("0").rstrip(".") + "억원"
+        return f"{eok:,.0f}억원"
+    return _format_number(value)
 
 
 def _public_filter_text(where_clause: str, schema: Mapping[str, Any]) -> str:
@@ -865,6 +908,11 @@ def _render_aggregate_answer(
     )
     used_columns = _used_source_columns(sql, schema)
     labels = _source_column_labels(columns, schema)
+    amount_indices = _amount_value_indices(columns, applied_index, metric)
+    labels = [
+        f"{label} (억원)" if index in amount_indices else label
+        for index, label in enumerate(labels)
+    ]
     total_applied = sum(float(row[applied_index]) for row in rows)
     monthly_periods = _monthly_result_periods(columns, applied_index)
     growth_index = next(
@@ -909,9 +957,12 @@ def _render_aggregate_answer(
             f"파일: {source.file_name}",
             f"시트·테이블명: {source.sheet_name} / data",
             f"비교 기준: {first_period} 대비 {last_period} 절대 증가액",
+            *_scope_disclosure_lines(period, metric, schema),
             "사용 열: " + (", ".join(used_columns) if used_columns else "집계 결과 열"),
             f"적용 행 수: {_format_number(total_applied)}",
-            f"| 채널 | {first_period} | {last_period} | 증가액 | 적용 행 수 |",
+            f"| 채널 | {first_period} (억원) | {last_period} (억원) | 증가액 (억원) | 적용 행 수 |"
+            if metric is not None and metric.family == METRIC_AMOUNT
+            else f"| 채널 | {first_period} | {last_period} | 증가액 | 적용 행 수 |",
             "| --- | --- | --- | --- | --- |",
         ]
         lines.extend(
@@ -919,9 +970,9 @@ def _render_aggregate_answer(
             + " | ".join(
                 (
                     _markdown_cell(row[label_index]),
-                    _format_number(row[first_index]),
-                    _format_number(row[last_index]),
-                    _format_number(row[growth_index]),
+                    _format_aggregate_value(row[first_index], amount=first_index in amount_indices),
+                    _format_aggregate_value(row[last_index], amount=last_index in amount_indices),
+                    _format_aggregate_value(row[growth_index], amount=growth_index in amount_indices),
                     _format_number(row[applied_index]),
                 )
             )
@@ -932,7 +983,7 @@ def _render_aggregate_answer(
         lines.append(
             f"{first_period} 대비 {last_period} 절대 증가액 기준 "
             f"가장 성장한 채널은 {winner[label_index]}이며 증가액은 "
-            f"{_format_number(winner[growth_index])}입니다."
+            f"{_format_aggregate_value(winner[growth_index], amount=growth_index in amount_indices)}입니다."
         )
         return "\n".join(lines)
     if len(rows) == 1 and monthly_periods:
@@ -948,14 +999,17 @@ def _render_aggregate_answer(
             f"파일: {source.file_name}",
             f"시트·테이블명: {source.sheet_name} / data",
             f"필터 조건: {filter_text}",
+            *_scope_disclosure_lines(period, metric, schema),
             "사용 열: " + (", ".join(used_columns) if used_columns else "집계 결과 열"),
             "집계 함수: " + ", ".join(aggregate_functions),
             f"적용 행 수: {_format_number(total_applied)}",
-            "| 기간 | 합계 |",
+            "| 기간 | 합계 (억원) |"
+            if metric is not None and metric.family == METRIC_AMOUNT
+            else "| 기간 | 합계 |",
             "| --- | --- |",
         ]
         lines.extend(
-            f"| {period} | {_format_number(value) if _is_number(value) else _markdown_cell(value)} |"
+            f"| {period} | {_format_aggregate_value(value, amount=metric is not None and metric.family == METRIC_AMOUNT)} |"
             for period, value in values
         )
         numeric_values = tuple(
@@ -973,8 +1027,9 @@ def _render_aggregate_answer(
             else:
                 direction = "변동이 없었습니다"
             lines.append(
-                f"월별 흐름: {_format_number(first_value)}에서 "
-                f"{_format_number(last_value)}로 {direction} "
+                "월별 흐름: "
+                f"{_format_aggregate_value(first_value, amount=metric is not None and metric.family == METRIC_AMOUNT)}에서 "
+                f"{_format_aggregate_value(last_value, amount=metric is not None and metric.family == METRIC_AMOUNT)}로 {direction} "
                 f"({first_period} → {last_period})."
             )
         return "\n".join(lines)
@@ -983,9 +1038,12 @@ def _render_aggregate_answer(
         f"파일: {source.file_name}",
         f"시트·테이블명: {source.sheet_name} / data",
         f"필터 조건: {filter_text}",
-        *_scope_disclosure_lines(
-            period, metric, excluded_total_rows=_TOTAL_ROW_EXCLUSION_RE.search(sql) is not None
-        ),
+            *_scope_disclosure_lines(
+                period,
+                metric,
+                schema,
+                excluded_total_rows=_TOTAL_ROW_EXCLUSION_RE.search(sql) is not None,
+            ),
         "사용 열: " + (_column_list_text(used_columns) if used_columns else "집계 결과 열"),
         "집계 함수: " + ", ".join(aggregate_functions),
         f"적용 행 수: {_format_number(total_applied)}",
@@ -996,8 +1054,8 @@ def _render_aggregate_answer(
         lines.append(
             "| "
             + " | ".join(
-                _format_number(value) if _is_number(value) else _markdown_cell(value)
-                for value in row[: len(labels)]
+                _format_aggregate_value(value, amount=index in amount_indices)
+                for index, value in enumerate(row[: len(labels)])
             )
             + " |"
         )
@@ -1058,7 +1116,8 @@ def _render_aggregate_answer(
             left_value, right_value = float(left[value_index]), float(right[value_index])
             winner = left if left_value >= right_value else right
             lines.append(
-                f"비교 결론: {winner[label_index]}이(가) {_format_number(abs(left_value - right_value))}만큼 더 큽니다."
+                f"비교 결론: {winner[label_index]}이(가) "
+                f"{_format_aggregate_value(abs(left_value - right_value), amount=value_index in amount_indices)}만큼 더 큽니다."
             )
     return "\n".join(lines)
 
@@ -2080,7 +2139,7 @@ def _render_result(
         "## 업로드 파일 SQL 결과",
         f"파일: {source.file_name}",
         f"시트: {source.sheet_name}",
-        *_scope_disclosure_lines(period, metric),
+        *_scope_disclosure_lines(period, metric, schema),
     ]
     if not safe_rows:
         return "\n".join([*lines, "상태: 원천없음", "원천 조회 결과 0행"])

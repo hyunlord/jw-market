@@ -34,10 +34,48 @@ _INSPECTION_OUTPUT_FIELDS: dict[str, tuple[str, ...]] = {
         "raw_text",
         "sickCd",
         "sickNm",
+        "age",
+        "age_group",
+        "ageRange",
         "year",
         "sex",
         "patient_count",
         "value",
+        "inpatOpat",
+        "ptntCnt",
+        "rvdInsupBrdnAmt",
+        "rvdRpeTamtAmt",
+        "specCnt",
+        "vstDdcnt",
+        "units",
+        "sexBreakdown",
+        "requested_year",
+    ),
+    "mart": (
+        "brand", "brand_name", "period", "year", "month", "sales",
+        "sales_krw", "sales_value", "market_share", "share", "rank",
+        "growth_rate", "company",
+    ),
+    "nedrug": (
+        "item_name", "product_name", "entp_name", "manufacturer_name",
+        "main_item_ingr", "ingredient", "permit_date", "status",
+    ),
+    "clinicaltrials": (
+        "nct_id", "nctId", "status", "phase", "phases", "brief_title",
+        "official_title", "title",
+    ),
+    "patent": (
+        "patent_no", "PATENT_NO", "patent_number", "application_number",
+        "status", "patentee", "assignee", "expiry_date",
+    ),
+    "web": ("title", "media", "source", "published_date", "date", "url"),
+    "document": (
+        "file_name", "document_name", "page", "page_number", "slide",
+        "snippet", "quote", "content",
+    ),
+    "openfda": (
+        "application_number", "brand_name", "generic_name",
+        "manufacturer_name", "status",
     ),
 }
 
@@ -159,6 +197,7 @@ def build_inspection_detail(
             plan.query_scope.model_dump(mode="json") if plan.query_scope else {}
         ),
         "calls": calls,
+        "lane_groups": _lane_groups(calls),
         "trace_correlation": {
             "key": "sequence",
             "matched": len(calls),
@@ -166,6 +205,32 @@ def build_inspection_detail(
             "rate": 1.0 if calls else 0.0,
         },
     }
+
+
+def _lane_groups(calls: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    for call in calls:
+        grouped.setdefault(str(call.get("source_label") or ""), []).append(call)
+    output: list[dict[str, Any]] = []
+    for source_label, lane_calls in grouped.items():
+        if len(lane_calls) < 2:
+            continue
+        output.append(
+            {
+                "source_label": source_label,
+                "call_count": len(lane_calls),
+                "sequences": [int(call["sequence"]) for call in lane_calls],
+                "returned": sum(
+                    int((call.get("counts") or {}).get("returned") or 0)
+                    for call in lane_calls
+                ),
+                "elapsed_seconds": round(
+                    sum(float(call.get("elapsed_seconds") or 0.0) for call in lane_calls),
+                    3,
+                ),
+            }
+        )
+    return output
 
 
 def _used_chunk_count(payload: Any) -> int:
@@ -218,7 +283,27 @@ def _raw_records(payload: Any) -> list[Mapping[str, Any]]:
                 render_data = call.get("render_data")
                 nested = _raw_records(render_data)
                 if nested:
-                    records.extend(nested)
+                    request = (
+                        render_data.get("request")
+                        if isinstance(render_data, Mapping)
+                        else None
+                    )
+                    inherited_year = (
+                        render_data.get("requested_year")
+                        if isinstance(render_data, Mapping)
+                        else None
+                    ) or (request.get("year") if isinstance(request, Mapping) else None)
+                    records.extend(
+                        {
+                            **item,
+                            **(
+                                {"requested_year": inherited_year}
+                                if inherited_year and not item.get("requested_year")
+                                else {}
+                            ),
+                        }
+                        for item in nested
+                    )
                 elif isinstance(render_data, Mapping) and render_data:
                     records.append(render_data)
             return records
@@ -355,6 +440,21 @@ def _inspection_output(
         elif candidate_anchors:
             duplicate += 1
         projected.append(_inspection_record(record, source=source, anchor_id=anchor_id))
+    displayed: list[dict[str, Any]] = []
+    displayed_indexes: dict[str, int] = {}
+    for item in projected:
+        dedupe_value = {key: value for key, value in item.items() if key != "anchor_id"}
+        dedupe_key = repr(_stable_value(dedupe_value))
+        previous_index = displayed_indexes.get(dedupe_key)
+        if previous_index is None:
+            displayed_indexes[dedupe_key] = len(displayed)
+            displayed.append(dict(item))
+        else:
+            displayed[previous_index]["duplicate_count"] = (
+                int(displayed[previous_index].get("duplicate_count") or 1) + 1
+            )
+            count = displayed[previous_index]["duplicate_count"]
+            displayed[previous_index]["duplicate_label"] = f"동일 항목 {count}건"
     metrics = {
         "eligible": eligible,
         "assigned": assigned,
@@ -363,8 +463,18 @@ def _inspection_output(
     }
     return {
         "returned": returned,
-        "records": projected,
+        "displayed_record_count": len(displayed),
+        "duplicate_records_collapsed": len(projected) - len(displayed),
+        "records": displayed,
     }, metrics
+
+
+def _stable_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return tuple((key, _stable_value(nested)) for key, nested in sorted(value.items()))
+    if isinstance(value, (list, tuple)):
+        return tuple(_stable_value(item) for item in value)
+    return value
 
 
 def _inspection_record(

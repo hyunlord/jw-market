@@ -79,7 +79,7 @@ def test_case17_matches_legacy_market_shortcut_without_relaxing_comparison() -> 
     ]
 
 
-def test_full_recomparison_changes_only_case17(monkeypatch) -> None:
+def test_full_recomparison_includes_active_file_mixed_contract(monkeypatch) -> None:
     monkeypatch.setenv("JW_CHAT_ROUTER_CUTOVER_HIRA_REIMBURSEMENT", "0")
     monkeypatch.setenv("JW_CHAT_ROUTER_CUTOVER_HIRA_DISEASE_STATS", "0")
     monkeypatch.setenv("JW_CHAT_ROUTER_CUTOVER_MFDS", "0")
@@ -91,9 +91,9 @@ def test_full_recomparison_changes_only_case17(monkeypatch) -> None:
     prior = json.loads((FIXTURES / "routing_inputs.v2.json").read_text(encoding="utf-8"))
 
     assert actual["comparison_totals"] == {
-        "match": 319,
+        "match": 323,
         "mismatch": 23,
-        "unavailable": 170,
+        "unavailable": 166,
     }
     old_mismatches = {
         (item["question"], item["route_point"]) for item in prior["mismatches"]
@@ -113,7 +113,7 @@ def test_full_recomparison_changes_only_case17(monkeypatch) -> None:
             counts[key] += 1
     assert point_totals["app_scope"] == {"match": 111, "mismatch": 0}
     assert point_totals["routing_v4_rules"] == {"match": 128, "mismatch": 0}
-    assert point_totals["market_shortcut"] == {"match": 80, "mismatch": 23}
+    assert point_totals["market_shortcut"] == {"match": 84, "mismatch": 23}
 
 
 def test_fb02_facets_remain_owned_by_routing_v4() -> None:

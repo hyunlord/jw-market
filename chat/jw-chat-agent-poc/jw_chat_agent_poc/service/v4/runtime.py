@@ -850,7 +850,7 @@ class V4Runtime:
             mode=lossless_mode,
             requested_fields_mode=requested_fields_mode,
             request_satisfaction_mode=request_satisfaction_mode,
-            question=plan.resolved_question,
+            question=_layout_axis_question(question, plan),
         )
         final_text = composition.text
         if (
@@ -1128,6 +1128,7 @@ class V4Runtime:
             ),
             "entity_completion": {
                 "rows": list(entity_completion.rows),
+                "entity_types": list(entity_completion.entity_types),
                 "scope_notice": entity_completion.scope_notice,
                 "excluded_render_axes": list(
                     render_axis_tokens(plan.requested_answer_shape.entities)
@@ -1182,13 +1183,16 @@ class V4Runtime:
             "generated_count": len(charts),
             "reason": "grounded_series" if charts else "fewer_than_two_grounded_points",
         }
-        trace["inspection_detail"] = build_inspection_detail(
-            plan,
-            results,
-            evidence_sets,
-            deterministic_render,
-            expansion=trace["expansion"],
-            answer_text=composition.text,
+        trace["inspection_detail"] = _attach_entity_completion_to_inspection(
+            build_inspection_detail(
+                plan,
+                results,
+                evidence_sets,
+                deterministic_render,
+                expansion=trace["expansion"],
+                answer_text=final_text,
+            ),
+            entity_completion,
         )
         trace["scope_provenance_projection"] = build_scope_provenance_projection(
             evidence_sets,
@@ -1839,25 +1843,21 @@ def _inject_entity_completion_surface(
     completion: Any,
 ) -> tuple[str, dict[str, Any]]:
     rows = tuple(completion.rows)
-    if len(rows) < 2 or all(row["status"] == "COMPLETE" for row in rows):
-        return answer, {"injected": False, "row_count": len(rows)}
-    status_labels = {
-        "COMPLETE": "완료",
-        "PARTIAL": "부분 수집",
-        "FAILED": "조회 결과와 연결하지 못했습니다",
-    }
-    table_lines = [
-        "## 조회 대상별 수집 상태",
-        "| 대상 | 상태 |",
-        "| --- | --- |",
-        *(
-            f"| {row['entity']} | {status_labels[row['status']]} |"
-            for row in rows
-        ),
-    ]
-    if completion.scope_notice:
-        table_lines.append(completion.scope_notice)
-    block = "\n".join(table_lines)
+    incomplete_count = sum(row["status"] != "COMPLETE" for row in rows)
+    if len(rows) < 2 or incomplete_count == 0:
+        return answer, {
+            "injected": False,
+            "row_count": len(rows),
+            "table_location": "inspection",
+        }
+    block = str(completion.scope_notice or "").strip()
+    if not block:
+        return answer, {
+            "injected": False,
+            "row_count": len(rows),
+            "incomplete_count": incomplete_count,
+            "table_location": "inspection",
+        }
     insertion = re.search(
         r"(?m)^##\s+(?:근거와 맥락|근거|종합 인사이트|해석 상한|미확인 요소|출처)\s*$",
         answer,
@@ -1872,8 +1872,34 @@ def _inject_entity_completion_surface(
     return updated, {
         "injected": True,
         "row_count": len(rows),
-        "incomplete_count": sum(row["status"] != "COMPLETE" for row in rows),
+        "incomplete_count": incomplete_count,
+        "table_location": "inspection",
     }
+
+
+def _attach_entity_completion_to_inspection(
+    detail: Mapping[str, Any],
+    completion: Any,
+) -> dict[str, Any]:
+    return {
+        **detail,
+        "entity_completion": {
+            "rows": list(completion.rows),
+            "entity_types": list(completion.entity_types),
+            "scope_notice": completion.scope_notice,
+            "table_location": "inspection",
+        },
+    }
+
+
+def _layout_axis_question(question: str, plan: Any) -> str:
+    current = " ".join(str(question or "").split())
+    attributes = " ".join(
+        _RECORD_TYPE_QUERY_LABELS.get(str(value).strip(), str(value).strip())
+        for value in plan.requested_answer_shape.measure_or_attribute
+        if str(value).strip()
+    )
+    return " ".join(value for value in (current, attributes) if value)
 
 
 def _gate_deletion_rate(before: str, after: str) -> float:

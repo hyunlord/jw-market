@@ -134,9 +134,10 @@ def test_aggregate_contract_requires_numbers_rows_and_comparison_conclusion(monk
     assert "사용 열" in outcome.answer_md
     assert "SUM" in outcome.answer_md
     assert "적용 행 수" in outcome.answer_md
-    assert "3,853,883,875" in outcome.answer_md
-    assert "3,315,233,364" in outcome.answer_md
-    assert "538,650,511" in outcome.answer_md
+    assert "39억원" in outcome.answer_md
+    assert "33억원" in outcome.answer_md
+    assert "5억원" in outcome.answer_md
+    assert "3,853,883,875" not in outcome.answer_md
     assert "동화약품" in outcome.answer_md and "더 큽니다" in outcome.answer_md
 
 
@@ -233,7 +234,8 @@ def test_aggregate_comparison_concludes_when_question_asks_which_is_larger(monke
     )
 
     assert "비교 결론: 동아제약" in outcome.answer_md
-    assert "6,790,008,618" in outcome.answer_md
+    assert "68억원" in outcome.answer_md
+    assert "6,790,008,618" not in outcome.answer_md
 
 
 def test_aggregate_intent_covers_natural_language_sum_comparison() -> None:
@@ -318,9 +320,10 @@ def test_manufacturer_by_sum_executes_grouped_rows_without_total_fallback(
 
     assert "GROUP BY c2 ORDER BY total_value DESC" in captured["sql"]
     assert "동아제약" in outcome.answer_md
-    assert "21,978,584,141" in outcome.answer_md
+    assert "220억원" in outcome.answer_md
     assert "동화약품" in outcome.answer_md
-    assert "15,188,575,523" in outcome.answer_md
+    assert "152억원" in outcome.answer_md
+    assert "21,978,584,141" not in outcome.answer_md
     assert "386,933,825,518" not in outcome.answer_md
 
 

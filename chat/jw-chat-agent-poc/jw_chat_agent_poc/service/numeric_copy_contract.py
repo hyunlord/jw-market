@@ -86,14 +86,12 @@ def enforce_numeric_copy_contract(
     trusted_payload = _trusted_internal_payload(result)
     trusted = strict_allowed_numbers(trusted_payload, allowed_numbers(trusted_payload))
 
-    # A MIXED answer is composed from a market leg and an uploaded-file leg, but
-    # this contract only ever saw the market leg's payload. Figures the file leg
-    # had actually retrieved were judged ungrounded and stripped, so the file
-    # section arrived empty. Admit the file leg's own evidence for both sets.
+    # Uploaded-file evidence can arrive as a FILE answer or as the file leg of a
+    # MIXED answer. Admit only the retrieved file payload in either shape.
     #
     # This does not relax the market contract: market figures still need their
     # own backing, and a market number absent from the mart payload stays blocked.
-    file_tokens = _mixed_file_tokens(result)
+    file_tokens = _uploaded_file_tokens(result)
     if file_tokens:
         allowed = tuple(sorted({*allowed, *file_tokens}))
         trusted = tuple(sorted({*trusted, *file_tokens}))
@@ -365,15 +363,19 @@ def _allowed_payload(result: Mapping[str, Any], *, derived_only: bool) -> str:
     return _stable_text(payload)
 
 
-def _mixed_file_tokens(result: Mapping[str, Any]) -> tuple[str, ...]:
-    """Numeric tokens the uploaded-file leg of a MIXED answer actually retrieved.
+def _uploaded_file_tokens(result: Mapping[str, Any]) -> tuple[str, ...]:
+    """Numeric tokens actually retrieved from an uploaded-file evidence lane."""
 
-    Returns nothing for any other scope, so the change is confined to answers
-    that carry both a market leg and a file leg.
-    """
-
-    leg = result.get("mixed_file_result")
-    if not isinstance(leg, Mapping):
+    leg: Mapping[str, Any] | None = None
+    mixed_leg = result.get("mixed_file_result")
+    if isinstance(mixed_leg, Mapping):
+        leg = mixed_leg
+    elif str(result.get("context_scope") or "").strip().upper() == "FILE":
+        leg = result
+    elif result.get("file_context") or result.get("deterministic_file_answer"):
+        # Legacy deterministic file results predate the explicit scope field.
+        leg = result
+    if leg is None:
         return ()
     sources = [
         str(leg.get("file_context") or ""),

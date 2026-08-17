@@ -1540,8 +1540,10 @@ def _answer_question(
                 schema_probe_elapsed_ms,
                 "active uploaded file schema check",
             )
-        needs_scope_clarification = app_scope_decision.needs_scope_clarification and not (
-            _has_explicit_file_sheet_reference(effective_question)
+        needs_scope_clarification = (
+            app_scope_decision.needs_scope_clarification
+            and context_scope is not ContextScope.MIXED
+            and not _has_explicit_file_sheet_reference(effective_question)
         )
         observe_route_decision(
             question=effective_question,
@@ -1588,7 +1590,7 @@ def _answer_question(
         deep_file_names: tuple[str, ...] = ()
         deterministic_file_answer = ""
         file_sql_trace: tuple[dict[str, str], ...] = ()
-        if routing_resolution.unresolved_reference:
+        if routing_resolution.unresolved_reference and context_scope is not ContextScope.MIXED:
             result = unresolved_reference_result(effective_question)
         elif needs_brand_clarification:
             expires_at = store.conversations.pending_expiry()
@@ -1827,6 +1829,8 @@ def _answer_mixed_parallel(
             except FutureTimeoutError:
                 file_future.cancel()
                 file_payload = (None, (), True, "", ())
+            except InputSizeLimitError:
+                raise
             except Exception as exc:
                 LOGGER.warning("mixed file leg failed type=%s", type(exc).__name__)
                 file_payload = (None, (), True, "", ())
@@ -4807,11 +4811,13 @@ def _compute_mixed_final_answer(
 
     file_name = _mixed_file_name(file_result)
     answer = cleanup_markdown_answer(
-        "## 시장 데이터\n\n"
-        f"{market_final.text.strip()}\n\n"
         f"## 첨부 문서 — {file_name}\n\n"
         f"{file_final.text.strip()}\n\n"
-        "⚠️ 두 근거는 기준기간·단위·정의가 다를 수 있어 직접 비교하지 않습니다."
+        "## 참고: 다른 출처\n\n"
+        "아래 시장 데이터는 업로드 파일의 요청 대상과 출처·분류·지표 정의가 "
+        "다른 참고 자료이며 요청 대상을 대체하지 않습니다.\n\n"
+        f"{market_final.text.strip()}\n\n"
+        "두 근거는 기준기간·단위·정의가 다를 수 있어 직접 비교하지 않습니다."
     )
     answer = scrub_internal_terminology(answer)
     timing = ensure_timing(result)

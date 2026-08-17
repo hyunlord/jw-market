@@ -165,8 +165,18 @@ def test_d2_d4_inspection_contains_bounded_output_and_record_drop_ids() -> None:
     call = detail["calls"][0]
 
     assert call["output"]["records"] == [
-        {"identifiers": ["NCT00000001", "kept"], "title": "kept"},
-        {"identifiers": ["NCT00000002", "dropped"], "title": "dropped"},
+        {
+            "identifiers": ["NCT00000001", "kept"],
+            "nct_id": "NCT00000001",
+            "brief_title": "kept",
+            "title": "kept",
+        },
+        {
+            "identifiers": ["NCT00000002", "dropped"],
+            "nct_id": "NCT00000002",
+            "brief_title": "dropped",
+            "title": "dropped",
+        },
     ]
     render_drop = next(item for item in call["drop_reasons"] if item["stage"] == "render")
     assert render_drop["count"] == 1

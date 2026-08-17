@@ -8,9 +8,9 @@
     "mode": "local_fixture"
   },
   "capture_totals": {
-    "captured": 342,
+    "captured": 346,
     "missing_input": 144,
-    "unfired": 26
+    "unfired": 22
   },
   "case_count": 128,
   "cases": [
@@ -4549,16 +4549,16 @@
             "clarification_message": null,
             "context_handler": "context_scope_dispatch",
             "context_mode": "deterministic",
-            "context_scope": "MARKET",
+            "context_scope": "MIXED",
             "decided_layers": [
               "app_scope"
             ],
-            "domain": "MARKET",
+            "domain": "MIXED",
             "execution_mode": "deterministic",
             "handler": "context_scope_dispatch",
             "market_route_kind": null,
             "reason_codes": [
-              "scope:MARKET"
+              "scope:MIXED"
             ],
             "rejected_alternatives": [],
             "requested_capabilities": [],
@@ -4575,10 +4575,10 @@
               {
                 "comparable": true,
                 "field": "context_scope",
-                "legacy_value": "MARKET",
+                "legacy_value": "MIXED",
                 "matches": true,
                 "reason": null,
-                "unified_value": "MARKET"
+                "unified_value": "MIXED"
               },
               {
                 "comparable": true,
@@ -4602,7 +4602,7 @@
             "unavailable_fields": []
           },
           "legacy_decision": {
-            "domain": "MARKET",
+            "domain": "MIXED",
             "handler": "context_scope_dispatch",
             "mode": "deterministic"
           },
@@ -4791,16 +4791,16 @@
             "clarification_message": null,
             "context_handler": "context_scope_dispatch",
             "context_mode": "deterministic",
-            "context_scope": "FILE",
+            "context_scope": "MIXED",
             "decided_layers": [
               "app_scope"
             ],
-            "domain": "FILE",
+            "domain": "MIXED",
             "execution_mode": "deterministic",
             "handler": "context_scope_dispatch",
             "market_route_kind": null,
             "reason_codes": [
-              "scope:FILE"
+              "scope:MIXED"
             ],
             "rejected_alternatives": [],
             "requested_capabilities": [],
@@ -4817,10 +4817,10 @@
               {
                 "comparable": true,
                 "field": "context_scope",
-                "legacy_value": "FILE",
+                "legacy_value": "MIXED",
                 "matches": true,
                 "reason": null,
-                "unified_value": "FILE"
+                "unified_value": "MIXED"
               },
               {
                 "comparable": true,
@@ -4844,7 +4844,7 @@
             "unavailable_fields": []
           },
           "legacy_decision": {
-            "domain": "FILE",
+            "domain": "MIXED",
             "handler": "context_scope_dispatch",
             "mode": "deterministic"
           },
@@ -4863,8 +4863,80 @@
           }
         },
         "market_shortcut": {
-          "capture_status": "unfired",
-          "reason": "local_fixture_path_did_not_emit_route_point"
+          "canonical_route": {
+            "capability": null,
+            "capability_domain": null,
+            "capability_mode": null,
+            "clarification_message": null,
+            "context_handler": null,
+            "context_mode": null,
+            "context_scope": "MARKET",
+            "decided_layers": [
+              "market_shortcut"
+            ],
+            "domain": "market",
+            "execution_mode": "agentic",
+            "handler": "agent_loop",
+            "market_route_kind": "agent_loop",
+            "reason_codes": [
+              "market_shortcut_not_selected"
+            ],
+            "rejected_alternatives": [],
+            "requested_capabilities": [],
+            "tool_plan_handler": null,
+            "tool_plan_mode": null,
+            "tool_plan_owner": "agent_loop_planner",
+            "unresolved_capabilities": []
+          },
+          "capture_source": "service_fixture_observer",
+          "capture_status": "captured",
+          "comparison": {
+            "decided_by": "market_shortcut",
+            "field_comparisons": [
+              {
+                "comparable": true,
+                "field": "domain",
+                "legacy_value": "market",
+                "matches": true,
+                "reason": null,
+                "unified_value": "market"
+              },
+              {
+                "comparable": true,
+                "field": "handler",
+                "legacy_value": "agent_loop",
+                "matches": true,
+                "reason": null,
+                "unified_value": "agent_loop"
+              },
+              {
+                "comparable": true,
+                "field": "mode",
+                "legacy_value": "agentic",
+                "matches": true,
+                "reason": null,
+                "unified_value": "agentic"
+              }
+            ],
+            "matches": true,
+            "mismatch_fields": [],
+            "unavailable_fields": []
+          },
+          "legacy_decision": {
+            "domain": "market",
+            "handler": "agent_loop",
+            "mode": "agentic"
+          },
+          "raw_input": {
+            "has_documents": false,
+            "question": "내가 올린 알려줘",
+            "resolver_state": {
+              "fixture_id": "static_metrics_market_scope_v1",
+              "has_explicit_brand_anchor": false,
+              "has_explicit_named_market": false
+            },
+            "use_direct_agent_loop": false
+          }
         },
         "routing_v4_rules": {
           "canonical_route": {
@@ -25785,16 +25857,16 @@
             "clarification_message": null,
             "context_handler": "context_scope_dispatch",
             "context_mode": "deterministic",
-            "context_scope": "FILE",
+            "context_scope": "MIXED",
             "decided_layers": [
               "app_scope"
             ],
-            "domain": "FILE",
+            "domain": "MIXED",
             "execution_mode": "deterministic",
             "handler": "context_scope_dispatch",
             "market_route_kind": null,
             "reason_codes": [
-              "scope:FILE"
+              "scope:MIXED"
             ],
             "rejected_alternatives": [],
             "requested_capabilities": [],
@@ -25811,10 +25883,10 @@
               {
                 "comparable": true,
                 "field": "context_scope",
-                "legacy_value": "FILE",
+                "legacy_value": "MIXED",
                 "matches": true,
                 "reason": null,
-                "unified_value": "FILE"
+                "unified_value": "MIXED"
               },
               {
                 "comparable": true,
@@ -25838,7 +25910,7 @@
             "unavailable_fields": []
           },
           "legacy_decision": {
-            "domain": "FILE",
+            "domain": "MIXED",
             "handler": "context_scope_dispatch",
             "mode": "deterministic"
           },
@@ -25857,8 +25929,80 @@
           }
         },
         "market_shortcut": {
-          "capture_status": "unfired",
-          "reason": "local_fixture_path_did_not_emit_route_point"
+          "canonical_route": {
+            "capability": null,
+            "capability_domain": null,
+            "capability_mode": null,
+            "clarification_message": null,
+            "context_handler": null,
+            "context_mode": null,
+            "context_scope": "MARKET",
+            "decided_layers": [
+              "market_shortcut"
+            ],
+            "domain": "market",
+            "execution_mode": "agentic",
+            "handler": "agent_loop",
+            "market_route_kind": "agent_loop",
+            "reason_codes": [
+              "market_shortcut_not_selected"
+            ],
+            "rejected_alternatives": [],
+            "requested_capabilities": [],
+            "tool_plan_handler": null,
+            "tool_plan_mode": null,
+            "tool_plan_owner": "agent_loop_planner",
+            "unresolved_capabilities": []
+          },
+          "capture_source": "service_fixture_observer",
+          "capture_status": "captured",
+          "comparison": {
+            "decided_by": "market_shortcut",
+            "field_comparisons": [
+              {
+                "comparable": true,
+                "field": "domain",
+                "legacy_value": "market",
+                "matches": true,
+                "reason": null,
+                "unified_value": "market"
+              },
+              {
+                "comparable": true,
+                "field": "handler",
+                "legacy_value": "agent_loop",
+                "matches": true,
+                "reason": null,
+                "unified_value": "agent_loop"
+              },
+              {
+                "comparable": true,
+                "field": "mode",
+                "legacy_value": "agentic",
+                "matches": true,
+                "reason": null,
+                "unified_value": "agentic"
+              }
+            ],
+            "matches": true,
+            "mismatch_fields": [],
+            "unavailable_fields": []
+          },
+          "legacy_decision": {
+            "domain": "market",
+            "handler": "agent_loop",
+            "mode": "agentic"
+          },
+          "raw_input": {
+            "has_documents": false,
+            "question": "업로드한 PDF의 핵심 내용을 요약해줘",
+            "resolver_state": {
+              "fixture_id": "static_metrics_market_scope_v1",
+              "has_explicit_brand_anchor": false,
+              "has_explicit_named_market": false
+            },
+            "use_direct_agent_loop": false
+          }
         },
         "routing_v4_rules": {
           "canonical_route": {
@@ -25953,16 +26097,16 @@
             "clarification_message": null,
             "context_handler": "context_scope_dispatch",
             "context_mode": "deterministic",
-            "context_scope": "FILE",
+            "context_scope": "MIXED",
             "decided_layers": [
               "app_scope"
             ],
-            "domain": "FILE",
+            "domain": "MIXED",
             "execution_mode": "deterministic",
             "handler": "context_scope_dispatch",
             "market_route_kind": null,
             "reason_codes": [
-              "scope:FILE"
+              "scope:MIXED"
             ],
             "rejected_alternatives": [],
             "requested_capabilities": [],
@@ -25979,10 +26123,10 @@
               {
                 "comparable": true,
                 "field": "context_scope",
-                "legacy_value": "FILE",
+                "legacy_value": "MIXED",
                 "matches": true,
                 "reason": null,
-                "unified_value": "FILE"
+                "unified_value": "MIXED"
               },
               {
                 "comparable": true,
@@ -26006,7 +26150,7 @@
             "unavailable_fields": []
           },
           "legacy_decision": {
-            "domain": "FILE",
+            "domain": "MIXED",
             "handler": "context_scope_dispatch",
             "mode": "deterministic"
           },
@@ -26025,8 +26169,80 @@
           }
         },
         "market_shortcut": {
-          "capture_status": "unfired",
-          "reason": "local_fixture_path_did_not_emit_route_point"
+          "canonical_route": {
+            "capability": null,
+            "capability_domain": null,
+            "capability_mode": null,
+            "clarification_message": null,
+            "context_handler": null,
+            "context_mode": null,
+            "context_scope": "MARKET",
+            "decided_layers": [
+              "market_shortcut"
+            ],
+            "domain": "market",
+            "execution_mode": "agentic",
+            "handler": "agent_loop",
+            "market_route_kind": "agent_loop",
+            "reason_codes": [
+              "market_shortcut_not_selected"
+            ],
+            "rejected_alternatives": [],
+            "requested_capabilities": [],
+            "tool_plan_handler": null,
+            "tool_plan_mode": null,
+            "tool_plan_owner": "agent_loop_planner",
+            "unresolved_capabilities": []
+          },
+          "capture_source": "service_fixture_observer",
+          "capture_status": "captured",
+          "comparison": {
+            "decided_by": "market_shortcut",
+            "field_comparisons": [
+              {
+                "comparable": true,
+                "field": "domain",
+                "legacy_value": "market",
+                "matches": true,
+                "reason": null,
+                "unified_value": "market"
+              },
+              {
+                "comparable": true,
+                "field": "handler",
+                "legacy_value": "agent_loop",
+                "matches": true,
+                "reason": null,
+                "unified_value": "agent_loop"
+              },
+              {
+                "comparable": true,
+                "field": "mode",
+                "legacy_value": "agentic",
+                "matches": true,
+                "reason": null,
+                "unified_value": "agentic"
+              }
+            ],
+            "matches": true,
+            "mismatch_fields": [],
+            "unavailable_fields": []
+          },
+          "legacy_decision": {
+            "domain": "market",
+            "handler": "agent_loop",
+            "mode": "agentic"
+          },
+          "raw_input": {
+            "has_documents": false,
+            "question": "올린 알려줘",
+            "resolver_state": {
+              "fixture_id": "static_metrics_market_scope_v1",
+              "has_explicit_brand_anchor": false,
+              "has_explicit_named_market": false
+            },
+            "use_direct_agent_loop": false
+          }
         },
         "routing_v4_rules": {
           "canonical_route": {
@@ -27215,16 +27431,16 @@
             "clarification_message": null,
             "context_handler": "context_scope_dispatch",
             "context_mode": "deterministic",
-            "context_scope": "FILE",
+            "context_scope": "MIXED",
             "decided_layers": [
               "app_scope"
             ],
-            "domain": "FILE",
+            "domain": "MIXED",
             "execution_mode": "deterministic",
             "handler": "context_scope_dispatch",
             "market_route_kind": null,
             "reason_codes": [
-              "scope:FILE"
+              "scope:MIXED"
             ],
             "rejected_alternatives": [],
             "requested_capabilities": [],
@@ -27241,10 +27457,10 @@
               {
                 "comparable": true,
                 "field": "context_scope",
-                "legacy_value": "FILE",
+                "legacy_value": "MIXED",
                 "matches": true,
                 "reason": null,
-                "unified_value": "FILE"
+                "unified_value": "MIXED"
               },
               {
                 "comparable": true,
@@ -27268,7 +27484,7 @@
             "unavailable_fields": []
           },
           "legacy_decision": {
-            "domain": "FILE",
+            "domain": "MIXED",
             "handler": "context_scope_dispatch",
             "mode": "deterministic"
           },
@@ -27287,8 +27503,80 @@
           }
         },
         "market_shortcut": {
-          "capture_status": "unfired",
-          "reason": "local_fixture_path_did_not_emit_route_point"
+          "canonical_route": {
+            "capability": null,
+            "capability_domain": null,
+            "capability_mode": null,
+            "clarification_message": null,
+            "context_handler": null,
+            "context_mode": null,
+            "context_scope": "MARKET",
+            "decided_layers": [
+              "market_shortcut"
+            ],
+            "domain": "market",
+            "execution_mode": "agentic",
+            "handler": "agent_loop",
+            "market_route_kind": "agent_loop",
+            "reason_codes": [
+              "market_shortcut_not_selected"
+            ],
+            "rejected_alternatives": [],
+            "requested_capabilities": [],
+            "tool_plan_handler": null,
+            "tool_plan_mode": null,
+            "tool_plan_owner": "agent_loop_planner",
+            "unresolved_capabilities": []
+          },
+          "capture_source": "service_fixture_observer",
+          "capture_status": "captured",
+          "comparison": {
+            "decided_by": "market_shortcut",
+            "field_comparisons": [
+              {
+                "comparable": true,
+                "field": "domain",
+                "legacy_value": "market",
+                "matches": true,
+                "reason": null,
+                "unified_value": "market"
+              },
+              {
+                "comparable": true,
+                "field": "handler",
+                "legacy_value": "agent_loop",
+                "matches": true,
+                "reason": null,
+                "unified_value": "agent_loop"
+              },
+              {
+                "comparable": true,
+                "field": "mode",
+                "legacy_value": "agentic",
+                "matches": true,
+                "reason": null,
+                "unified_value": "agentic"
+              }
+            ],
+            "matches": true,
+            "mismatch_fields": [],
+            "unavailable_fields": []
+          },
+          "legacy_decision": {
+            "domain": "market",
+            "handler": "agent_loop",
+            "mode": "agentic"
+          },
+          "raw_input": {
+            "has_documents": false,
+            "question": "첨부한 PPT에서 시장 규모 수치만 찾아줘",
+            "resolver_state": {
+              "fixture_id": "static_metrics_market_scope_v1",
+              "has_explicit_brand_anchor": false,
+              "has_explicit_named_market": false
+            },
+            "use_direct_agent_loop": false
+          }
         },
         "routing_v4_rules": {
           "canonical_route": {
@@ -27852,9 +28140,9 @@
   ],
   "cell_count": 512,
   "comparison_totals": {
-    "match": 319,
+    "match": 323,
     "mismatch": 23,
-    "unavailable": 170
+    "unavailable": 166
   },
   "mismatches": [
     {

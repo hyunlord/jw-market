@@ -15,6 +15,7 @@ class EntityCompletion:
     rows: tuple[dict[str, str], ...]
     scope_notice: str
     missing_rows_markdown: str
+    entity_types: tuple[dict[str, str], ...] = ()
 
 
 _ATTRIBUTE_QUERY_LABELS = {
@@ -38,11 +39,19 @@ _RENDER_AXIS_TOKENS = frozenset(
         "입원/외래",
         "성별",
         "연령",
+        "연령대",
         "채널",
         "지역",
     }
 )
 _RECENT_MONTH_AXIS_RE = re.compile(r"최근\s*\d{1,3}\s*개월")
+_QUESTION_FRAGMENT_SUFFIXES = (
+    "알려줘",
+    "보여줘",
+    "기준으로도",
+    "기준으로도 알려줘",
+    "기준으로도 보여줘",
+)
 
 
 def render_axis_tokens(entities: Sequence[str]) -> tuple[str, ...]:
@@ -54,7 +63,10 @@ def _completion_entities(plan: PlannerOutput) -> tuple[str, ...]:
         dict.fromkeys(
             entity.strip()
             for entity in plan.requested_answer_shape.entities
-            if entity.strip() and ":" not in entity and not _is_render_axis_token(entity)
+            if entity.strip()
+            and ":" not in entity
+            and not _is_render_axis_token(entity)
+            and not _is_question_fragment(entity)
         )
     )
 
@@ -65,6 +77,11 @@ def _is_render_axis_token(value: str) -> bool:
         normalized in _RENDER_AXIS_TOKENS
         or _RECENT_MONTH_AXIS_RE.fullmatch(normalized) is not None
     )
+
+
+def _is_question_fragment(value: str) -> bool:
+    normalized = " ".join(value.split())
+    return any(normalized.endswith(suffix) for suffix in _QUESTION_FRAGMENT_SUFFIXES)
 
 
 def source_tier(plan: PlannerOutput, source: str) -> int:
@@ -202,20 +219,48 @@ def entity_completion_rows(
         for row in rows
         if row["status"] != "COMPLETE"
     )
-    return EntityCompletion(tuple(rows), scope_notice, missing_rows)
+    return EntityCompletion(
+        tuple(rows),
+        scope_notice,
+        missing_rows,
+        tuple(
+            {"entity": entity, "entity_type": _entity_type(entity)}
+            for entity in entities
+        ),
+    )
 
 
 def _entity_scope_label(plan: PlannerOutput, entities: Sequence[str]) -> str:
-    if "hira" in plan.answer_sources:
-        return "상병코드·질환 항목"
     normalized = plan.resolved_question.casefold()
-    kcd_like = any(re.fullmatch(r"[A-Za-z]\d{2,3}", entity.strip()) for entity in entities)
-    if kcd_like or any(token in normalized for token in ("상병", "환자수", "질환")):
+    entity_types = {_entity_type(entity) for entity in entities}
+    if (
+        entity_types
+        and entity_types <= {"상병코드", "질환"}
+    ) or (
+        "hira" in plan.answer_sources and "급여" not in normalized
+    ):
         return "상병코드·질환 항목"
+    if len(entity_types) > 1:
+        return "조회 대상"
+    if entity_types:
+        return entity_types.pop()
     if "임상" in normalized:
         return "임상 대상"
     if "특허" in normalized:
         return "특허 대상"
+    return "브랜드"
+
+
+def _entity_type(value: str) -> str:
+    normalized = " ".join(value.split())
+    if re.fullmatch(r"[A-Za-z]\d{2,3}(?:\.\d+)?", normalized):
+        return "상병코드"
+    if normalized.casefold().endswith(("질환", "병", "증", "암")):
+        return "질환"
+    if normalized.casefold().endswith(("제약", "pharma", "inc", "ltd", "company")):
+        return "회사"
+    if "+" in normalized or re.search(r"\bAND\b", normalized, re.IGNORECASE):
+        return "성분"
     return "브랜드"
 
 

@@ -231,7 +231,10 @@ def _render_set(
             )
             for record in evidence_set.records
         ):
-            return render_policy(evidence_set)
+            return render_policy(
+                evidence_set,
+                require_product_match=True,
+            )
         return render_hira_statistics(evidence_set)
     if source == "mart":
         return render_market(evidence_set)

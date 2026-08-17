@@ -1,9 +1,4 @@
-"""R14 STAGE 4 — a comparison question reaches MIXED, and a MIXED answer keeps
-the numbers its file leg actually retrieved.
-
-Scope guard: the FILE isolation path is deliberately untouched. These tests pin
-that a file-only or market-only question routes exactly as before.
-"""
+"""Active uploaded files participate as one evidence lane in every question."""
 from __future__ import annotations
 
 import ast
@@ -61,23 +56,20 @@ def test_the_previously_supported_phrasings_still_reach_mixed(question):
     assert _scope(question) is ContextScope.MIXED
 
 
-# --- routing: nothing else moves ------------------------------------------
+# --- routing: every non-empty active-file turn is mixed -------------------
 
 @pytest.mark.parametrize(
     ("question", "expected"),
     [
-        ("리바로 매출 알려줘", ContextScope.MARKET),
-        ("2025년 박카스디 매출 알려줘", ContextScope.MARKET),
-        ("전체 시장 규모 알려줘", ContextScope.MARKET),
-        # Naming a file without asking for a comparison stays file-scoped, so
-        # the isolation path this round must not disturb still governs it.
-        ("CHSO 문서의 액티넘 매출 알려줘", ContextScope.FILE),
-        ("업로드 파일의 액티넘 매출 알려줘", ContextScope.FILE),
+        ("리바로 매출 알려줘", ContextScope.MIXED),
+        ("2025년 박카스디 매출 알려줘", ContextScope.MIXED),
+        ("전체 시장 규모 알려줘", ContextScope.MIXED),
+        ("CHSO 문서의 액티넘 매출 알려줘", ContextScope.MIXED),
+        ("업로드 파일의 액티넘 매출 알려줘", ContextScope.MIXED),
     ],
 )
-def test_questions_that_are_not_comparisons_route_exactly_as_before(question, expected):
-    market = expected is not ContextScope.FILE
-    assert _scope(question, market=market) is expected
+def test_nonempty_questions_with_an_active_file_use_both_sources(question, expected):
+    assert _scope(question, market=True) is expected
 
 
 def test_a_session_without_an_uploaded_file_is_unaffected():
@@ -184,12 +176,12 @@ def test_the_market_leg_still_needs_its_own_evidence():
 
 
 def test_a_non_mixed_result_gains_no_extra_allowance():
-    assert N._mixed_file_tokens({"tool_calls": []}) == ()
-    assert N._mixed_file_tokens({"mixed_file_result": {"file_context": "   "}}) == ()
+    assert N._uploaded_file_tokens({"tool_calls": []}) == ()
+    assert N._uploaded_file_tokens({"mixed_file_result": {"file_context": "   "}}) == ()
 
 
 def test_file_tokens_are_read_from_the_deterministic_answer_too():
-    tokens = N._mixed_file_tokens(
+    tokens = N._uploaded_file_tokens(
         {"mixed_file_result": {"deterministic_file_answer": "2026년 매출 1,200억원"}}
     )
     assert tokens

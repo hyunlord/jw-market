@@ -477,7 +477,7 @@ def test_explicit_unsupported_measure_beats_inherited_sell_out_sheet_name() -> N
     assert request.label == "재구매율"
 
 
-def test_market_anchor_does_not_inherit_file_slots(monkeypatch) -> None:
+def test_market_anchor_keeps_active_file_as_peer_source(monkeypatch) -> None:
     previous = ConversationTurn(
         question="F4.docx에서 동아제약 합계는?",
         answer="21,978,584,141",
@@ -498,8 +498,12 @@ def test_market_anchor_does_not_inherit_file_slots(monkeypatch) -> None:
     monkeypatch.setattr(
         service_app,
         "_delegated_file_context",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("MARKET must not search files")
+        lambda *_args, **_kwargs: (
+            "파일 근거",
+            ({"file_name": "F4.docx"},),
+            True,
+            "파일 답변",
+            (),
         ),
     )
     monkeypatch.setattr(
@@ -517,7 +521,9 @@ def test_market_anchor_does_not_inherit_file_slots(monkeypatch) -> None:
         "phase2-market-return",
     )
 
-    assert item["result"]["context_scope"] == "MARKET"
+    assert item["result"]["context_scope"] == "MIXED"
+    assert item["result"]["mixed_file_result"]["deterministic_file_answer"] == "파일 답변"
+    assert item["result"]["mixed_market_result"]["answer"] == "시장 답변"
 
 
 def test_file_sql_result_records_measure_for_next_turn() -> None:
@@ -863,7 +869,8 @@ def test_chso_compare_runs_planner_and_renderer_end_to_end(monkeypatch) -> None:
         "동아제약과 동화약품 비교", "conversation-1", (source,)
     )
 
-    assert "6,790,008,618" in outcome.answer_md
+    assert "68억원" in outcome.answer_md
+    assert "6,790,008,618" not in outcome.answer_md
     assert "시장 도구" not in outcome.answer_md
 
 
@@ -893,8 +900,9 @@ def test_compound_atc4_compare_runs_with_explicit_slots(monkeypatch) -> None:
         (source,),
     )
 
-    assert "3,853,883,875" in outcome.answer_md
-    assert "3,315,233,364" in outcome.answer_md
+    assert "39억원" in outcome.answer_md
+    assert "33억원" in outcome.answer_md
+    assert "3,853,883,875" not in outcome.answer_md
 
 
 def test_file_sql_trace_reaches_delegated_context(monkeypatch) -> None:

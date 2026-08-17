@@ -35,7 +35,7 @@ from test_service import FakeAgent, _market_scope_resolver
     ),
     (
         ("리바로 매출", "리바로 매출", False, True, True, (), False, ContextScope.MARKET),
-        ("이 보고서 매출", "이 보고서 매출", True, False, False, (), False, ContextScope.FILE),
+        ("이 보고서 매출", "이 보고서 매출", True, False, False, (), False, ContextScope.MIXED),
         (
             "이 보고서와 리바로 시장 데이터 비교",
             "이 보고서와 리바로 시장 데이터 비교",
@@ -47,7 +47,7 @@ from test_service import FakeAgent, _market_scope_resolver
             ContextScope.MIXED,
         ),
         ("브랜드가 모호한 질문", "브랜드가 모호한 질문", False, False, False, (), True, ContextScope.MARKET),
-        ("채널 비교", "채널 비교", True, False, False, ("channel",), False, ContextScope.FILE),
+        ("채널 비교", "채널 비교", True, False, False, ("channel",), False, ContextScope.MIXED),
     ),
 )
 def test_app_scope_decision_matches_legacy_for_five_scenarios(
