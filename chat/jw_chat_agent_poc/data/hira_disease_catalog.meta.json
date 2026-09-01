@@ -1,0 +1,12 @@
+{
+  "fetched_at": "2026-08-27T22:35:59Z",
+  "total_count": 14652,
+  "page_count": 2,
+  "response_sha256": [
+    "8298d14d21ff9ac5a309110e224be1d968645d2a5d01e0545cd5d5f84fa65589",
+    "8b90100ee079a16bf5e53a6674d14369be9e5a5b4ee1a8aaa4e9107472230b0f"
+  ],
+  "csv_sha256": "2b004e03e49d83f15055265e33a252402648d1a004bb34536237f0ab668fe56b",
+  "source": "HIRA getDissNameCodeList1",
+  "sick_type": "2"
+}

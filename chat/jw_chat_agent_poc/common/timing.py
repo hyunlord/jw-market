@@ -1,0 +1,533 @@
+from __future__ import annotations
+
+from collections.abc import Mapping, MutableMapping
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
+from datetime import datetime, timezone
+import logging
+import os
+import re
+import sys
+import threading
+import time
+from typing import Any, Callable, Iterator
+
+from jw_chat_agent_poc.common.source_display import TOOL_STEP_LABELS, tool_step_label
+from jw_chat_agent_poc.common.token_usage import public_token_usage
+
+
+Timing = MutableMapping[str, Any]
+StageEventSink = Callable[[dict[str, Any]], None]
+_ACTIVE_STAGE_SINK: ContextVar[StageEventSink | None] = ContextVar("active_stage_sink", default=None)
+_ACTIVE_REQUEST_SPANS: ContextVar[list[dict[str, Any]] | None] = ContextVar(
+    "active_request_spans",
+    default=None,
+)
+STEP_HEARTBEAT_THRESHOLD_S_ENV = "STEP_HEARTBEAT_THRESHOLD_S"
+DEFAULT_STEP_HEARTBEAT_THRESHOLD_S = 3.0
+STEP_HEARTBEAT_INTERVAL_S = 2.5
+
+
+class _StdoutHandler(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            print(self.format(record), file=sys.stdout, flush=True)
+        except Exception:
+            self.handleError(record)
+
+
+STAGE_TIMING_LOGGER = logging.getLogger("jw_chat_agent_poc.stage_timing")
+STAGE_TIMING_LOGGER.setLevel(logging.INFO)
+STAGE_TIMING_LOGGER.propagate = False
+if not STAGE_TIMING_LOGGER.handlers:
+    _stage_timing_handler = _StdoutHandler()
+    _stage_timing_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    STAGE_TIMING_LOGGER.addHandler(_stage_timing_handler)
+
+_PUBLIC_STAGE_NAMES = {
+    "question_received": "질문 접수",
+    "queue_wait": "대기 중",
+    "question_classification": "질문 분류",
+    "file_session_probe": "첨부 파일 확인",
+    "file_schema_probe": "첨부 파일 구조 분석",
+    "mixed_file_leg": "첨부 문서 조회",
+    "mixed_market_leg": "시장 데이터 조회",
+    "question_decomposition": "질문 분해",
+    "market_snapshot": "시장 데이터 준비",
+    "agent_pre_resolve": "질문 해석",
+    "llm_plan": "분석 계획",
+    # Three internal names, one user-facing step: the BQ and structured branches
+    # are told apart in the trace, not in the progress feed.
+    "deterministic_plan": "조회 계획 확정",
+    "deterministic_plan_bq": "조회 계획 확정",
+    "deterministic_plan_structured": "조회 계획 확정",
+    "strict_query_plan": "데이터 조회 설계",
+    "completion_queries": "추가 지표 조회",
+    "answer_contract_preflight": "필수 근거 확인",
+    "bq_analysis": "시장 분석 정리",
+    "tool_batch": "관련 데이터 조회",
+    "compute": "지표 계산",
+    "context_retrieval": "관련 이슈 수집",
+    "fact_assembly": "근거 정리",
+    "final_llm_expression": "답변 작성",
+    "final_deterministic_fast_path": "답변 작성",
+    "final_deterministic_single_period_sales_path": "답변 작성",
+    "final_llm_retry": "답변 재작성",
+    "answer_safety": "숫자 검증",
+    "answer_generation_total": "도구 조회 및 답변 작성",
+    "deep_research_total": "딥리서치 전체",
+    "answer_cleanup": "답변 정리",
+    "chart_generation": "차트 준비",
+    "deep_research_prepare": "딥리서치 질문 분석",
+    "deep_research_plan": "딥리서치 조사 설계",
+    "deep_research_file_batch": "딥리서치 첨부 파일 수집",
+    "deep_research_tool_batch": "딥리서치 자료 수집",
+    "deep_research_evidence": "딥리서치 근거 정리",
+    "deep_research_synthesis": "딥리서치 종합 분석",
+}
+
+_PUBLIC_TOOL_NAMES = TOOL_STEP_LABELS
+
+
+@dataclass(slots=True)
+class StageProgress:
+    summary: str | None = None
+
+_PUBLIC_STAGE_DETAILS = {
+    "request processing": "전체 처리 진행",
+    "active uploaded file check": "현재 대화의 첨부 파일 확인",
+    "active uploaded file schema check": "파일의 시트와 열 확인",
+    "uploaded file retrieval": "첨부 문서 근거 조회",
+    "market fact retrieval": "시장 데이터 근거 조회",
+    "view selection": "시장 기준 판정",
+    "agent setup": "분석 구성 준비",
+    "BQ and tool routing": "질문 유형·도구 경로 판정",
+    "tool catalog and market snapshot": "조회 도구·시장 데이터 준비",
+    "brand and period grounding": "브랜드·기간 확인",
+    "population-sensitive spec mapping": "질문 조건 반영",
+    "deterministic metric backfill": "누락 지표 보강",
+    "required fact backfill": "필수 근거 보강",
+    "BQ analysis synthesis": "시장 분석 결과 정리",
+    "parallel tool execution": "관련 자료 병렬 조회",
+    "deterministic deltas and comparisons": "변화율·비교 계산",
+    "background issue material": "뉴스·이슈 보조 근거",
+    "markdown fact set build": "답변 근거 정리",
+    "GenOS markdown generation": "최종 문장 생성",
+    "verified top-N answer rendering": "검증된 상위 브랜드 표 조립",
+    "verified single-period sales answer rendering": "검증된 단일기간 매출 답변 조립",
+    "missing mandatory facts": "필수 근거 보강",
+    "fact-number validation": "fact 숫자 대조",
+    "GenOS expression plus safety": "표현 생성 및 검증",
+    "markdown cleanup": "표기 정리",
+    "fact-backed chart spec": "fact 기반 차트 준비",
+    "molecule_trend": "성분 기준 임상시험 확인",
+    "combo_and": "복합 성분 임상시험 확인",
+    "metric=sales": "매출 데이터 확인",
+}
+
+
+def _public_stage_name(name: str) -> str:
+    if name.startswith("tool:"):
+        tool_name = name.removeprefix("tool:")
+        return tool_step_label(tool_name)
+    return _PUBLIC_STAGE_NAMES.get(name, name)
+
+
+def _public_stage_detail(detail: str) -> str:
+    step_metadata = re.fullmatch(
+        r"step=(?P<step>\d+)(?:;\s*mode=(?P<mode>parallel|serial))?",
+        detail,
+    )
+    if step_metadata is not None:
+        step = step_metadata.group("step")
+        if step_metadata.group("mode") == "parallel":
+            return f"{step}단계 · 관련 항목 동시 조회"
+        return f"{step}단계"
+    return _PUBLIC_STAGE_DETAILS.get(detail, detail)
+
+
+def public_stage_summary(summary: str) -> str:
+    """Project internal tool identifiers into user-facing progress text."""
+
+    public = summary
+    for raw_name, public_name in sorted(
+        _PUBLIC_TOOL_NAMES.items(),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    ):
+        public = public.replace(raw_name, public_name)
+    public = public.replace(" -> ", " → ")
+    return re.sub(
+        r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b",
+        "관련 데이터 조회",
+        public,
+    )
+
+
+def new_timing() -> dict[str, Any]:
+    """Create a request-local timing payload for user-visible latency reporting."""
+
+    return {"started_at_monotonic": time.perf_counter(), "stages": []}
+
+
+def ensure_timing(result: MutableMapping[str, Any]) -> Timing:
+    """Return a mutable timing payload on an agent result."""
+
+    timing = result.get("timing")
+    if not isinstance(timing, dict):
+        timing = new_timing()
+        result["timing"] = timing
+    timing.setdefault("stages", [])
+    timing.setdefault("started_at_monotonic", time.perf_counter())
+    return timing
+
+
+@contextmanager
+def request_span_scope() -> Iterator[list[dict[str, Any]]]:
+    """Collect request-local child spans for QA diagnostics."""
+
+    spans: list[dict[str, Any]] = []
+    token = _ACTIVE_REQUEST_SPANS.set(spans)
+    try:
+        yield spans
+    finally:
+        _ACTIVE_REQUEST_SPANS.reset(token)
+
+
+@contextmanager
+def suspend_request_spans() -> Iterator[None]:
+    """Exclude private sidecar work from the request's public QA span list."""
+
+    token = _ACTIVE_REQUEST_SPANS.set(None)
+    try:
+        yield
+    finally:
+        _ACTIVE_REQUEST_SPANS.reset(token)
+
+
+@contextmanager
+def trace_span(
+    name: str,
+    detail: str = "",
+    *,
+    category: str = "boundary",
+) -> Iterator[None]:
+    """Record a non-public diagnostic span without changing progress events."""
+
+    started = time.perf_counter()
+    started_at = datetime.now(timezone.utc)
+    status = "ok"
+    try:
+        yield
+    except BaseException:
+        status = "error"
+        raise
+    finally:
+        _record_request_span(
+            name=name,
+            category=category,
+            detail=detail,
+            started=started,
+            started_at=started_at,
+            status=status,
+        )
+
+
+@contextmanager
+def stage(
+    timing: Timing | None,
+    name: str,
+    detail: str = "",
+    sink: StageEventSink | None = None,
+) -> Iterator[StageProgress]:
+    """Record elapsed milliseconds for one named processing stage."""
+
+    effective_sink = sink or _ACTIVE_STAGE_SINK.get()
+    started = time.perf_counter()
+    started_at = datetime.now(timezone.utc)
+    progress = StageProgress()
+    status = "ok"
+    heartbeat_stop = threading.Event()
+    _emit_stage_event(effective_sink, name, detail, "started")
+    _start_heartbeat(effective_sink, name, detail, started, heartbeat_stop)
+    try:
+        yield progress
+    except BaseException:
+        status = "error"
+        raise
+    finally:
+        heartbeat_stop.set()
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        add_stage(timing, name, elapsed_ms, detail)
+        STAGE_TIMING_LOGGER.info(
+            "stage_timing name=%s detail=%s elapsed_ms=%.3f",
+            name,
+            detail,
+            elapsed_ms,
+        )
+        _emit_stage_event(effective_sink, name, detail, "done", elapsed_ms, summary=progress.summary)
+        _record_request_span(
+            name=name,
+            category="stage",
+            detail=detail,
+            started=started,
+            started_at=started_at,
+            status=status,
+        )
+
+
+def _record_request_span(
+    *,
+    name: str,
+    category: str,
+    detail: str,
+    started: float,
+    started_at: datetime,
+    status: str,
+) -> None:
+    spans = _ACTIVE_REQUEST_SPANS.get()
+    if spans is None:
+        return
+    spans.append(
+        {
+            "name": name,
+            "category": category,
+            "detail": detail,
+            "started_at": started_at.isoformat(),
+            "ended_at": datetime.now(timezone.utc).isoformat(),
+            "elapsed_ms": round((time.perf_counter() - started) * 1000, 3),
+            "status": status,
+        }
+    )
+
+
+def _start_heartbeat(
+    sink: StageEventSink | None,
+    name: str,
+    detail: str,
+    started: float,
+    stop: threading.Event,
+) -> threading.Thread | None:
+    if sink is None:
+        return None
+    try:
+        threshold = float(os.environ.get(STEP_HEARTBEAT_THRESHOLD_S_ENV, DEFAULT_STEP_HEARTBEAT_THRESHOLD_S))
+    except ValueError:
+        threshold = DEFAULT_STEP_HEARTBEAT_THRESHOLD_S
+    threshold = max(0.0, threshold)
+
+    def emit_until_done() -> None:
+        if stop.wait(threshold):
+            return
+        while not stop.is_set():
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            try:
+                _emit_stage_event(sink, name, detail, "in_progress", elapsed_ms)
+            except Exception:
+                pass
+            if stop.wait(STEP_HEARTBEAT_INTERVAL_S):
+                return
+
+    heartbeat = threading.Thread(target=emit_until_done, name=f"step-heartbeat-{name}", daemon=True)
+    heartbeat.start()
+    return heartbeat
+
+
+@contextmanager
+def stage_event_sink(sink: StageEventSink | None) -> Iterator[None]:
+    """Temporarily attach a request-local progress sink for nested stage calls."""
+
+    token = _ACTIVE_STAGE_SINK.set(sink)
+    try:
+        yield
+    finally:
+        _ACTIVE_STAGE_SINK.reset(token)
+
+
+def _emit_stage_event(
+    sink: StageEventSink | None,
+    name: str,
+    detail: str,
+    status: str,
+    elapsed_ms: float | None = None,
+    *,
+    summary: str | None = None,
+) -> None:
+    if sink is None:
+        return
+    event: dict[str, Any] = {
+        "name": _public_stage_name(name),
+        "detail": _public_stage_detail(detail),
+        "status": status,
+        "raw_name": name,
+        "raw_detail": detail,
+    }
+    if elapsed_ms is not None:
+        event["elapsed_ms"] = round(float(elapsed_ms), 2)
+    if summary:
+        event["summary"] = summary
+    sink(event)
+
+
+def add_stage(timing: Timing | None, name: str, elapsed_ms: float, detail: str = "") -> None:
+    if timing is None:
+        return
+    stages = timing.setdefault("stages", [])
+    if not isinstance(stages, list):
+        stages = []
+        timing["stages"] = stages
+    stages.append({"name": name, "elapsed_ms": round(float(elapsed_ms), 2), "detail": detail})
+
+
+@contextmanager
+def latency_observation(
+    timing: Timing | None,
+    phase: str,
+    *,
+    step: int | None = None,
+    operation: str = "",
+    attempt: int | None = None,
+) -> Iterator[dict[str, Any]]:
+    """Record internal-only latency without adding a public progress stage."""
+
+    started = time.perf_counter()
+    started_at = datetime.now(timezone.utc)
+    observation: dict[str, Any] = {
+        "phase": phase,
+        "step": step,
+        "operation": operation,
+        "attempt": attempt,
+        "status": "ok",
+    }
+    try:
+        yield observation
+    except BaseException:
+        observation["status"] = "error"
+        raise
+    finally:
+        observation["started_at"] = started_at.isoformat()
+        observation["ended_at"] = datetime.now(timezone.utc).isoformat()
+        observation["elapsed_ms"] = round((time.perf_counter() - started) * 1000, 3)
+        if timing is not None:
+            observations = timing.setdefault("_internal_latency_observations", [])
+            if not isinstance(observations, list):
+                observations = []
+                timing["_internal_latency_observations"] = observations
+            observations.append(observation)
+
+
+def internal_latency_payload(timing: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Project bounded latency diagnostics for QA trace only."""
+
+    if not isinstance(timing, Mapping):
+        return {
+            "planner_steps": [],
+            "tool_calls": [],
+            "final_generation": {"attempt_count": 0, "attempts": [], "total_elapsed_ms": 0.0},
+        }
+    raw = timing.get("_internal_latency_observations")
+    observations = tuple(item for item in raw if isinstance(item, Mapping)) if isinstance(raw, list) else ()
+
+    def rows(phase: str) -> list[dict[str, Any]]:
+        return [
+            {
+                key: item.get(key)
+                for key in (
+                    "step",
+                    "operation",
+                    "attempt",
+                    "started_at",
+                    "ended_at",
+                    "elapsed_ms",
+                    "status",
+                )
+            }
+            for item in observations
+            if item.get("phase") == phase
+        ]
+
+    attempts = rows("final_generation")
+    return {
+        "planner_steps": rows("planner"),
+        "tool_calls": rows("tool_call"),
+        "final_generation": {
+            "attempt_count": len(attempts),
+            "attempts": attempts,
+            "total_elapsed_ms": round(
+                sum(float(item.get("elapsed_ms") or 0.0) for item in attempts),
+                3,
+            ),
+        },
+    }
+
+
+def emit_completed_stage(
+    timing: Timing | None,
+    name: str,
+    elapsed_ms: float,
+    detail: str = "",
+    *,
+    summary: str | None = None,
+) -> None:
+    """Record a completed concurrent stage and publish its actual elapsed time."""
+
+    sink = _ACTIVE_STAGE_SINK.get()
+    _emit_stage_event(sink, name, detail, "started")
+    add_stage(timing, name, elapsed_ms, detail)
+    _emit_stage_event(sink, name, detail, "done", elapsed_ms, summary=summary)
+
+
+def finish(timing: Timing | None) -> dict[str, Any]:
+    """Finalize total elapsed time without losing per-stage entries."""
+
+    if timing is None:
+        return {}
+    started = timing.get("started_at_monotonic")
+    if isinstance(started, int | float):
+        timing["total_elapsed_ms"] = round((time.perf_counter() - started) * 1000, 2)
+    else:
+        timing.setdefault("total_elapsed_ms", 0.0)
+    return public_payload(timing)
+
+
+def public_payload(timing: Timing | None) -> dict[str, Any]:
+    if not isinstance(timing, MutableMapping):
+        return {"total_elapsed_ms": 0.0, "stages": []}
+    stages = timing.get("stages") if isinstance(timing.get("stages"), list) else []
+    return {
+        "total_elapsed_ms": round(float(timing.get("total_elapsed_ms") or 0.0), 2),
+        "stages": [
+            {
+                "name": _public_stage_name(str(item.get("name") or "")),
+                "elapsed_ms": round(float(item.get("elapsed_ms") or 0.0), 2),
+                "detail": _public_stage_detail(str(item.get("detail") or "")),
+            }
+            for item in stages
+            if isinstance(item, dict)
+        ],
+        "token_usage": public_token_usage(timing),
+    }
+
+
+def markdown_block(timing: Timing | None) -> str:
+    payload = public_payload(timing)
+    total_ms = float(payload.get("total_elapsed_ms") or 0.0)
+    rows = [
+        "## 처리 시간",
+        "",
+        f"- 총 소요: {total_ms / 1000:.2f}초",
+        "",
+        "| 단계 | 소요 | 비고 |",
+        "| --- | ---: | --- |",
+    ]
+    for item in payload.get("stages", []):
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "")
+        if not name:
+            continue
+        elapsed_ms = float(item.get("elapsed_ms") or 0.0)
+        detail = str(item.get("detail") or "")
+        rows.append(f"| {name} | {elapsed_ms / 1000:.2f}초 | {detail} |")
+    return "\n".join(rows)

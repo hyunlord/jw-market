@@ -1,0 +1,6 @@
+*
+!Dockerfile.portal
+!deploy/
+!deploy/**
+!dist/
+!dist/**

@@ -1,0 +1,479 @@
+{
+  "source_fixture": "R100 Q9P live trace, file-lane projection",
+  "inspection_detail": {
+    "schema": "r12.5.inspect.v1",
+    "question": "업로드된 '당뇨 Fact sheet 2024' PDF 문서의 주요 내용을 요약해줘. 특히 당뇨병 유병률, 관리 현황(인지율, 치료율, 조절률), 고혈압 및 이상지질혈증 동반율, 그리고 주요 치료제 사용 현황을 중심으로 요약해줘. 2024년",
+    "expansion": null,
+    "query_scope": {
+      "requested_calls": {
+        "mart": 22,
+        "nedrug": 7,
+        "hira": 5,
+        "openfda": 7,
+        "clinicaltrials": 3,
+        "web": 7,
+        "patent": 14
+      },
+      "executed_calls": {
+        "mart": 8,
+        "nedrug": 7,
+        "hira": 5,
+        "openfda": 7,
+        "clinicaltrials": 3,
+        "web": 7,
+        "patent": 12
+      },
+      "omitted_queries": {
+        "mart": [
+          "Metformin 성분 시장 데이터",
+          "DAPAGLIFLOZIN 성분 시장 데이터",
+          "LINAGLIPTIN 성분 시장 데이터",
+          "SITAGLIPTIN 성분 시장 데이터",
+          "EMPAGLIFLOZIN 성분 시장 데이터",
+          "SEMAGLUTIDE 성분 시장 데이터",
+          "A10N3 일반 시장 데이터",
+          "A10J1 일반 시장 데이터",
+          "A10N1 일반 시장 데이터",
+          "A10J2 일반 시장 데이터",
+          "A10P9 일반 시장 데이터",
+          "A10P5 일반 시장 데이터",
+          "A10H0 일반 시장 데이터",
+          "A10P1 일반 시장 데이터"
+        ],
+        "patent": [
+          "DAPAGLIFLOZIN+GLIMEPIRIDE 특허현황",
+          "DAPAGLIFLOZIN+LINAGLIPTIN 특허현황"
+        ]
+      }
+    },
+    "calls": [
+      {
+        "sequence": 50,
+        "trace_sequence": 50,
+        "tool": "document_rag",
+        "lane_id": "file_vdb",
+        "source_label": "업로드 문서(문서 검색)",
+        "state": "success",
+        "status": "성공",
+        "elapsed_seconds": 0.0,
+        "request_parameters": {
+          "query": "업로드한 당뇨 Fact sheet 2024 PDF 내용을 요약해줘",
+          "document_ids": [
+            118497
+          ],
+          "sheet_ids": [],
+          "top_k": null,
+          "top_k_source": "server_default"
+        },
+        "output": {
+          "returned": 4,
+          "displayed_record_count": 4,
+          "duplicate_records_collapsed": 0,
+          "records": [
+            {
+              "identifiers": [
+                "DOC-76792ab12b60cdbb",
+                "당뇨 Fact sheet 2024.pdf"
+              ],
+              "file_name": "당뇨 Fact sheet 2024.pdf",
+              "document_name": "당뇨 Fact sheet 2024.pdf",
+              "file_type": "PDF",
+              "document_id": 118497,
+              "page": 5,
+              "section": "자료원 2",
+              "content_excerpt": "목차 1 우리나라 성인의 당뇨병 현황 12 당뇨병 유병률 14 당뇨병 연령별 분포 15 당뇨병 인구 16 최근 11년간 당뇨병 유병률 및 인구 변화 (2012-2022년) 18 당뇨병전단계 유병률 19 당뇨병전단계 인구 20 당뇨병 관리 수준 22 혈당 관리 방법 23 혈당 조절 상태 24 연령대별 평균 당화혈색소 2 당뇨병과 동반질환 (2021-2022년 통합) 26 당뇨병과 비만 27 당뇨병과 복부비만 28 당뇨병과 고혈압 29 당뇨병과 고콜레스테롤혈증 30 당뇨병과 고혈압, 고콜레스테롤혈증 동반율 31 당뇨병 통합관리 32 당뇨병 유병자의 영양소 섭취량, 에너…",
+              "retrieval_route": "RAG 청크 검색",
+              "record_status": "사용됨",
+              "record_journey": [
+                "검색됨",
+                "후보",
+                "사용됨"
+              ]
+            },
+            {
+              "identifiers": [
+                "DOC-02ee059694ba0f61",
+                "당뇨 Fact sheet 2024.pdf"
+              ],
+              "file_name": "당뇨 Fact sheet 2024.pdf",
+              "document_name": "당뇨 Fact sheet 2024.pdf",
+              "file_type": "PDF",
+              "document_id": 118497,
+              "page": 6,
+              "section": "3 (2019-2022년 통합)",
+              "content_excerpt": "우리나라 성인의 당뇨병 현황 **10** 자료원: 국민건강영양조사, 2021-2022년도, 30세 이상 성인 **11**",
+              "retrieval_route": "RAG 청크 검색",
+              "record_status": "사용됨",
+              "record_journey": [
+                "검색됨",
+                "후보",
+                "사용됨"
+              ]
+            },
+            {
+              "identifiers": [
+                "DOC-183b638c8d01d0b4",
+                "당뇨 Fact sheet 2024.pdf"
+              ],
+              "file_name": "당뇨 Fact sheet 2024.pdf",
+              "document_name": "당뇨 Fact sheet 2024.pdf",
+              "file_type": "PDF",
+              "document_id": 118497,
+              "page": 2,
+              "content_excerpt": "인사말 대한당뇨병학회는 2012년 Diabetes Fact Sheet in Korea (DFS)를 시작으로 2024년 올해까지 꾸준히 발표해왔습니다. 대한당뇨병학회의 DFS는 당뇨병을 연구하는 국내 최고의 전문가들이 모여 국가에서 제공하는 의료빅데이터인 국민건강 영양조사와 국민건강보험공단의 자료를 바탕으로 당뇨병 환자의 규모나 관리실태에 대한 정확한 통계를 제시하고, 당뇨병 의 동반질환이나 합병증의 심각성을 제대로 파악하고 알리는데 그 목적이 있습니다. 대한당뇨병학회는 우리나라의 당뇨병 예방 및 관리수준을 높여 당뇨병 극복을 위해 노력하고 있습니다. DFS 2024…",
+              "retrieval_route": "RAG 청크 검색",
+              "record_status": "사용됨",
+              "record_journey": [
+                "검색됨",
+                "후보",
+                "사용됨"
+              ]
+            },
+            {
+              "identifiers": [
+                "DOC-4c4e0e2c9767bcaa",
+                "당뇨 Fact sheet 2024.pdf"
+              ],
+              "file_name": "당뇨 Fact sheet 2024.pdf",
+              "document_name": "당뇨 Fact sheet 2024.pdf",
+              "file_type": "PDF",
+              "document_id": 118497,
+              "page": 37,
+              "section": "청년 청년당뇨병환자의 약제처방 현황 > (%) > 인슐린처방이 연간 3회 이상인 경우",
+              "content_excerpt": "DIABETES FACT SHEET IN KOREA 2024 **DIABETES FACT SHEET IN KOREA 2024 72**",
+              "retrieval_route": "RAG 청크 검색",
+              "record_status": "사용됨",
+              "record_journey": [
+                "검색됨",
+                "후보",
+                "사용됨"
+              ]
+            }
+          ],
+          "received_chunk_count": 4,
+          "answer_used_count": 4,
+          "chunks": [
+            {
+              "document_name": "당뇨 Fact sheet 2024.pdf",
+              "document_id": 118497,
+              "chunk_id": null,
+              "record_id": "DOC-76792ab12b60cdbb",
+              "source_chunk_index": null,
+              "page": 5,
+              "sheet_name": null,
+              "section": "자료원 2",
+              "similarity_score": null,
+              "distance": null,
+              "content_excerpt": "목차 1 우리나라 성인의 당뇨병 현황 12 당뇨병 유병률 14 당뇨병 연령별 분포 15 당뇨병 인구 16 최근 11년간 당뇨병 유병률 및 인구 변화 (2012-2022년) 18 당뇨병전단계 유병률 19 당뇨병전단계 인구 20 당뇨병 관리 수준 22 혈당 관리 방법 23 혈당 조절 상태 24 연령대별 평균 당화혈색소 2 당뇨병과 동반질환 (2021-2022년 통합) 26 당뇨병과 비만 27 당뇨병과 복부비만 28 당뇨병과 고혈압 29 당뇨병과 고콜레스테롤혈증 30 당뇨병과 고혈압, 고콜레스테롤혈증 동반율 31 당뇨병 통합관리 32 당",
+              "selected": true
+            },
+            {
+              "document_name": "당뇨 Fact sheet 2024.pdf",
+              "document_id": 118497,
+              "chunk_id": null,
+              "record_id": "DOC-02ee059694ba0f61",
+              "source_chunk_index": null,
+              "page": 6,
+              "sheet_name": null,
+              "section": "3 (2019-2022년 통합)",
+              "similarity_score": null,
+              "distance": null,
+              "content_excerpt": "우리나라 성인의 당뇨병 현황 **10** 자료원: 국민건강영양조사, 2021-2022년도, 30세 이상 성인 **11**",
+              "selected": true
+            },
+            {
+              "document_name": "당뇨 Fact sheet 2024.pdf",
+              "document_id": 118497,
+              "chunk_id": null,
+              "record_id": "DOC-183b638c8d01d0b4",
+              "source_chunk_index": null,
+              "page": 2,
+              "sheet_name": null,
+              "section": null,
+              "similarity_score": null,
+              "distance": null,
+              "content_excerpt": "인사말 대한당뇨병학회는 2012년 Diabetes Fact Sheet in Korea (DFS)를 시작으로 2024년 올해까지 꾸준히 발표해왔습니다. 대한당뇨병학회의 DFS는 당뇨병을 연구하는 국내 최고의 전문가들이 모여 국가에서 제공하는 의료빅데이터인 국민건강 영양조사와 국민건강보험공단의 자료를 바탕으로 당뇨병 환자의 규모나 관리실태에 대한 정확한 통계를 제시하고, 당뇨병 의 동반질환이나 합병증의 심각성을 제대로 파악하고 알리는데 그 목적이 있습니다. 대한당뇨병학회는 우리나라의 당뇨병 예방 및 관리수준을 높여 당뇨병 극복을 위해",
+              "selected": true
+            },
+            {
+              "document_name": "당뇨 Fact sheet 2024.pdf",
+              "document_id": 118497,
+              "chunk_id": null,
+              "record_id": "DOC-4c4e0e2c9767bcaa",
+              "source_chunk_index": null,
+              "page": 37,
+              "sheet_name": null,
+              "section": "청년 청년당뇨병환자의 약제처방 현황 > (%) > 인슐린처방이 연간 3회 이상인 경우",
+              "similarity_score": null,
+              "distance": null,
+              "content_excerpt": "DIABETES FACT SHEET IN KOREA 2024 **DIABETES FACT SHEET IN KOREA 2024 72**",
+              "selected": true
+            }
+          ]
+        },
+        "anchor_binding": {
+          "eligible": 4,
+          "assigned": 0,
+          "duplicate": 4,
+          "unassigned": 4
+        },
+        "counts": {
+          "returned": 4,
+          "parsed": 4,
+          "envelope": 4,
+          "rendered": 4,
+          "narrated": 4,
+          "used": 4
+        },
+        "document_names": [
+          "당뇨 Fact sheet 2024.pdf"
+        ],
+        "record_accounting": {
+          "received": 4,
+          "rendered": 4,
+          "omitted": 0,
+          "omitted_identifiers": [],
+          "omitted_identifiers_truncated": false,
+          "omitted_without_identifier": 0,
+          "identifier_limit": 200
+        },
+        "unused_count": 0,
+        "dropped_count": 0,
+        "drop_reasons": []
+      }
+    ],
+    "lane_groups": [
+      {
+        "source_label": "내부 데이터마트",
+        "call_count": 8,
+        "sequences": [
+          1,
+          8,
+          15,
+          22,
+          28,
+          34,
+          39,
+          44
+        ],
+        "returned": 0,
+        "elapsed_seconds": 23.534
+      },
+      {
+        "source_label": "식품의약품안전처",
+        "call_count": 7,
+        "sequences": [
+          2,
+          9,
+          16,
+          23,
+          29,
+          35,
+          40
+        ],
+        "returned": 0,
+        "elapsed_seconds": 105.436
+      },
+      {
+        "source_label": "건강보험심사평가원",
+        "call_count": 5,
+        "sequences": [
+          3,
+          10,
+          17,
+          24,
+          30
+        ],
+        "returned": 2,
+        "elapsed_seconds": 80.315
+      },
+      {
+        "source_label": "FDA",
+        "call_count": 7,
+        "sequences": [
+          4,
+          11,
+          18,
+          25,
+          31,
+          36,
+          41
+        ],
+        "returned": 0,
+        "elapsed_seconds": 29.449
+      },
+      {
+        "source_label": "ClinicalTrials.gov",
+        "call_count": 3,
+        "sequences": [
+          5,
+          12,
+          19
+        ],
+        "returned": 10,
+        "elapsed_seconds": 3.754
+      },
+      {
+        "source_label": "웹 뉴스",
+        "call_count": 7,
+        "sequences": [
+          6,
+          13,
+          20,
+          26,
+          32,
+          37,
+          42
+        ],
+        "returned": 0,
+        "elapsed_seconds": 29.199
+      },
+      {
+        "source_label": "식품의약품안전처 의약품 특허목록",
+        "call_count": 12,
+        "sequences": [
+          7,
+          14,
+          21,
+          27,
+          33,
+          38,
+          43,
+          45,
+          46,
+          47,
+          48,
+          49
+        ],
+        "returned": 0,
+        "elapsed_seconds": 221.475
+      }
+    ],
+    "trace_correlation": {
+      "key": "sequence",
+      "matched": 51,
+      "total": 51,
+      "rate": 1.0
+    },
+    "entity_completion": {
+      "rows": [
+        {
+          "entity": "당뇨 Fact sheet 2024",
+          "status": "COMPLETE"
+        },
+        {
+          "entity": "E10",
+          "status": "FAILED"
+        },
+        {
+          "entity": "E11",
+          "status": "FAILED"
+        },
+        {
+          "entity": "E12",
+          "status": "FAILED"
+        },
+        {
+          "entity": "E13",
+          "status": "FAILED"
+        },
+        {
+          "entity": "E14",
+          "status": "FAILED"
+        },
+        {
+          "entity": "Metformin",
+          "status": "FAILED"
+        },
+        {
+          "entity": "Sitagliptin",
+          "status": "FAILED"
+        },
+        {
+          "entity": "Empagliflozin",
+          "status": "FAILED"
+        },
+        {
+          "entity": "Semaglutide",
+          "status": "FAILED"
+        },
+        {
+          "entity": "대한당뇨병학회",
+          "status": "COMPLETE"
+        }
+      ],
+      "entity_types": [
+        {
+          "entity": "당뇨 Fact sheet 2024",
+          "entity_type": "브랜드"
+        },
+        {
+          "entity": "E10",
+          "entity_type": "상병코드"
+        },
+        {
+          "entity": "E11",
+          "entity_type": "상병코드"
+        },
+        {
+          "entity": "E12",
+          "entity_type": "상병코드"
+        },
+        {
+          "entity": "E13",
+          "entity_type": "상병코드"
+        },
+        {
+          "entity": "E14",
+          "entity_type": "상병코드"
+        },
+        {
+          "entity": "Metformin",
+          "entity_type": "브랜드"
+        },
+        {
+          "entity": "Sitagliptin",
+          "entity_type": "브랜드"
+        },
+        {
+          "entity": "Empagliflozin",
+          "entity_type": "브랜드"
+        },
+        {
+          "entity": "Semaglutide",
+          "entity_type": "브랜드"
+        },
+        {
+          "entity": "대한당뇨병학회",
+          "entity_type": "브랜드"
+        }
+      ],
+      "scope_notice": "확인된 2개 조회 대상(당뇨 Fact sheet 2024·대한당뇨병학회) 기준으로 비교했으며, E10·E11·E12·E13·E14·Metformin·Sitagliptin·Empagliflozin·Semaglutide는 조회 결과와 연결하지 못했습니다.",
+      "table_location": "inspection"
+    }
+  },
+  "lane_execution": {
+    "document_rag": {
+      "source": "document_rag",
+      "planned": true,
+      "requested_calls": 0,
+      "call_count": 1,
+      "returned_count": 4,
+      "elapsed_ms": 0.0,
+      "state": "executed_success",
+      "reason_code": null,
+      "omitted_count": 0,
+      "omitted_reason": null,
+      "queries": [
+        {
+          "query": "업로드한 당뇨 Fact sheet 2024 PDF 내용을 요약해줘",
+          "status": "ok",
+          "returned_count": 4,
+          "elapsed_ms": 0.0,
+          "failure_class": "none",
+          "reason_code": null
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,980 @@
+{
+  "inspection_detail": {
+    "schema": "r12.5.inspect.v1",
+    "question": "당뇨병(Diabetes Mellitus, KCD E10-E14)의 국내외 유병률, 환자 수 추이, 치료 현황 및 시장 규모를 포함한 주요 통계 정보를 제공해줘. 2024년",
+    "expansion": {
+      "parameter_axes": {
+        "status": "expanded",
+        "axes": {
+          "kcd_codes": [
+            "E10",
+            "E11",
+            "E12",
+            "E13",
+            "E14"
+          ],
+          "years": []
+        },
+        "kcd_resolution": {
+          "source": "hira_disease_name_code"
+        },
+        "mcp_disease_lookup": {
+          "status": "resolved",
+          "query": "당뇨병",
+          "cache": "miss",
+          "call_status": "live",
+          "candidate_count": 5,
+          "selected_count": 5
+        },
+        "requests": {
+          "hira": [
+            "E10 유병률과 주요 통계를",
+            "E11 유병률과 주요 통계를",
+            "E12 유병률과 주요 통계를",
+            "E13 유병률과 주요 통계를",
+            "E14 유병률과 주요 통계를"
+          ],
+          "mart": [
+            "ALOGLIPTIN+METFORMIN 내부 시장 데이터",
+            "ANAGLIPTIN+METFORMIN 내부 시장 데이터",
+            "DAPAGLIFLOZIN 내부 시장 데이터",
+            "DAPAGLIFLOZIN+EVOGLIPTIN 내부 시장 데이터",
+            "DAPAGLIFLOZIN+EVOGLIPTIN+METFORMIN 내부 시장 데이터",
+            "DAPAGLIFLOZIN+GEMIGLIPTIN 내부 시장 데이터",
+            "DAPAGLIFLOZIN+GLIMEPIRIDE 내부 시장 데이터",
+            "DAPAGLIFLOZIN+LINAGLIPTIN 내부 시장 데이터"
+          ],
+          "nedrug": [
+            "Metformin 성분 허가 정보",
+            "DAPAGLIFLOZIN 성분 허가 정보",
+            "LINAGLIPTIN 성분 허가 정보",
+            "SITAGLIPTIN 성분 허가 정보",
+            "EMPAGLIFLOZIN 성분 허가 정보",
+            "SEMAGLUTIDE 성분 허가 정보",
+            "TIRZEPATIDE 성분 허가 정보",
+            "Insulin 성분 허가 정보"
+          ],
+          "openfda": [
+            "Metformin active ingredient",
+            "DAPAGLIFLOZIN active ingredient",
+            "LINAGLIPTIN active ingredient",
+            "SITAGLIPTIN active ingredient",
+            "EMPAGLIFLOZIN active ingredient",
+            "SEMAGLUTIDE active ingredient",
+            "TIRZEPATIDE active ingredient",
+            "Insulin active ingredient"
+          ],
+          "patent": [
+            "Metformin 특허현황",
+            "DAPAGLIFLOZIN 특허현황",
+            "LINAGLIPTIN 특허현황",
+            "SITAGLIPTIN 특허현황",
+            "EMPAGLIFLOZIN 특허현황",
+            "SEMAGLUTIDE 특허현황",
+            "TIRZEPATIDE 특허현황",
+            "Insulin 특허현황",
+            "ALOGLIPTIN+METFORMIN 특허현황",
+            "ANAGLIPTIN+METFORMIN 특허현황",
+            "DAPAGLIFLOZIN+EVOGLIPTIN 특허현황",
+            "DAPAGLIFLOZIN+EVOGLIPTIN+METFORMIN 특허현황",
+            "DAPAGLIFLOZIN+GEMIGLIPTIN 특허현황",
+            "DAPAGLIFLOZIN+GLIMEPIRIDE 특허현황",
+            "DAPAGLIFLOZIN+LINAGLIPTIN 특허현황"
+          ],
+          "web": [
+            "당뇨병 유병률과 주요 통계를 알려줘 Metformin",
+            "당뇨병 유병률과 주요 통계를 알려줘 DAPAGLIFLOZIN",
+            "당뇨병 유병률과 주요 통계를 알려줘 LINAGLIPTIN",
+            "당뇨병 유병률과 주요 통계를 알려줘 SITAGLIPTIN",
+            "당뇨병 유병률과 주요 통계를 알려줘 EMPAGLIFLOZIN",
+            "당뇨병 유병률과 주요 통계를 알려줘 SEMAGLUTIDE",
+            "당뇨병 유병률과 주요 통계를 알려줘 TIRZEPATIDE",
+            "당뇨병 유병률과 주요 통계를 알려줘 Insulin"
+          ]
+        },
+        "entity_expansion": {
+          "status": "expanded",
+          "source": "planner_candidate_plus_mart_brand_molecule",
+          "display_scope": "query_only",
+          "original_entities": [
+            "당뇨병",
+            "제1형 당뇨병",
+            "제2형 당뇨병",
+            "메트포르민",
+            "시타글립틴",
+            "엠파글리플로진",
+            "다파글리플로진",
+            "세마글루타이드",
+            "티르제파타이드",
+            "E10",
+            "E11",
+            "E12",
+            "E13",
+            "E14",
+            "당뇨병 유병률"
+          ],
+          "candidates": [
+            "Metformin",
+            "Sitagliptin",
+            "Empagliflozin",
+            "Dapagliflozin",
+            "Linagliptin",
+            "Semaglutide",
+            "Tirzepatide",
+            "Insulin",
+            "for new GLP-1/GIP dual agonists",
+            "Interventional studies for diabetic nephropathy",
+            "cardiovascular outcomes"
+          ],
+          "validated_molecules": [
+            "Metformin",
+            "DAPAGLIFLOZIN",
+            "LINAGLIPTIN",
+            "SITAGLIPTIN",
+            "EMPAGLIFLOZIN",
+            "SEMAGLUTIDE",
+            "TIRZEPATIDE"
+          ],
+          "brands": [
+            "ALOGLIPTIN+METFORMIN",
+            "ANAGLIPTIN+METFORMIN",
+            "DAPAGLIFLOZIN",
+            "DAPAGLIFLOZIN+EVOGLIPTIN",
+            "DAPAGLIFLOZIN+EVOGLIPTIN+METFORMIN",
+            "DAPAGLIFLOZIN+GEMIGLIPTIN",
+            "DAPAGLIFLOZIN+GLIMEPIRIDE",
+            "DAPAGLIFLOZIN+LINAGLIPTIN"
+          ],
+          "atc4_codes": [
+            "A10N3",
+            "A10J1",
+            "A10N1",
+            "A10J2",
+            "A10P9",
+            "A10P5",
+            "A10H0",
+            "A10P1"
+          ],
+          "mart_fanout_stage": "mart_dictionary_validation",
+          "mart_fanout_limit": 8,
+          "mart_fanout_requested": 23,
+          "mart_fanout_executed": 8,
+          "omitted_requests": {
+            "mart": [
+              "Metformin 성분 시장 데이터",
+              "DAPAGLIFLOZIN 성분 시장 데이터",
+              "LINAGLIPTIN 성분 시장 데이터",
+              "SITAGLIPTIN 성분 시장 데이터",
+              "EMPAGLIFLOZIN 성분 시장 데이터",
+              "SEMAGLUTIDE 성분 시장 데이터",
+              "TIRZEPATIDE 성분 시장 데이터",
+              "A10N3 일반 시장 데이터",
+              "A10J1 일반 시장 데이터",
+              "A10N1 일반 시장 데이터",
+              "A10J2 일반 시장 데이터",
+              "A10P9 일반 시장 데이터",
+              "A10P5 일반 시장 데이터",
+              "A10H0 일반 시장 데이터",
+              "A10P1 일반 시장 데이터"
+            ]
+          },
+          "unvalidated_candidates": [
+            "Insulin",
+            "for new GLP-1/GIP dual agonists",
+            "Interventional studies for diabetic nephropathy",
+            "cardiovascular outcomes"
+          ],
+          "deterministic_validation": "normalized_exact_match",
+          "requests": {
+            "nedrug": [
+              "Metformin 성분 허가 정보",
+              "DAPAGLIFLOZIN 성분 허가 정보",
+              "LINAGLIPTIN 성분 허가 정보",
+              "SITAGLIPTIN 성분 허가 정보",
+              "EMPAGLIFLOZIN 성분 허가 정보",
+              "SEMAGLUTIDE 성분 허가 정보",
+              "TIRZEPATIDE 성분 허가 정보",
+              "Insulin 성분 허가 정보"
+            ],
+            "openfda": [
+              "Metformin active ingredient",
+              "DAPAGLIFLOZIN active ingredient",
+              "LINAGLIPTIN active ingredient",
+              "SITAGLIPTIN active ingredient",
+              "EMPAGLIFLOZIN active ingredient",
+              "SEMAGLUTIDE active ingredient",
+              "TIRZEPATIDE active ingredient",
+              "Insulin active ingredient"
+            ],
+            "patent": [
+              "Metformin 특허현황",
+              "DAPAGLIFLOZIN 특허현황",
+              "LINAGLIPTIN 특허현황",
+              "SITAGLIPTIN 특허현황",
+              "EMPAGLIFLOZIN 특허현황",
+              "SEMAGLUTIDE 특허현황",
+              "TIRZEPATIDE 특허현황",
+              "Insulin 특허현황",
+              "ALOGLIPTIN+METFORMIN 특허현황",
+              "ANAGLIPTIN+METFORMIN 특허현황",
+              "DAPAGLIFLOZIN+EVOGLIPTIN 특허현황",
+              "DAPAGLIFLOZIN+EVOGLIPTIN+METFORMIN 특허현황",
+              "DAPAGLIFLOZIN+GEMIGLIPTIN 특허현황",
+              "DAPAGLIFLOZIN+GLIMEPIRIDE 특허현황",
+              "DAPAGLIFLOZIN+LINAGLIPTIN 특허현황"
+            ],
+            "web": [
+              "당뇨병 유병률과 주요 통계를 알려줘 Metformin",
+              "당뇨병 유병률과 주요 통계를 알려줘 DAPAGLIFLOZIN",
+              "당뇨병 유병률과 주요 통계를 알려줘 LINAGLIPTIN",
+              "당뇨병 유병률과 주요 통계를 알려줘 SITAGLIPTIN",
+              "당뇨병 유병률과 주요 통계를 알려줘 EMPAGLIFLOZIN",
+              "당뇨병 유병률과 주요 통계를 알려줘 SEMAGLUTIDE",
+              "당뇨병 유병률과 주요 통계를 알려줘 TIRZEPATIDE",
+              "당뇨병 유병률과 주요 통계를 알려줘 Insulin"
+            ],
+            "mart": [
+              "ALOGLIPTIN+METFORMIN 내부 시장 데이터",
+              "ANAGLIPTIN+METFORMIN 내부 시장 데이터",
+              "DAPAGLIFLOZIN 내부 시장 데이터",
+              "DAPAGLIFLOZIN+EVOGLIPTIN 내부 시장 데이터",
+              "DAPAGLIFLOZIN+EVOGLIPTIN+METFORMIN 내부 시장 데이터",
+              "DAPAGLIFLOZIN+GEMIGLIPTIN 내부 시장 데이터",
+              "DAPAGLIFLOZIN+GLIMEPIRIDE 내부 시장 데이터",
+              "DAPAGLIFLOZIN+LINAGLIPTIN 내부 시장 데이터"
+            ]
+          }
+        },
+        "deterministic": true,
+        "unsupported_source_pruning": {
+          "applied": false,
+          "disabled": true,
+          "omitted": {}
+        },
+        "planner_fallback_routing": {
+          "applied": false,
+          "reason": "planner_not_fallback"
+        },
+        "explicit_substance_routing": {
+          "applied": false,
+          "reason": "no_explicit_substance"
+        },
+        "entity_hygiene": {
+          "retained": [
+            "당뇨병",
+            "제1형 당뇨병",
+            "제2형 당뇨병",
+            "메트포르민",
+            "시타글립틴",
+            "엠파글리플로진",
+            "다파글리플로진",
+            "세마글루타이드",
+            "티르제파타이드",
+            "E10",
+            "E11",
+            "E12",
+            "E13",
+            "E14",
+            "당뇨병 유병률"
+          ],
+          "excluded": [
+            {
+              "entity": "주요 통계를 알려줘",
+              "reason": "question_fragment"
+            }
+          ],
+          "canonicalized": [],
+          "parenthetical_normalized": [],
+          "parenthetical_expansion_candidates": [],
+          "parenthetical_candidate_scope": "query_only",
+          "deterministic": true
+        },
+        "grain_routing": {
+          "applied": false,
+          "omitted": {}
+        },
+        "query_scope": {
+          "requested_calls": {
+            "mart": 0,
+            "nedrug": 0,
+            "hira": 0,
+            "openfda": 0,
+            "clinicaltrials": 0,
+            "web": 0,
+            "patent": 0
+          },
+          "executed_calls": {
+            "mart": 0,
+            "nedrug": 0,
+            "hira": 0,
+            "openfda": 0,
+            "clinicaltrials": 0,
+            "web": 0,
+            "patent": 0
+          },
+          "omitted_queries": {
+            "mart": [],
+            "nedrug": [],
+            "hira": [],
+            "openfda": [],
+            "clinicaltrials": [],
+            "web": [],
+            "patent": []
+          },
+          "unexecuted_reasons": {
+            "mart": "file_only_request",
+            "nedrug": "file_only_request",
+            "hira": "file_only_request",
+            "openfda": "file_only_request",
+            "clinicaltrials": "file_only_request",
+            "web": "file_only_request",
+            "patent": "file_only_request"
+          }
+        },
+        "execution_grain_routing": {
+          "applied": false,
+          "omitted": {}
+        },
+        "axis_shaping": {
+          "applied": true,
+          "cap": 2,
+          "axes": [
+            "patient_statistics"
+          ],
+          "related_sources": [
+            "hira"
+          ],
+          "all_tool_lanes_executable": false,
+          "reason": "unrelated_axis_queries_bounded",
+          "capped_sources": [],
+          "selection_mode": "truncate_derived_then_raw_fallback",
+          "executed_calls": {
+            "mart": 0,
+            "nedrug": 0,
+            "hira": 0,
+            "openfda": 0,
+            "clinicaltrials": 0,
+            "web": 0,
+            "patent": 0
+          }
+        }
+      },
+      "second_hop": null
+    },
+    "query_scope": {
+      "requested_calls": {
+        "mart": 0,
+        "nedrug": 0,
+        "hira": 0,
+        "openfda": 0,
+        "clinicaltrials": 0,
+        "web": 0,
+        "patent": 0
+      },
+      "executed_calls": {
+        "mart": 0,
+        "nedrug": 0,
+        "hira": 0,
+        "openfda": 0,
+        "clinicaltrials": 0,
+        "web": 0,
+        "patent": 0
+      },
+      "omitted_queries": {
+        "mart": [],
+        "nedrug": [],
+        "hira": [],
+        "openfda": [],
+        "clinicaltrials": [],
+        "web": [],
+        "patent": []
+      },
+      "unexecuted_reasons": {
+        "mart": "file_only_request",
+        "nedrug": "file_only_request",
+        "hira": "file_only_request",
+        "openfda": "file_only_request",
+        "clinicaltrials": "file_only_request",
+        "web": "file_only_request",
+        "patent": "file_only_request"
+      }
+    },
+    "calls": [
+      {
+        "sequence": 1,
+        "trace_sequence": 1,
+        "tool": "document_rag",
+        "lane_id": "file_vdb",
+        "source_label": "업로드 문서(문서 검색)",
+        "state": "success",
+        "status": "성공",
+        "elapsed_seconds": 0.0,
+        "request_parameters": {
+          "query": "당뇨병 유병률과 주요 통계를 알려줘",
+          "document_ids": [
+            "redacted-document-id"
+          ],
+          "sheet_ids": [],
+          "top_k": null,
+          "top_k_source": "server_default"
+        },
+        "output": {
+          "returned": 5,
+          "displayed_record_count": 5,
+          "duplicate_records_collapsed": 0,
+          "records": [
+            {
+              "identifiers": [
+                "DOC-27ededaf58a6df54",
+                "당뇨 Fact sheet 2024.pdf"
+              ],
+              "file_name": "당뇨 Fact sheet 2024.pdf",
+              "document_name": "당뇨 Fact sheet 2024.pdf",
+              "file_type": "PDF",
+              "document_id": "redacted-document-id",
+              "page": 7,
+              "section": "당뇨병 유병률",
+              "content_excerpt": "# 당뇨병 유병률 2022년 기준, 30세 이상 성인 7명 중 1명 (14.8%)이 당뇨병을 가지고 있음. 공복혈당만을 진단에 사용할 경우 당뇨병 유병률은 14.2%임. 65세 이상 성인에서는 10명 중 3명 (28.0%)이 당뇨병을 가지고 있음. 2019-2020년 통합 2021-2022년 통합 2021년 2022년 ● 전체 ● 남성 ● 여성 ● 전체 ● 남성 ● 여성 ● 전체 ● 남성 ● 여성 ● 전체 ● 남성 ● 여성 (%) (%) (%) 35 35 35 32.5 30세 이상 30세 이상 30세 이상 30.7 30세 이상 29.6 30.0 29.3 29.3 3…",
+              "retrieval_route": "RAG 청크 검색",
+              "record_status": "사용됨",
+              "record_journey": [
+                "검색됨",
+                "후보",
+                "사용됨"
+              ]
+            },
+            {
+              "identifiers": [
+                "DOC-4d65bb98c1d23fe4",
+                "당뇨 Fact sheet 2024.pdf"
+              ],
+              "file_name": "당뇨 Fact sheet 2024.pdf",
+              "document_name": "당뇨 Fact sheet 2024.pdf",
+              "file_type": "PDF",
+              "document_id": "redacted-document-id",
+              "page": 8,
+              "section": "당뇨병 유병률",
+              "content_excerpt": "전체 (30세 이상) **533**<sup>만 명</sup> # 당뇨병 연령별 분포 (2021-2022년 통합) 우리나라 당뇨병환자는 여성보다 남성이 더 많음. 남성 당뇨병 유병자는 50대에서 30.1%로 가장 많은 비율을 차지하며, 여성 당뇨병 유병자는 70세 이상에서 41.2%로 가장 많은 비율을 차지함. ● 전체 ● 남성 ● 여성 (%) 50 41.2 40 29.8 30.1 28.8 21.5 30 28.4 27.9 25.4 20 19.1 15.2 12.4 10 8.6 4.0 4.5 3.3 0 30-39세 40-49세 50-59세 60-69세 70세 이상 # 당…",
+              "retrieval_route": "RAG 청크 검색",
+              "record_status": "사용됨",
+              "record_journey": [
+                "검색됨",
+                "후보",
+                "사용됨"
+              ]
+            },
+            {
+              "identifiers": [
+                "DOC-a17978729dba2463",
+                "당뇨 Fact sheet 2024.pdf"
+              ],
+              "file_name": "당뇨 Fact sheet 2024.pdf",
+              "document_name": "당뇨 Fact sheet 2024.pdf",
+              "file_type": "PDF",
+              "document_id": "redacted-document-id",
+              "page": 5,
+              "section": "자료원 2",
+              "content_excerpt": "목차 1 우리나라 성인의 당뇨병 현황 12 당뇨병 유병률 14 당뇨병 연령별 분포 15 당뇨병 인구 16 최근 11년간 당뇨병 유병률 및 인구 변화 (2012-2022년) 18 당뇨병전단계 유병률 19 당뇨병전단계 인구 20 당뇨병 관리 수준 22 혈당 관리 방법 23 혈당 조절 상태 24 연령대별 평균 당화혈색소 2 당뇨병과 동반질환 (2021-2022년 통합) 26 당뇨병과 비만 27 당뇨병과 복부비만 28 당뇨병과 고혈압 29 당뇨병과 고콜레스테롤혈증 30 당뇨병과 고혈압, 고콜레스테롤혈증 동반율 31 당뇨병 통합관리 32 당뇨병 유병자의 영양소 섭취량, 에너…",
+              "retrieval_route": "RAG 청크 검색",
+              "record_status": "사용됨",
+              "record_journey": [
+                "검색됨",
+                "후보",
+                "사용됨"
+              ]
+            },
+            {
+              "identifiers": [
+                "DOC-a8b7b8d70ab3bf73",
+                "당뇨 Fact sheet 2024.pdf"
+              ],
+              "file_name": "당뇨 Fact sheet 2024.pdf",
+              "document_name": "당뇨 Fact sheet 2024.pdf",
+              "file_type": "PDF",
+              "document_id": "redacted-document-id",
+              "page": 9,
+              "section": "최근 11년간 당뇨병 유병률 및 인구 변화 (2012-2022년)",
+              "content_excerpt": "# 최근 11년간 당뇨병 유병률 및 인구 변화 (2012-2022년) ## 당뇨병 유병률 ● 전체 ● 남성 ● 여성 (%) 20 19.2 19.4 16.0 15.8 16.7 16.9 16.3 16.3 14.5 14.4 15.9 15.4 15.1 14.8 15 14.5 12.4 12.5 13.8 13.4 11.8 13.0 11.4 14.3 13.4 13.1 13.0 12.7 12.6 10 11.1 11.7 11.8 10.7 10.4 5 0 2012 2013 2014 2015 2016 2017 2018 2019 2020 2021 2022 (년) ## 당뇨병 인구 ● 전…",
+              "retrieval_route": "RAG 청크 검색",
+              "record_status": "사용됨",
+              "record_journey": [
+                "검색됨",
+                "후보",
+                "사용됨"
+              ]
+            },
+            {
+              "identifiers": [
+                "DOC-24597aecb73b5371",
+                "당뇨 Fact sheet 2024.pdf"
+              ],
+              "file_name": "당뇨 Fact sheet 2024.pdf",
+              "document_name": "당뇨 Fact sheet 2024.pdf",
+              "file_type": "PDF",
+              "document_id": "redacted-document-id",
+              "page": 19,
+              "section": "노인 당뇨병 유병률 및 인구 (2019-2022년 통합)",
+              "content_excerpt": "# 노인 당뇨병 유병률 및 인구 (2019-2022년 통합) 우리나라 65세 이상 노인 인구의 30% (약 220만 명)가 당뇨병환자임. 남성에서 더 유병률이 높지만 전체 환자수는 노인 남성 (100만 명)보다 노인 여성 (123만 명)이 더 많음. ## 유병률 ## 인구 ● 전체 ● 남성 ● 여성 ● 전체 ● 남성 ● 여성 65세 이상 65세 이상 (%) (명) 29.4% 223 만 명 40 2,500,000 2,231,217 31.4 32.3 30.2 30.0 30.3 2,000,000 30 29.4 28.9 28.1 26.0 1,500,000 1,234,809…",
+              "retrieval_route": "RAG 청크 검색",
+              "record_status": "사용됨",
+              "record_journey": [
+                "검색됨",
+                "후보",
+                "사용됨"
+              ]
+            }
+          ],
+          "received_chunk_count": 5,
+          "answer_used_count": 5,
+          "chunks": [
+            {
+              "document_name": "당뇨 Fact sheet 2024.pdf",
+              "document_id": "redacted-document-id",
+              "chunk_id": "008ffd88-5c4a-5f66-8d44-989114d1f4ea",
+              "record_id": "DOC-27ededaf58a6df54",
+              "source_chunk_index": 6,
+              "page": 7,
+              "sheet_name": null,
+              "section": "당뇨병 유병률",
+              "similarity_score": null,
+              "distance": 0.29566467,
+              "content_excerpt": "# 당뇨병 유병률 2022년 기준, 30세 이상 성인 7명 중 1명 (14.8%)이 당뇨병을 가지고 있음. 공복혈당만을 진단에 사용할 경우 당뇨병 유병률은 14.2%임. 65세 이상 성인에서는 10명 중 3명 (28.0%)이 당뇨병을 가지고 있음. 2019-2020년 통합 2021-2022년 통합 2021년 2022년 ● 전체 ● 남성 ● 여성 ● 전체 ● 남성 ● 여성 ● 전체 ● 남성 ● 여성 ● 전체 ● 남성 ● 여성 (%) (%) (%) 35 35 35 32.5 30세 이상 30세 이상 30세 이상 30.7 30세 이상 29",
+              "selected": true
+            },
+            {
+              "document_name": "당뇨 Fact sheet 2024.pdf",
+              "document_id": "redacted-document-id",
+              "chunk_id": "1b8d7ac1-9b8f-59b0-b2ee-13b2978b9c46",
+              "record_id": "DOC-4d65bb98c1d23fe4",
+              "source_chunk_index": 7,
+              "page": 8,
+              "sheet_name": null,
+              "section": "당뇨병 유병률",
+              "similarity_score": null,
+              "distance": 0.29967034,
+              "content_excerpt": "전체 (30세 이상) **533**<sup>만 명</sup> # 당뇨병 연령별 분포 (2021-2022년 통합) 우리나라 당뇨병환자는 여성보다 남성이 더 많음. 남성 당뇨병 유병자는 50대에서 30.1%로 가장 많은 비율을 차지하며, 여성 당뇨병 유병자는 70세 이상에서 41.2%로 가장 많은 비율을 차지함. ● 전체 ● 남성 ● 여성 (%) 50 41.2 40 29.8 30.1 28.8 21.5 30 28.4 27.9 25.4 20 19.1 15.2 12.4 10 8.6 4.0 4.5 3.3 0 30-39세 40-49세 50-59",
+              "selected": true
+            },
+            {
+              "document_name": "당뇨 Fact sheet 2024.pdf",
+              "document_id": "redacted-document-id",
+              "chunk_id": "b05872b3-18bc-5c7d-b602-44dcafe0c5d7",
+              "record_id": "DOC-a17978729dba2463",
+              "source_chunk_index": 4,
+              "page": 5,
+              "sheet_name": null,
+              "section": "자료원 2",
+              "similarity_score": null,
+              "distance": 0.31225574,
+              "content_excerpt": "목차 1 우리나라 성인의 당뇨병 현황 12 당뇨병 유병률 14 당뇨병 연령별 분포 15 당뇨병 인구 16 최근 11년간 당뇨병 유병률 및 인구 변화 (2012-2022년) 18 당뇨병전단계 유병률 19 당뇨병전단계 인구 20 당뇨병 관리 수준 22 혈당 관리 방법 23 혈당 조절 상태 24 연령대별 평균 당화혈색소 2 당뇨병과 동반질환 (2021-2022년 통합) 26 당뇨병과 비만 27 당뇨병과 복부비만 28 당뇨병과 고혈압 29 당뇨병과 고콜레스테롤혈증 30 당뇨병과 고혈압, 고콜레스테롤혈증 동반율 31 당뇨병 통합관리 32 당",
+              "selected": true
+            },
+            {
+              "document_name": "당뇨 Fact sheet 2024.pdf",
+              "document_id": "redacted-document-id",
+              "chunk_id": "32a775cc-acd9-57b4-a330-22b7c4a320ed",
+              "record_id": "DOC-a8b7b8d70ab3bf73",
+              "source_chunk_index": 8,
+              "page": 9,
+              "sheet_name": null,
+              "section": "최근 11년간 당뇨병 유병률 및 인구 변화 (2012-2022년)",
+              "similarity_score": null,
+              "distance": 0.31621087,
+              "content_excerpt": "# 최근 11년간 당뇨병 유병률 및 인구 변화 (2012-2022년) ## 당뇨병 유병률 ● 전체 ● 남성 ● 여성 (%) 20 19.2 19.4 16.0 15.8 16.7 16.9 16.3 16.3 14.5 14.4 15.9 15.4 15.1 14.8 15 14.5 12.4 12.5 13.8 13.4 11.8 13.0 11.4 14.3 13.4 13.1 13.0 12.7 12.6 10 11.1 11.7 11.8 10.7 10.4 5 0 2012 2013 2014 2015 2016 2017 2018 2019 2020 2021 202",
+              "selected": true
+            },
+            {
+              "document_name": "당뇨 Fact sheet 2024.pdf",
+              "document_id": "redacted-document-id",
+              "chunk_id": "38361558-4243-593a-8821-5992c2ae3fa4",
+              "record_id": "DOC-24597aecb73b5371",
+              "source_chunk_index": 18,
+              "page": 19,
+              "sheet_name": null,
+              "section": "노인 당뇨병 유병률 및 인구 (2019-2022년 통합)",
+              "similarity_score": null,
+              "distance": 0.3250854,
+              "content_excerpt": "# 노인 당뇨병 유병률 및 인구 (2019-2022년 통합) 우리나라 65세 이상 노인 인구의 30% (약 220만 명)가 당뇨병환자임. 남성에서 더 유병률이 높지만 전체 환자수는 노인 남성 (100만 명)보다 노인 여성 (123만 명)이 더 많음. ## 유병률 ## 인구 ● 전체 ● 남성 ● 여성 ● 전체 ● 남성 ● 여성 65세 이상 65세 이상 (%) (명) 29.4% 223 만 명 40 2,500,000 2,231,217 31.4 32.3 30.2 30.0 30.3 2,000,000 30 29.4 28.9 28.1 26.0",
+              "selected": true
+            }
+          ]
+        },
+        "anchor_binding": {
+          "eligible": 5,
+          "assigned": 0,
+          "duplicate": 5,
+          "unassigned": 5
+        },
+        "counts": {
+          "returned": 5,
+          "parsed": 5,
+          "envelope": 5,
+          "rendered": 5,
+          "narrated": 5,
+          "used": 5
+        },
+        "document_names": [
+          "당뇨 Fact sheet 2024.pdf"
+        ],
+        "record_accounting": {
+          "received": 5,
+          "rendered": 5,
+          "omitted": 0,
+          "omitted_identifiers": [],
+          "omitted_identifiers_truncated": false,
+          "omitted_without_identifier": 0,
+          "identifier_limit": 200
+        },
+        "unused_count": 0,
+        "dropped_count": 0,
+        "drop_reasons": []
+      },
+      {
+        "sequence": 2,
+        "trace_sequence": 2,
+        "tool": "document_sql",
+        "lane_id": "file_sql",
+        "source_label": "업로드 문서(표 집계)",
+        "state": "success",
+        "status": "성공",
+        "elapsed_seconds": 0.0,
+        "request_parameters": {
+          "query": "당뇨병 유병률과 주요 통계를 알려줘",
+          "table_mapping": [
+            {
+              "file_name": "CHSO_KOR_SellOut_Basic_Feb-19-2026(2026년 1월까지).xlsx",
+              "sheet_name": "Sell Out  Standard",
+              "logical_name": "doc_6450_sell_out_standard"
+            }
+          ]
+        },
+        "output": {
+          "returned": 1,
+          "displayed_record_count": 1,
+          "duplicate_records_collapsed": 0,
+          "records": [
+            {
+              "identifiers": [
+                "CHSO_KOR_SellOut_Basic_Feb-19-2026(2026년 1월까지).xlsx",
+                "DOC-b9d310fc116ff026"
+              ],
+              "file_name": "CHSO_KOR_SellOut_Basic_Feb-19-2026(2026년 1월까지).xlsx",
+              "document_name": "CHSO_KOR_SellOut_Basic_Feb-19-2026(2026년 1월까지).xlsx",
+              "file_type": "XLSX",
+              "document_id": 118500,
+              "retrieval_route": "RAG 청크 검색",
+              "record_status": "사용됨",
+              "record_journey": [
+                "검색됨",
+                "후보",
+                "사용됨"
+              ]
+            }
+          ],
+          "error": "HTTPError: 409 Client Error: Conflict for url: http://redacted-internal/file-sql/schema"
+        },
+        "anchor_binding": {
+          "eligible": 1,
+          "assigned": 0,
+          "duplicate": 1,
+          "unassigned": 1
+        },
+        "counts": {
+          "returned": 1,
+          "parsed": 1,
+          "envelope": 1,
+          "rendered": 1,
+          "narrated": 1,
+          "used": 1
+        },
+        "document_names": [
+          "CHSO_KOR_SellOut_Basic_Feb-19-2026(2026년 1월까지).xlsx"
+        ],
+        "record_accounting": {
+          "received": 1,
+          "rendered": 1,
+          "omitted": 0,
+          "omitted_identifiers": [],
+          "omitted_identifiers_truncated": false,
+          "omitted_without_identifier": 0,
+          "identifier_limit": 200
+        },
+        "unused_count": 0,
+        "dropped_count": 0,
+        "drop_reasons": []
+      }
+    ],
+    "lane_groups": [],
+    "trace_correlation": {
+      "key": "sequence",
+      "matched": 2,
+      "total": 2,
+      "rate": 1.0
+    },
+    "entity_completion": {
+      "rows": [
+        {
+          "entity": "당뇨병",
+          "status": "COMPLETE"
+        },
+        {
+          "entity": "제1형 당뇨병",
+          "status": "FAILED"
+        },
+        {
+          "entity": "제2형 당뇨병",
+          "status": "FAILED"
+        },
+        {
+          "entity": "메트포르민",
+          "status": "FAILED"
+        },
+        {
+          "entity": "시타글립틴",
+          "status": "FAILED"
+        },
+        {
+          "entity": "엠파글리플로진",
+          "status": "FAILED"
+        },
+        {
+          "entity": "다파글리플로진",
+          "status": "FAILED"
+        },
+        {
+          "entity": "세마글루타이드",
+          "status": "FAILED"
+        },
+        {
+          "entity": "티르제파타이드",
+          "status": "FAILED"
+        },
+        {
+          "entity": "E10",
+          "status": "FAILED"
+        },
+        {
+          "entity": "E11",
+          "status": "FAILED"
+        },
+        {
+          "entity": "E12",
+          "status": "FAILED"
+        },
+        {
+          "entity": "E13",
+          "status": "FAILED"
+        },
+        {
+          "entity": "E14",
+          "status": "FAILED"
+        },
+        {
+          "entity": "당뇨병 유병률",
+          "status": "COMPLETE"
+        }
+      ],
+      "entity_types": [
+        {
+          "entity": "당뇨병",
+          "entity_type": "질환"
+        },
+        {
+          "entity": "제1형 당뇨병",
+          "entity_type": "질환"
+        },
+        {
+          "entity": "제2형 당뇨병",
+          "entity_type": "질환"
+        },
+        {
+          "entity": "메트포르민",
+          "entity_type": "브랜드"
+        },
+        {
+          "entity": "시타글립틴",
+          "entity_type": "브랜드"
+        },
+        {
+          "entity": "엠파글리플로진",
+          "entity_type": "브랜드"
+        },
+        {
+          "entity": "다파글리플로진",
+          "entity_type": "브랜드"
+        },
+        {
+          "entity": "세마글루타이드",
+          "entity_type": "브랜드"
+        },
+        {
+          "entity": "티르제파타이드",
+          "entity_type": "브랜드"
+        },
+        {
+          "entity": "E10",
+          "entity_type": "상병코드"
+        },
+        {
+          "entity": "E11",
+          "entity_type": "상병코드"
+        },
+        {
+          "entity": "E12",
+          "entity_type": "상병코드"
+        },
+        {
+          "entity": "E13",
+          "entity_type": "상병코드"
+        },
+        {
+          "entity": "E14",
+          "entity_type": "상병코드"
+        },
+        {
+          "entity": "당뇨병 유병률",
+          "entity_type": "브랜드"
+        }
+      ],
+      "scope_notice": "확인된 2개 조회 대상(당뇨병·당뇨병 유병률) 기준으로 비교했으며, 제1형 당뇨병·제2형 당뇨병·메트포르민·시타글립틴·엠파글리플로진·다파글리플로진·세마글루타이드·티르제파타이드·E10·E11·E12·E13·E14은 조회 결과와 연결하지 못했습니다.",
+      "table_location": "inspection"
+    }
+  },
+  "lane_execution": {
+    "mart": {
+      "source": "mart",
+      "planned": false,
+      "requested_calls": 0,
+      "call_count": 0,
+      "returned_count": 0,
+      "elapsed_ms": 0.0,
+      "state": "unplanned",
+      "reason_code": "file_only_request",
+      "omitted_count": 0,
+      "omitted_reason": null,
+      "queries": []
+    },
+    "nedrug": {
+      "source": "nedrug",
+      "planned": false,
+      "requested_calls": 0,
+      "call_count": 0,
+      "returned_count": 0,
+      "elapsed_ms": 0.0,
+      "state": "unplanned",
+      "reason_code": "file_only_request",
+      "omitted_count": 0,
+      "omitted_reason": null,
+      "queries": []
+    },
+    "hira": {
+      "source": "hira",
+      "planned": false,
+      "requested_calls": 0,
+      "call_count": 0,
+      "returned_count": 0,
+      "elapsed_ms": 0.0,
+      "state": "unplanned",
+      "reason_code": "file_only_request",
+      "omitted_count": 0,
+      "omitted_reason": null,
+      "queries": []
+    },
+    "openfda": {
+      "source": "openfda",
+      "planned": false,
+      "requested_calls": 0,
+      "call_count": 0,
+      "returned_count": 0,
+      "elapsed_ms": 0.0,
+      "state": "unplanned",
+      "reason_code": "file_only_request",
+      "omitted_count": 0,
+      "omitted_reason": null,
+      "queries": []
+    },
+    "clinicaltrials": {
+      "source": "clinicaltrials",
+      "planned": false,
+      "requested_calls": 0,
+      "call_count": 0,
+      "returned_count": 0,
+      "elapsed_ms": 0.0,
+      "state": "unplanned",
+      "reason_code": "file_only_request",
+      "omitted_count": 0,
+      "omitted_reason": null,
+      "queries": []
+    },
+    "web": {
+      "source": "web",
+      "planned": false,
+      "requested_calls": 0,
+      "call_count": 0,
+      "returned_count": 0,
+      "elapsed_ms": 0.0,
+      "state": "unplanned",
+      "reason_code": "file_only_request",
+      "omitted_count": 0,
+      "omitted_reason": null,
+      "queries": []
+    },
+    "patent": {
+      "source": "patent",
+      "planned": false,
+      "requested_calls": 0,
+      "call_count": 0,
+      "returned_count": 0,
+      "elapsed_ms": 0.0,
+      "state": "unplanned",
+      "reason_code": "file_only_request",
+      "omitted_count": 0,
+      "omitted_reason": null,
+      "queries": []
+    },
+    "document_rag": {
+      "source": "document_rag",
+      "planned": true,
+      "requested_calls": 0,
+      "call_count": 1,
+      "returned_count": 5,
+      "elapsed_ms": 0.0,
+      "state": "executed_success",
+      "reason_code": null,
+      "omitted_count": 0,
+      "omitted_reason": null,
+      "queries": [
+        {
+          "query": "당뇨병 유병률과 주요 통계를 알려줘",
+          "status": "ok",
+          "returned_count": 5,
+          "elapsed_ms": 0.0,
+          "failure_class": "none",
+          "reason_code": null
+        }
+      ]
+    },
+    "document_sql": {
+      "source": "document_sql",
+      "planned": true,
+      "requested_calls": 0,
+      "call_count": 1,
+      "returned_count": 1,
+      "elapsed_ms": 0.0,
+      "state": "executed_success",
+      "reason_code": null,
+      "omitted_count": 0,
+      "omitted_reason": null,
+      "queries": [
+        {
+          "query": "당뇨병 유병률과 주요 통계를 알려줘",
+          "status": "ok",
+          "returned_count": 1,
+          "elapsed_ms": 0.0,
+          "failure_class": "none",
+          "reason_code": null
+        }
+      ]
+    }
+  }
+}

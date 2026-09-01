@@ -1,0 +1,14 @@
+{
+  "schema_version": "r12.8.v1",
+  "disease_kcd_sets": {
+    "당뇨병": ["E10", "E11", "E12", "E13", "E14"],
+    "빈혈": ["D50", "D51", "D52", "D53"],
+    "혈우병": ["D66", "D67", "D68"]
+  },
+  "disease_brand_sets": {
+    "혈우병": {
+      "source": "PL-approved disease treatment set (2026-08-14)",
+      "brands": ["헴리브라", "록타비안", "헴제닉스"]
+    }
+  }
+}

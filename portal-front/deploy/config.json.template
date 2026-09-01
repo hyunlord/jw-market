@@ -1,0 +1,8 @@
+{
+  "apiBaseUrl": "${PORTAL_API_BASE_URL}",
+  "googleClientId": "${PORTAL_GOOGLE_CLIENT_ID}",
+  "genosNavigationUrl": "${PORTAL_GENOS_NAVIGATION_URL}",
+  "routerBasename": "${PORTAL_ROUTER_BASENAME}",
+  "marketDocumentWorkflowId": ${PORTAL_MARKET_DOCUMENT_WORKFLOW_ID},
+  "marketAcceptedUploadEnabled": ${PORTAL_MARKET_ACCEPTED_UPLOAD_ENABLED}
+}

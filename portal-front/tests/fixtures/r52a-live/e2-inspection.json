@@ -1,0 +1,3201 @@
+{
+  "schema": "r12.5.inspect.v1",
+  "question": "대한민국 및 전 세계의 당뇨병(Diabetes Mellitus) 환자수와 유병률 통계 정보를 알려주세요.",
+  "expansion": {
+    "parameter_axes": {
+      "status": "expanded",
+      "axes": {
+        "kcd_codes": [
+          "E10",
+          "E11",
+          "E12",
+          "E13",
+          "E14"
+        ],
+        "years": []
+      },
+      "requests": {
+        "hira": [
+          "E10 환자수",
+          "E11 환자수",
+          "E12 환자수",
+          "E13 환자수",
+          "E14 환자수"
+        ]
+      },
+      "entity_expansion": {
+        "status": "not_applicable"
+      },
+      "deterministic": true,
+      "unsupported_source_pruning": {
+        "applied": false,
+        "disabled": true,
+        "omitted": {}
+      },
+      "query_scope": {
+        "requested_calls": {
+          "mart": 1,
+          "nedrug": 2,
+          "hira": 5,
+          "openfda": 2,
+          "clinicaltrials": 2,
+          "web": 4,
+          "patent": 2
+        },
+        "executed_calls": {
+          "mart": 1,
+          "nedrug": 2,
+          "hira": 5,
+          "openfda": 2,
+          "clinicaltrials": 2,
+          "web": 4,
+          "patent": 2
+        },
+        "omitted_queries": {}
+      }
+    },
+    "second_hop": null
+  },
+  "query_scope": {
+    "requested_calls": {
+      "mart": 1,
+      "nedrug": 2,
+      "hira": 5,
+      "openfda": 2,
+      "clinicaltrials": 2,
+      "web": 4,
+      "patent": 2
+    },
+    "executed_calls": {
+      "mart": 1,
+      "nedrug": 2,
+      "hira": 5,
+      "openfda": 2,
+      "clinicaltrials": 2,
+      "web": 4,
+      "patent": 2
+    },
+    "omitted_queries": {}
+  },
+  "calls": [
+    {
+      "sequence": 1,
+      "trace_sequence": 1,
+      "source_label": "내부 데이터마트",
+      "status": "성공+0건",
+      "elapsed_seconds": 1.688,
+      "request_parameters": {
+        "query": "당뇨병 환자수 알려줘"
+      },
+      "output": {
+        "returned": 0,
+        "displayed_record_count": 0,
+        "duplicate_records_collapsed": 0,
+        "records": []
+      },
+      "anchor_binding": {
+        "eligible": 0,
+        "assigned": 0,
+        "duplicate": 0,
+        "unassigned": 0
+      },
+      "counts": {
+        "returned": 0,
+        "parsed": 0,
+        "envelope": 0,
+        "rendered": 0,
+        "narrated": 0
+      },
+      "record_accounting": {
+        "received": 0,
+        "rendered": 0,
+        "omitted": 0,
+        "omitted_identifiers": [],
+        "omitted_identifiers_truncated": false,
+        "omitted_without_identifier": 0,
+        "identifier_limit": 200
+      },
+      "unused_count": 0,
+      "dropped_count": 0,
+      "drop_reasons": [
+        {
+          "stage": "retrieval",
+          "count": 0,
+          "reason": "mart read-only adapters returned no rows",
+          "record_ids": []
+        }
+      ]
+    },
+    {
+      "sequence": 2,
+      "trace_sequence": 2,
+      "source_label": "식품의약품안전처",
+      "status": "성공+0건",
+      "elapsed_seconds": 15.822,
+      "request_parameters": {
+        "query": "당뇨병 치료제 시장 현황",
+        "calls": [
+          {
+            "brand": "당뇨병 치료제 시장 현황"
+          }
+        ]
+      },
+      "output": {
+        "returned": 0,
+        "displayed_record_count": 0,
+        "duplicate_records_collapsed": 0,
+        "records": []
+      },
+      "anchor_binding": {
+        "eligible": 0,
+        "assigned": 0,
+        "duplicate": 0,
+        "unassigned": 0
+      },
+      "counts": {
+        "returned": 0,
+        "parsed": 0,
+        "envelope": 0,
+        "rendered": 0,
+        "narrated": 0
+      },
+      "record_accounting": {
+        "received": 0,
+        "rendered": 0,
+        "omitted": 0,
+        "omitted_identifiers": [],
+        "omitted_identifiers_truncated": false,
+        "omitted_without_identifier": 0,
+        "identifier_limit": 200
+      },
+      "unused_count": 0,
+      "dropped_count": 0,
+      "drop_reasons": [
+        {
+          "stage": "retrieval",
+          "count": 0,
+          "reason": "mfds_permission_search MCP returned no results",
+          "record_ids": []
+        }
+      ]
+    },
+    {
+      "sequence": 3,
+      "trace_sequence": 3,
+      "source_label": "건강보험심사평가원",
+      "status": "완료",
+      "elapsed_seconds": 9.542,
+      "request_parameters": {
+        "query": "E10 환자수",
+        "calls": [
+          {
+            "sickCd": "E10",
+            "searchText": "E10",
+            "diseaseType": "SICK_CD"
+          },
+          {
+            "sickCd": "E10",
+            "year": "2025"
+          }
+        ]
+      },
+      "output": {
+        "returned": 3,
+        "displayed_record_count": 3,
+        "duplicate_records_collapsed": 0,
+        "records": [
+          {
+            "identifiers": [
+              "1형 당뇨병",
+              "E10"
+            ],
+            "sickCd": "E10",
+            "sickNm": "1형 당뇨병"
+          },
+          {
+            "identifiers": [
+              "1형 당뇨병",
+              "E10"
+            ],
+            "sickCd": "E10",
+            "sickNm": "1형 당뇨병",
+            "inpatOpat": "입원",
+            "ptntCnt": "3017",
+            "rvdInsupBrdnAmt": "10004550000",
+            "rvdRpeTamtAmt": "12469847000",
+            "specCnt": "4951",
+            "vstDdcnt": "45040",
+            "units": {
+              "ptntCnt": "명",
+              "rvdInsupBrdnAmt": "원",
+              "rvdRpeTamtAmt": "원",
+              "specCnt": "건",
+              "vstDdcnt": "일"
+            },
+            "sexBreakdown": [
+              {
+                "ptntCnt": "1438",
+                "rvdInsupBrdnAmt": "4891716000",
+                "rvdRpeTamtAmt": "6173659000",
+                "sex": "남",
+                "specCnt": "2403",
+                "vstDdcnt": "23575"
+              },
+              {
+                "ptntCnt": "1579",
+                "rvdInsupBrdnAmt": "5112834000",
+                "rvdRpeTamtAmt": "6296188000",
+                "sex": "여",
+                "specCnt": "2548",
+                "vstDdcnt": "21465"
+              }
+            ],
+            "requested_year": "2025"
+          },
+          {
+            "identifiers": [
+              "1형 당뇨병",
+              "E10"
+            ],
+            "sickCd": "E10",
+            "sickNm": "1형 당뇨병",
+            "inpatOpat": "외래",
+            "ptntCnt": "55228",
+            "rvdInsupBrdnAmt": "8849490000",
+            "rvdRpeTamtAmt": "16172094000",
+            "specCnt": "254154",
+            "vstDdcnt": "236651",
+            "units": {
+              "ptntCnt": "명",
+              "rvdInsupBrdnAmt": "원",
+              "rvdRpeTamtAmt": "원",
+              "specCnt": "건",
+              "vstDdcnt": "일"
+            },
+            "sexBreakdown": [
+              {
+                "ptntCnt": "30659",
+                "rvdInsupBrdnAmt": "4638967000",
+                "rvdRpeTamtAmt": "8371252000",
+                "sex": "남",
+                "specCnt": "132512",
+                "vstDdcnt": "124552"
+              },
+              {
+                "ptntCnt": "24569",
+                "rvdInsupBrdnAmt": "4210523000",
+                "rvdRpeTamtAmt": "7800842000",
+                "sex": "여",
+                "specCnt": "121642",
+                "vstDdcnt": "112099"
+              }
+            ],
+            "requested_year": "2025"
+          }
+        ]
+      },
+      "anchor_binding": {
+        "eligible": 3,
+        "assigned": 0,
+        "duplicate": 3,
+        "unassigned": 3
+      },
+      "counts": {
+        "returned": 3,
+        "parsed": 3,
+        "envelope": 3,
+        "rendered": 5,
+        "narrated": 5
+      },
+      "record_accounting": {
+        "received": 5,
+        "rendered": 5,
+        "omitted": 0,
+        "omitted_identifiers": [],
+        "omitted_identifiers_truncated": false,
+        "omitted_without_identifier": 0,
+        "identifier_limit": 200
+      },
+      "unused_count": 0,
+      "dropped_count": 0,
+      "drop_reasons": []
+    },
+    {
+      "sequence": 4,
+      "trace_sequence": 4,
+      "source_label": "FDA",
+      "status": "성공+0건",
+      "elapsed_seconds": 5.249,
+      "request_parameters": {
+        "query": "Diabetes mellitus prevalence statistics",
+        "calls": [
+          {
+            "search": "openfda.substance_name:\"DIABETES MELLITUS PREVALENCE STATISTICS\"",
+            "evidence_type": "label"
+          }
+        ]
+      },
+      "output": {
+        "returned": 0,
+        "displayed_record_count": 0,
+        "duplicate_records_collapsed": 0,
+        "records": []
+      },
+      "anchor_binding": {
+        "eligible": 0,
+        "assigned": 0,
+        "duplicate": 0,
+        "unassigned": 0
+      },
+      "counts": {
+        "returned": 0,
+        "parsed": 0,
+        "envelope": 0,
+        "rendered": 0,
+        "narrated": 0
+      },
+      "record_accounting": {
+        "received": 0,
+        "rendered": 0,
+        "omitted": 0,
+        "omitted_identifiers": [],
+        "omitted_identifiers_truncated": false,
+        "omitted_without_identifier": 0,
+        "identifier_limit": 200
+      },
+      "unused_count": 0,
+      "dropped_count": 0,
+      "drop_reasons": [
+        {
+          "stage": "retrieval",
+          "count": 0,
+          "reason": "search_drug_labels MCP 조회 결과 없음: Drug labels search error: No results found for the given search criteria",
+          "record_ids": []
+        }
+      ]
+    },
+    {
+      "sequence": 5,
+      "trace_sequence": 5,
+      "source_label": "ClinicalTrials.gov",
+      "status": "완료",
+      "elapsed_seconds": 2.29,
+      "request_parameters": {
+        "query": "Diabetes Mellitus patient recruitment statistics",
+        "calls": [
+          {
+            "query.intr": "Diabetes Mellitus patient recruitment statistics",
+            "pageSize": 100,
+            "countTotal": "true"
+          }
+        ]
+      },
+      "output": {
+        "returned": 1,
+        "displayed_record_count": 1,
+        "duplicate_records_collapsed": 0,
+        "records": [
+          {
+            "identifiers": [
+              "NCT00203996",
+              "Polycystic Ovary Syndrome (PCOS) and Sleep Apnea"
+            ],
+            "anchor_id": "ct:NCT00203996",
+            "nct_id": "NCT00203996",
+            "phases": [
+              "PHASE4"
+            ],
+            "brief_title": "Polycystic Ovary Syndrome (PCOS) and Sleep Apnea",
+            "official_title": "Sleep, Metabolic, and Cardiovascular Dysfunction in Polycystic Ovary Syndrome",
+            "title": "Polycystic Ovary Syndrome (PCOS) and Sleep Apnea",
+            "interventions": [
+              "continuous positive airway pressure (CPAP)",
+              "depot leuprolide plus estrogen/progestin replacement",
+              "pioglitazone",
+              "REM frag",
+              "SWS supp"
+            ],
+            "sponsor": "University of Chicago",
+            "relevance_status": "직접 관련 여부 미확인"
+          }
+        ]
+      },
+      "anchor_binding": {
+        "eligible": 1,
+        "assigned": 1,
+        "duplicate": 0,
+        "unassigned": 0
+      },
+      "counts": {
+        "returned": 1,
+        "parsed": 1,
+        "envelope": 1,
+        "rendered": 1,
+        "narrated": 1
+      },
+      "record_accounting": {
+        "received": 1,
+        "rendered": 1,
+        "omitted": 0,
+        "omitted_identifiers": [],
+        "omitted_identifiers_truncated": false,
+        "omitted_without_identifier": 0,
+        "identifier_limit": 200
+      },
+      "unused_count": 0,
+      "dropped_count": 0,
+      "drop_reasons": []
+    },
+    {
+      "sequence": 6,
+      "trace_sequence": 6,
+      "source_label": "웹 뉴스",
+      "status": "완료",
+      "elapsed_seconds": 3.324,
+      "request_parameters": {
+        "query": "2024 2025 당뇨병 환자수 통계"
+      },
+      "output": {
+        "returned": 5,
+        "displayed_record_count": 5,
+        "duplicate_records_collapsed": 0,
+        "records": [
+          {
+            "identifiers": [
+              "[대한당뇨병연합 공식발표] 2024년 전체 당뇨병 인구 및 ..."
+            ],
+            "anchor_id": "web:b0211298c46a3a17ae83",
+            "title": "[대한당뇨병연합 공식발표] 2024년 전체 당뇨병 인구 및 ...",
+            "url": "https://iddm.kr/m/_subpage/community/notice.php?id=5094&page=8&mode=read"
+          },
+          {
+            "identifiers": [
+              "“전세계 성인 9명 중 1명이 당뇨병…6초당 1명씩 사망” [건강한겨레]"
+            ],
+            "anchor_id": "web:c9f2b8b49c1f259fb7a9",
+            "title": "“전세계 성인 9명 중 1명이 당뇨병…6초당 1명씩 사망” [건강한겨레]",
+            "url": "https://www.hani.co.kr/arti/hanihealth/healthlife/1192821.html"
+          },
+          {
+            "identifiers": [
+              "10년 새 당뇨 환자 57% 급증… \"저소득층일수록 더 아프다\""
+            ],
+            "anchor_id": "web:52d3a33ddd87f07b88c2",
+            "title": "10년 새 당뇨 환자 57% 급증… \"저소득층일수록 더 아프다\"",
+            "url": "https://health.chosun.com/site/data/html_dir/2025/10/10/2025101001806.html"
+          },
+          {
+            "identifiers": [
+              "알림자료>보도자료>보도자료 게시물 상세보기 | 국립보건연구원"
+            ],
+            "anchor_id": "web:47bd427b39ddedf5283d",
+            "title": "알림자료>보도자료>보도자료 게시물 상세보기 | 국립보건연구원",
+            "url": "https://www.nih.go.kr/ko/bbs/B0000007/view.do?nttId=12728&menuNo=300829&pageIndex="
+          },
+          {
+            "identifiers": [
+              "www.dietinhealth.com"
+            ],
+            "anchor_id": "web:1ed2c480ea60e05fe92c",
+            "title": "www.dietinhealth.com",
+            "url": "https://www.dietinhealth.com/wp-json/wp/v2/posts/52298"
+          }
+        ]
+      },
+      "anchor_binding": {
+        "eligible": 5,
+        "assigned": 5,
+        "duplicate": 0,
+        "unassigned": 0
+      },
+      "counts": {
+        "returned": 5,
+        "parsed": 5,
+        "envelope": 5,
+        "rendered": 5,
+        "narrated": 5
+      },
+      "record_accounting": {
+        "received": 5,
+        "rendered": 5,
+        "omitted": 0,
+        "omitted_identifiers": [],
+        "omitted_identifiers_truncated": false,
+        "omitted_without_identifier": 0,
+        "identifier_limit": 200
+      },
+      "unused_count": 0,
+      "dropped_count": 0,
+      "drop_reasons": []
+    },
+    {
+      "sequence": 7,
+      "trace_sequence": 7,
+      "source_label": "식품의약품안전처 의약품 특허목록",
+      "status": "완료",
+      "elapsed_seconds": 30.057,
+      "request_parameters": {
+        "query": "당뇨병 치료 관련 특허 동향",
+        "calls": [
+          {
+            "ingr_name": "당뇨병 치료 관련 특허 동향",
+            "limit": "500"
+          },
+          {
+            "ingr_name": "당뇨병 치료 관련 특허 동향"
+          }
+        ]
+      },
+      "output": {
+        "returned": 7,
+        "displayed_record_count": 6,
+        "duplicate_records_collapsed": 1,
+        "records": [
+          {
+            "identifiers": [
+              "식별자 없음"
+            ],
+            "duplicate_count": 2,
+            "duplicate_label": "동일 항목 2건"
+          },
+          {
+            "identifiers": [
+              "Latest breakthrough in Type 1 diabetes treatment: Chinese medical team enables 24 patients to discontinue insulin use - BioSpace"
+            ]
+          },
+          {
+            "identifiers": [
+              "Scientists Achieve Long-Sought Breakthrough Toward Oral Insulin Pills - SciTechDaily"
+            ]
+          },
+          {
+            "identifiers": [
+              "Type 1 diabetes pipeline making ‘remarkable progress’ toward insulin independence - BioSpace"
+            ]
+          },
+          {
+            "identifiers": [
+              "Metformin’s secret brain pathway revealed after 60 years - ScienceDaily"
+            ]
+          },
+          {
+            "identifiers": [
+              "Researchers discover a surprising ally in the fight against insulin resistance and type 2 diabetes - News-Medical"
+            ]
+          }
+        ]
+      },
+      "anchor_binding": {
+        "eligible": 0,
+        "assigned": 0,
+        "duplicate": 0,
+        "unassigned": 7
+      },
+      "counts": {
+        "returned": 7,
+        "parsed": 7,
+        "envelope": 7,
+        "rendered": 0,
+        "narrated": 0
+      },
+      "record_accounting": {
+        "received": 0,
+        "rendered": 0,
+        "omitted": 0,
+        "omitted_identifiers": [],
+        "omitted_identifiers_truncated": false,
+        "omitted_without_identifier": 0,
+        "identifier_limit": 200
+      },
+      "unused_count": 7,
+      "dropped_count": 0,
+      "drop_reasons": [
+        {
+          "stage": "render",
+          "count": 7,
+          "reason": "현재 답변 표면에 배치되지 않음",
+          "record_ids": [
+            "식별자 없음",
+            "식별자 없음",
+            "https://www.biospace.com/press-releases/latest-breakthrough-in-type-1-diabetes-treatment-chinese-medical-team-enables-24-patients-to-discontinue-insulin-use",
+            "https://scitechdaily.com/scientists-achieve-long-sought-breakthrough-toward-oral-insulin-pills/",
+            "https://www.biospace.com/drug-development/type-1-diabetes-pipeline-making-remarkable-progress-toward-insulin-independence",
+            "http://www.sciencedaily.com/releases/2025/09/250910000256.htm",
+            "https://www.news-medical.net/news/20251208/Researchers-discover-a-surprising-ally-in-the-fight-against-insulin-resistance-and-type-2-diabetes.aspx"
+          ]
+        }
+      ]
+    },
+    {
+      "sequence": 8,
+      "trace_sequence": 8,
+      "source_label": "식품의약품안전처",
+      "status": "성공+0건",
+      "elapsed_seconds": 15.824,
+      "request_parameters": {
+        "query": "당뇨병 유병률 통계",
+        "calls": [
+          {
+            "brand": "당뇨병 유병률 통계"
+          }
+        ]
+      },
+      "output": {
+        "returned": 0,
+        "displayed_record_count": 0,
+        "duplicate_records_collapsed": 0,
+        "records": []
+      },
+      "anchor_binding": {
+        "eligible": 0,
+        "assigned": 0,
+        "duplicate": 0,
+        "unassigned": 0
+      },
+      "counts": {
+        "returned": 0,
+        "parsed": 0,
+        "envelope": 0,
+        "rendered": 0,
+        "narrated": 0
+      },
+      "record_accounting": {
+        "received": 0,
+        "rendered": 0,
+        "omitted": 0,
+        "omitted_identifiers": [],
+        "omitted_identifiers_truncated": false,
+        "omitted_without_identifier": 0,
+        "identifier_limit": 200
+      },
+      "unused_count": 0,
+      "dropped_count": 0,
+      "drop_reasons": [
+        {
+          "stage": "retrieval",
+          "count": 0,
+          "reason": "mfds_permission_search MCP returned no results",
+          "record_ids": []
+        }
+      ]
+    },
+    {
+      "sequence": 9,
+      "trace_sequence": 9,
+      "source_label": "건강보험심사평가원",
+      "status": "완료",
+      "elapsed_seconds": 8.793,
+      "request_parameters": {
+        "query": "E11 환자수",
+        "calls": [
+          {
+            "sickCd": "E11",
+            "searchText": "E11",
+            "diseaseType": "SICK_CD"
+          },
+          {
+            "sickCd": "E11",
+            "year": "2025"
+          }
+        ]
+      },
+      "output": {
+        "returned": 3,
+        "displayed_record_count": 3,
+        "duplicate_records_collapsed": 0,
+        "records": [
+          {
+            "identifiers": [
+              "2형 당뇨병",
+              "E11"
+            ],
+            "sickCd": "E11",
+            "sickNm": "2형 당뇨병"
+          },
+          {
+            "identifiers": [
+              "2형 당뇨병",
+              "E11"
+            ],
+            "sickCd": "E11",
+            "sickNm": "2형 당뇨병",
+            "inpatOpat": "입원",
+            "ptntCnt": "66021",
+            "rvdInsupBrdnAmt": "172479103000",
+            "rvdRpeTamtAmt": "222245664000",
+            "specCnt": "108388",
+            "vstDdcnt": "974519",
+            "units": {
+              "ptntCnt": "명",
+              "rvdInsupBrdnAmt": "원",
+              "rvdRpeTamtAmt": "원",
+              "specCnt": "건",
+              "vstDdcnt": "일"
+            },
+            "sexBreakdown": [
+              {
+                "ptntCnt": "38386",
+                "rvdInsupBrdnAmt": "100204911000",
+                "rvdRpeTamtAmt": "128955424000",
+                "sex": "남",
+                "specCnt": "63583",
+                "vstDdcnt": "508105"
+              },
+              {
+                "ptntCnt": "27635",
+                "rvdInsupBrdnAmt": "72274192000",
+                "rvdRpeTamtAmt": "93290240000",
+                "sex": "여",
+                "specCnt": "44805",
+                "vstDdcnt": "466414"
+              }
+            ],
+            "requested_year": "2025"
+          },
+          {
+            "identifiers": [
+              "2형 당뇨병",
+              "E11"
+            ],
+            "sickCd": "E11",
+            "sickNm": "2형 당뇨병",
+            "inpatOpat": "외래",
+            "ptntCnt": "3712401",
+            "rvdInsupBrdnAmt": "576666368000",
+            "rvdRpeTamtAmt": "872071961000",
+            "specCnt": "22431358",
+            "vstDdcnt": "22414780",
+            "units": {
+              "ptntCnt": "명",
+              "rvdInsupBrdnAmt": "원",
+              "rvdRpeTamtAmt": "원",
+              "specCnt": "건",
+              "vstDdcnt": "일"
+            },
+            "sexBreakdown": [
+              {
+                "ptntCnt": "2095219",
+                "rvdInsupBrdnAmt": "317844877000",
+                "rvdRpeTamtAmt": "485785526000",
+                "sex": "남",
+                "specCnt": "12457270",
+                "vstDdcnt": "12448128"
+              },
+              {
+                "ptntCnt": "1617182",
+                "rvdInsupBrdnAmt": "258821491000",
+                "rvdRpeTamtAmt": "386286435000",
+                "sex": "여",
+                "specCnt": "9974088",
+                "vstDdcnt": "9966652"
+              }
+            ],
+            "requested_year": "2025"
+          }
+        ]
+      },
+      "anchor_binding": {
+        "eligible": 3,
+        "assigned": 0,
+        "duplicate": 3,
+        "unassigned": 3
+      },
+      "counts": {
+        "returned": 3,
+        "parsed": 3,
+        "envelope": 3,
+        "rendered": 5,
+        "narrated": 5
+      },
+      "record_accounting": {
+        "received": 5,
+        "rendered": 5,
+        "omitted": 0,
+        "omitted_identifiers": [],
+        "omitted_identifiers_truncated": false,
+        "omitted_without_identifier": 0,
+        "identifier_limit": 200
+      },
+      "unused_count": 0,
+      "dropped_count": 0,
+      "drop_reasons": []
+    },
+    {
+      "sequence": 10,
+      "trace_sequence": 10,
+      "source_label": "FDA",
+      "status": "성공+0건",
+      "elapsed_seconds": 5.445,
+      "request_parameters": {
+        "query": "Number of patients treated for diabetes",
+        "calls": [
+          {
+            "search": "openfda.substance_name:\"NUMBER OF PATIENTS TREATED FOR DIABETES\"",
+            "evidence_type": "label"
+          }
+        ]
+      },
+      "output": {
+        "returned": 0,
+        "displayed_record_count": 0,
+        "duplicate_records_collapsed": 0,
+        "records": []
+      },
+      "anchor_binding": {
+        "eligible": 0,
+        "assigned": 0,
+        "duplicate": 0,
+        "unassigned": 0
+      },
+      "counts": {
+        "returned": 0,
+        "parsed": 0,
+        "envelope": 0,
+        "rendered": 0,
+        "narrated": 0
+      },
+      "record_accounting": {
+        "received": 0,
+        "rendered": 0,
+        "omitted": 0,
+        "omitted_identifiers": [],
+        "omitted_identifiers_truncated": false,
+        "omitted_without_identifier": 0,
+        "identifier_limit": 200
+      },
+      "unused_count": 0,
+      "dropped_count": 0,
+      "drop_reasons": [
+        {
+          "stage": "retrieval",
+          "count": 0,
+          "reason": "search_drug_labels MCP 조회 결과 없음: Drug labels search error: No results found for the given search criteria",
+          "record_ids": []
+        }
+      ]
+    },
+    {
+      "sequence": 11,
+      "trace_sequence": 11,
+      "source_label": "ClinicalTrials.gov",
+      "status": "완료",
+      "elapsed_seconds": 3.252,
+      "request_parameters": {
+        "query": "Diabetes prevalence in clinical research",
+        "calls": [
+          {
+            "query.intr": "Diabetes prevalence in clinical research",
+            "pageSize": 100,
+            "countTotal": "true"
+          }
+        ]
+      },
+      "output": {
+        "returned": 78,
+        "displayed_record_count": 78,
+        "duplicate_records_collapsed": 0,
+        "records": [
+          {
+            "identifiers": [
+              "NCT07048717",
+              "The Mauritius and Rodrigues Non-Communicable Disease (NCD) Study"
+            ],
+            "anchor_id": "ct:NCT07048717",
+            "nct_id": "NCT07048717",
+            "brief_title": "The Mauritius and Rodrigues Non-Communicable Disease (NCD) Study",
+            "official_title": "The Mauritius and Rodrigues Non-Communicable Disease (NCD) Study",
+            "title": "The Mauritius and Rodrigues Non-Communicable Disease (NCD) Study",
+            "sponsor": "Umeå University",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT06445361",
+              "Prevalence of NAFLD in T1DM Patients"
+            ],
+            "anchor_id": "ct:NCT06445361",
+            "nct_id": "NCT06445361",
+            "phases": [
+              "PHASE_NA"
+            ],
+            "brief_title": "Prevalence of NAFLD in T1DM Patients",
+            "official_title": "The Prevalence of Non-Alcoholic Fatty Liver Disease in Type 1 Diabetes Mellitus Patients Followed at Ziekenhuis Oost-Limburg, Genk, Belgium",
+            "title": "Prevalence of NAFLD in T1DM Patients",
+            "interventions": [
+              "FibroScan"
+            ],
+            "sponsor": "Ziekenhuis Oost-Limburg",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "A Study on the Prevalence of Obstructive Sleep Apnea in Patients With Type II Diabetes Mellitus",
+              "NCT01172093"
+            ],
+            "anchor_id": "ct:NCT01172093",
+            "nct_id": "NCT01172093",
+            "brief_title": "A Study on the Prevalence of Obstructive Sleep Apnea in Patients With Type II Diabetes Mellitus",
+            "official_title": "Prevalence and Recognition of Obstructive Sleep Apnea in Chinese With Type 2 Diabetes Mellitus",
+            "title": "A Study on the Prevalence of Obstructive Sleep Apnea in Patients With Type II Diabetes Mellitus",
+            "sponsor": "The University of Hong Kong",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "A Study Using Swedish Registries to Find Out How Many People With Type 2 Diabetes Had Cardiovascular Disease and Started Treatment With Empagliflozin Between 2015 and 2017",
+              "NCT04927858"
+            ],
+            "anchor_id": "ct:NCT04927858",
+            "nct_id": "NCT04927858",
+            "brief_title": "A Study Using Swedish Registries to Find Out How Many People With Type 2 Diabetes Had Cardiovascular Disease and Started Treatment With Empagliflozin Between 2015 and 2017",
+            "official_title": "Prevalence of Cardiovascular Disease in Swedish Patients With Type 2 Diabetes and in Patients Initiating on Empagliflozin",
+            "title": "A Study Using Swedish Registries to Find Out How Many People With Type 2 Diabetes Had Cardiovascular Disease and Started Treatment With Empagliflozin Between 2015 and 2017",
+            "interventions": [
+              "Empagliflozin"
+            ],
+            "sponsor": "Boehringer Ingelheim",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT01029392",
+              "Prevalence of Vitamin D Deficiency in Type 1 Diabetes Mellitus and Effect of Supplementation on Insulin Requirements"
+            ],
+            "anchor_id": "ct:NCT01029392",
+            "nct_id": "NCT01029392",
+            "phases": [
+              "PHASE3"
+            ],
+            "brief_title": "Prevalence of Vitamin D Deficiency in Type 1 Diabetes Mellitus and Effect of Supplementation on Insulin Requirements",
+            "official_title": "Prevalence of Vitamin D Deficiency in Type 1 Diabetes Mellitus and Effect on Insulin Requirements After Supplementation With Vitamin D-A Pilot Study",
+            "title": "Prevalence of Vitamin D Deficiency in Type 1 Diabetes Mellitus and Effect of Supplementation on Insulin Requirements",
+            "interventions": [
+              "Vitamin D"
+            ],
+            "sponsor": "Corewell Health East",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT06422598",
+              "Prevalence and Management Practice of Diabetic Kidney Disease at BADAS Affiliated Healthcare Centres in Bangladesh"
+            ],
+            "anchor_id": "ct:NCT06422598",
+            "nct_id": "NCT06422598",
+            "brief_title": "Prevalence and Management Practice of Diabetic Kidney Disease at BADAS Affiliated Healthcare Centres in Bangladesh",
+            "official_title": "Prevalence and Management Practice of Diabetic Kidney Disease at BADAS Affiliated Healthcare Centres in Bangladesh - An Exploratory Cross-Sectional Study",
+            "title": "Prevalence and Management Practice of Diabetic Kidney Disease at BADAS Affiliated Healthcare Centres in Bangladesh",
+            "sponsor": "Bangladesh Institute of Research and Rehabilitation in Diabetes, Endocrine and Metabolic Disorders",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT07736872",
+              "OSAHS Screening in Diverse Populations"
+            ],
+            "anchor_id": "ct:NCT07736872",
+            "nct_id": "NCT07736872",
+            "brief_title": "OSAHS Screening in Diverse Populations",
+            "official_title": "Screening for Obstructive Sleep Apnea-hypopnea Syndrome - for Community Populations, Patients With Specific Diseases and Special Populations",
+            "title": "OSAHS Screening in Diverse Populations",
+            "interventions": [
+              "patients with hypertension, diabetes, cardiovascular and cerebrovascular diseases, chronic obstructive pulmonary disease, asthma and other OSA related comorbidities."
+            ],
+            "sponsor": "Kang Wu",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NAFLD Among Patients With Type 2 Diabetes and CKD",
+              "NCT03826381"
+            ],
+            "anchor_id": "ct:NCT03826381",
+            "nct_id": "NCT03826381",
+            "brief_title": "NAFLD Among Patients With Type 2 Diabetes and CKD",
+            "official_title": "Prevalence and Metabolic Impact of Non-alcoholic Fatty Liver Disease in Patients With Type 2 Diabetes With Normal Renal Function or Chronic Kidney Disease",
+            "title": "NAFLD Among Patients With Type 2 Diabetes and CKD",
+            "interventions": [
+              "Magnetic resonance (MR) spectroscopy of the liver",
+              "Fibroscan",
+              "Continuous glucose monitoring (CGM) for four days.",
+              "Dual Energy X-ray Absorptiometry (DEXA) scan",
+              "Blood samples",
+              "Clinical and demographic data"
+            ],
+            "sponsor": "Rigshospitalet, Denmark",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT07156370",
+              "Salivary Cortisol and Hypercortisolism in Type 2 Diabetes"
+            ],
+            "anchor_id": "ct:NCT07156370",
+            "nct_id": "NCT07156370",
+            "brief_title": "Salivary Cortisol and Hypercortisolism in Type 2 Diabetes",
+            "official_title": "Study to Explore the Prevalence of Hypercortisolism in Patients With Type 2 Diabetes and Assess the Correlation Between Salivary Cortisol and Glucose Levels",
+            "title": "Salivary Cortisol and Hypercortisolism in Type 2 Diabetes",
+            "sponsor": "Shanghai 6th People's Hospital",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT03243253",
+              "The Association of Fast Food Densities With Mortality From Cardiovascular Disease"
+            ],
+            "anchor_id": "ct:NCT03243253",
+            "nct_id": "NCT03243253",
+            "brief_title": "The Association of Fast Food Densities With Mortality From Cardiovascular Disease",
+            "official_title": "The Association of Fast Food and Full Service Restaurant Densities With Mortality From Cardiovascular Disease and Stroke, and the Prevalence of Diabetes",
+            "title": "The Association of Fast Food Densities With Mortality From Cardiovascular Disease",
+            "interventions": [
+              "all the data collection have done by CDC."
+            ],
+            "sponsor": "Chinese Academy of Sciences",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT01402362",
+              "Prevalence of Glucose Intolerance and Risk Factors in Ethiopian Immigrants in Israel; Follow-up Study."
+            ],
+            "anchor_id": "ct:NCT01402362",
+            "nct_id": "NCT01402362",
+            "brief_title": "Prevalence of Glucose Intolerance and Risk Factors in Ethiopian Immigrants in Israel; Follow-up Study.",
+            "title": "Prevalence of Glucose Intolerance and Risk Factors in Ethiopian Immigrants in Israel; Follow-up Study.",
+            "sponsor": "Hillel Yaffe Medical Center",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "An International Survey of the Occurrence of Cardiovascular Disease Among Patients With Type 2 Diabetes",
+              "NCT03811288"
+            ],
+            "anchor_id": "ct:NCT03811288",
+            "nct_id": "NCT03811288",
+            "brief_title": "An International Survey of the Occurrence of Cardiovascular Disease Among Patients With Type 2 Diabetes",
+            "official_title": "A Non-interventional Cross-sectional Study to Capture the Prevalence of Cardiovascular Disease in Patients With Type 2 Diabetes - an International Observation",
+            "title": "An International Survey of the Occurrence of Cardiovascular Disease Among Patients With Type 2 Diabetes",
+            "interventions": [
+              "No treatment given"
+            ],
+            "sponsor": "Novo Nordisk A/S",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT02232503",
+              "Prevalence of DIAbetic RETinopathy and Impact of Genetic Factors in the Development of Diabetic Retinopathy of Patients With Type 1 and 2 Diabetes Mellitus in SlovaKia"
+            ],
+            "anchor_id": "ct:NCT02232503",
+            "nct_id": "NCT02232503",
+            "brief_title": "Prevalence of DIAbetic RETinopathy and Impact of Genetic Factors in the Development of Diabetic Retinopathy of Patients With Type 1 and 2 Diabetes Mellitus in SlovaKia",
+            "official_title": "DIARET SK - Prevalence of Diabetic Retinopathy and Impact of Genetic Factors in the Development of Diabetic Retinopathy of Patients With Type 1 and 2 Diabetes Mellitus in Slovakia",
+            "title": "Prevalence of DIAbetic RETinopathy and Impact of Genetic Factors in the Development of Diabetic Retinopathy of Patients With Type 1 and 2 Diabetes Mellitus in SlovaKia",
+            "interventions": [
+              "Studied cohort"
+            ],
+            "sponsor": "Novartis Slovakia, s.r.o.",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "HF Prevalence and Evolution of HF in DM II Patients at High Risk",
+              "NCT04482283"
+            ],
+            "anchor_id": "ct:NCT04482283",
+            "nct_id": "NCT04482283",
+            "brief_title": "HF Prevalence and Evolution of HF in DM II Patients at High Risk",
+            "official_title": "Epidemiological 2-year Prospective Study to Estimate the Prevalence and Evolution of Heart Failure and Identify Potential Predictors for the Development of Symptomatic HF in Patients withT2 Diabetes Mellitus at High CV Risk",
+            "title": "HF Prevalence and Evolution of HF in DM II Patients at High Risk",
+            "sponsor": "AstraZeneca",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT04979377",
+              "Prevalence of Hyperandrogenism in Type 1 Diabetes"
+            ],
+            "anchor_id": "ct:NCT04979377",
+            "nct_id": "NCT04979377",
+            "brief_title": "Prevalence of Hyperandrogenism in Type 1 Diabetes",
+            "official_title": "Prevalence of Hyperandrogenism in Young Women With Type 1 Diabetes and Study of the Underlying Pathophysiological Mechanisms",
+            "title": "Prevalence of Hyperandrogenism in Type 1 Diabetes",
+            "interventions": [
+              "Clinical hyperandrogenism assessment",
+              "Total testosterone (ng/dL)",
+              "A1c (%)",
+              "Total cholesterol",
+              "Body mass index (BMI) (kg/m2)",
+              "Frequency of chronic vascular complications [n (%)]",
+              "Polycystic ovary morphology",
+              "Cardiovascular autonomic reflex tests (CARTs)",
+              "Sex hormone-binding globulin (SHBG) (nmol/L)",
+              "Dehydroepiandrosterone-sulphate (IQL) (ng/mL)",
+              "Waist circumference (cm)",
+              "Waist-to-hip ratio",
+              "Body composition",
+              "Mean glucose (mg/dL)",
+              "Time in target range (hours)",
+              "Time in hyperglycemia (hours)",
+              "Insulin dose (UI/Kg)",
+              "Insulin sensitivity",
+              "High-density lipoprotein (HDL) (mg/dL)",
+              "Low-density lipoprotein (LDL) (mg/dL)",
+              "Triglycerides (mg/dL)"
+            ],
+            "sponsor": "Fundacion para la Investigacion Biomedica del Hospital Universitario Ramon y Cajal",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT05081115",
+              "Stress Echo 2030: the Novel ABCDE-(FGLPR) Protocol to Define the Future of Imaging"
+            ],
+            "anchor_id": "ct:NCT05081115",
+            "nct_id": "NCT05081115",
+            "brief_title": "Stress Echo 2030: the Novel ABCDE-(FGLPR) Protocol to Define the Future of Imaging",
+            "official_title": "The International Stress Echo Study to to Define the Future of Imaging",
+            "title": "Stress Echo 2030: the Novel ABCDE-(FGLPR) Protocol to Define the Future of Imaging",
+            "interventions": [
+              "ABCDE-Stress Echo",
+              "SE diastolic assessment",
+              "SE Right ventricular function assessment",
+              "SE in heart donors"
+            ],
+            "sponsor": "Fatebenefratelli Hospital",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT03228459",
+              "The ILERVAS Project: Assessing the Prevalence of Subclinical Vascular Disease and Hidden Kidney Disease"
+            ],
+            "anchor_id": "ct:NCT03228459",
+            "nct_id": "NCT03228459",
+            "phases": [
+              "PHASE_NA"
+            ],
+            "brief_title": "The ILERVAS Project: Assessing the Prevalence of Subclinical Vascular Disease and Hidden Kidney Disease",
+            "official_title": "Randomized Intervention Study to Assess the Prevalence of Subclinical Vascular Disease and Hidden Kidney Disease and Its Impact on Morbidity and Mortality: The ILERVAS Project",
+            "title": "The ILERVAS Project: Assessing the Prevalence of Subclinical Vascular Disease and Hidden Kidney Disease",
+            "interventions": [
+              "Dried blood spot test",
+              "Urine test",
+              "Artery ultrasound",
+              "Ankle-brachial index",
+              "Spirometry",
+              "Determination of advanced glycation-end products",
+              "Atrial fibrillation screening",
+              "Biological sample collection",
+              "Result and recommendation report",
+              "Pulse wave velocity"
+            ],
+            "sponsor": "Institut de Recerca Biomèdica de Lleida",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT02208869",
+              "Russian Familial Hypercholesterolemia Registry"
+            ],
+            "anchor_id": "ct:NCT02208869",
+            "nct_id": "NCT02208869",
+            "brief_title": "Russian Familial Hypercholesterolemia Registry",
+            "official_title": "Prospective Russian Study Evaluating the Extent of Underdiagnosed and Undertreated of Familial Hypercholesterolaemia in the Population",
+            "title": "Russian Familial Hypercholesterolemia Registry",
+            "sponsor": "Russian Cardiology Research and Production Center",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "Evaluation of Thyroid Function, Lipid Profile, and Uric Acid Levels in Hemodialysis Patients",
+              "NCT07157267"
+            ],
+            "anchor_id": "ct:NCT07157267",
+            "nct_id": "NCT07157267",
+            "brief_title": "Evaluation of Thyroid Function, Lipid Profile, and Uric Acid Levels in Hemodialysis Patients",
+            "official_title": "Evaluation of Thyroid Function, Lipid Profile, and Uric Acid Levels in Patients Undergoing Hemodialysis Prevalence in Assiut University Hospital",
+            "title": "Evaluation of Thyroid Function, Lipid Profile, and Uric Acid Levels in Hemodialysis Patients",
+            "sponsor": "Assiut University",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT02698618",
+              "PRotective Effect on the Coronary Microcirculation of Patients With DIabetes by Clopidogrel or Ticagrelor"
+            ],
+            "anchor_id": "ct:NCT02698618",
+            "nct_id": "NCT02698618",
+            "phases": [
+              "PHASE4"
+            ],
+            "brief_title": "PRotective Effect on the Coronary Microcirculation of Patients With DIabetes by Clopidogrel or Ticagrelor",
+            "official_title": "PRotective Effect on the Coronary Microcirculation of Patients With DIabetes by Clopidogrel or Ticagrelor",
+            "title": "PRotective Effect on the Coronary Microcirculation of Patients With DIabetes by Clopidogrel or Ticagrelor",
+            "interventions": [
+              "Diagnostic",
+              "Randomization",
+              "PCI"
+            ],
+            "sponsor": "Fundacion Investigacion Interhospitalaria Cardiovascular",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT05772169",
+              "Study to Determine the Prevalence of Hypercortisolism in Patients With Type 2 Diabetes and Treatment With Korlym® (Mifepristone) (CATALYST)"
+            ],
+            "anchor_id": "ct:NCT05772169",
+            "nct_id": "NCT05772169",
+            "phases": [
+              "PHASE4"
+            ],
+            "brief_title": "Study to Determine the Prevalence of Hypercortisolism in Patients With Type 2 Diabetes and Treatment With Korlym® (Mifepristone) (CATALYST)",
+            "official_title": "Study of Hypercortisolism in Patients With Difficult to Control Type 2 Diabetes Despite Receiving Standard-of-Care Therapies: Prevalence and Treatment With Korlym® (Mifepristone) (CATALYST)",
+            "title": "Study to Determine the Prevalence of Hypercortisolism in Patients With Type 2 Diabetes and Treatment With Korlym® (Mifepristone) (CATALYST)",
+            "interventions": [
+              "Mifepristone 300 MG [Korlym]",
+              "Placebo for mifepristone"
+            ],
+            "sponsor": "Corcept Therapeutics",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT06714786",
+              "Observational Study of Eating Behavior in Patients With Diabetes Mellitus and Obesity Undergoing Liver Transplantation"
+            ],
+            "anchor_id": "ct:NCT06714786",
+            "nct_id": "NCT06714786",
+            "brief_title": "Observational Study of Eating Behavior in Patients With Diabetes Mellitus and Obesity Undergoing Liver Transplantation",
+            "official_title": "Observational Study on Prevalence of Eating Behavior in Adult Patients With Diabetes Mellitus and/or Obesity, Listed or Already Undergoing Liver Transplantation",
+            "title": "Observational Study of Eating Behavior in Patients With Diabetes Mellitus and Obesity Undergoing Liver Transplantation",
+            "sponsor": "IRCCS Azienda Ospedaliero-Universitaria di Bologna",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT05851820",
+              "Prevalence and Impact of Diabetes Mellitus in Hospitalized COVID-19 Patients in a Tunisian Center"
+            ],
+            "anchor_id": "ct:NCT05851820",
+            "nct_id": "NCT05851820",
+            "brief_title": "Prevalence and Impact of Diabetes Mellitus in Hospitalized COVID-19 Patients in a Tunisian Center",
+            "official_title": "Prevalence and Impact of Diabetes Mellitus in Hospitalized COVID-19 Patients in a Tunisian Center: a Cross Sectional Study",
+            "title": "Prevalence and Impact of Diabetes Mellitus in Hospitalized COVID-19 Patients in a Tunisian Center",
+            "interventions": [
+              "comparison of outcomes/exposure"
+            ],
+            "sponsor": "Sana Rouis",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "COVID-19: Herd Immunity Study in the Czech Republic",
+              "NCT04401085"
+            ],
+            "anchor_id": "ct:NCT04401085",
+            "nct_id": "NCT04401085",
+            "brief_title": "COVID-19: Herd Immunity Study in the Czech Republic",
+            "official_title": "Herd Immunity Study SARS-CoV-2-CZ-Preval",
+            "title": "COVID-19: Herd Immunity Study in the Czech Republic",
+            "interventions": [
+              "SARS-CoV-2 diagnostic rapid test",
+              "Quantitative analysis of SARS-CoV-2 antibodies"
+            ],
+            "sponsor": "Institute of Health Information and Statistics of the Czech Republic",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "Hyperglycemia in the Intensive Care Unit, a Prevalence Study",
+              "NCT00854347"
+            ],
+            "anchor_id": "ct:NCT00854347",
+            "nct_id": "NCT00854347",
+            "brief_title": "Hyperglycemia in the Intensive Care Unit, a Prevalence Study",
+            "official_title": "Hyperglycemia in the Intensive Care Unit Marker of Diabetes or Pre-Diabetes ?",
+            "title": "Hyperglycemia in the Intensive Care Unit, a Prevalence Study",
+            "sponsor": "Université de Montréal",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "Assessment of Renal Function in Adults Born Preterm: The HAPI-Kidney Study",
+              "NCT04735315"
+            ],
+            "anchor_id": "ct:NCT04735315",
+            "nct_id": "NCT04735315",
+            "brief_title": "Assessment of Renal Function in Adults Born Preterm: The HAPI-Kidney Study",
+            "official_title": "Assessment of Renal Function in Adults Born Preterm: The HAPI-Kidney Study",
+            "title": "Assessment of Renal Function in Adults Born Preterm: The HAPI-Kidney Study",
+            "interventions": [
+              "Preterm birth"
+            ],
+            "sponsor": "St. Justine's Hospital",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT06336239",
+              "PrevaLence of Albuminuria in Patients With CARdiovascular Disease and Type 2 Diabetes Mellitus in China: a National Cross-sectional Study"
+            ],
+            "anchor_id": "ct:NCT06336239",
+            "nct_id": "NCT06336239",
+            "brief_title": "PrevaLence of Albuminuria in Patients With CARdiovascular Disease and Type 2 Diabetes Mellitus in China: a National Cross-sectional Study",
+            "official_title": "PrevaLence of Albuminuria in Patients With CARdiovascular Disease and Type 2 Diabetes Mellitus in China: a National Cross-sectional Study",
+            "title": "PrevaLence of Albuminuria in Patients With CARdiovascular Disease and Type 2 Diabetes Mellitus in China: a National Cross-sectional Study",
+            "sponsor": "Beijing Anzhen Hospital",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "An Observational Study to Assess the Prevalence of Heart Failure in Type 2 Diabetes Patients",
+              "NCT04072523"
+            ],
+            "anchor_id": "ct:NCT04072523",
+            "nct_id": "NCT04072523",
+            "brief_title": "An Observational Study to Assess the Prevalence of Heart Failure in Type 2 Diabetes Patients",
+            "official_title": "An Observational, Cross Sectional Study to Assess the Prevalence of Heart Failure in Type 2 Diabetes Patients in India",
+            "title": "An Observational Study to Assess the Prevalence of Heart Failure in Type 2 Diabetes Patients",
+            "sponsor": "AstraZeneca",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "Gender Differences in Prevalence of Undiagnosed Diabetes in ACS",
+              "NCT00589459"
+            ],
+            "anchor_id": "ct:NCT00589459",
+            "nct_id": "NCT00589459",
+            "brief_title": "Gender Differences in Prevalence of Undiagnosed Diabetes in ACS",
+            "official_title": "A Pilot Study of Gender Differences in the Prevalence of Undiagnosed Diabetes in Acute Coronary Syndromes (ACS)",
+            "title": "Gender Differences in Prevalence of Undiagnosed Diabetes in ACS",
+            "sponsor": "Yale University",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "Durban Diabetes Study:A Study of the Epidemiology of Diabetes Mellitus in Urban South Africans of African Descent (DDS)",
+              "NCT02416440"
+            ],
+            "anchor_id": "ct:NCT02416440",
+            "nct_id": "NCT02416440",
+            "brief_title": "Durban Diabetes Study:A Study of the Epidemiology of Diabetes Mellitus in Urban South Africans of African Descent (DDS)",
+            "official_title": "Durban Diabetes Study: A Population Based Cross-sectional Study of the Epidemiology of Diabetes Mellitus in Urban South Africans of African Descent",
+            "title": "Durban Diabetes Study:A Study of the Epidemiology of Diabetes Mellitus in Urban South Africans of African Descent (DDS)",
+            "interventions": [
+              "blood sample"
+            ],
+            "sponsor": "University of KwaZulu",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "Diabetic Nephropathy in People With Diabetes. Prevalence and Predictive Factors",
+              "NCT04916132"
+            ],
+            "anchor_id": "ct:NCT04916132",
+            "nct_id": "NCT04916132",
+            "brief_title": "Diabetic Nephropathy in People With Diabetes. Prevalence and Predictive Factors",
+            "official_title": "Biopsy-proven Diabetic Nephropathy in People With Type 2 Diabetes. Prevalence and Predictive Factors",
+            "title": "Diabetic Nephropathy in People With Diabetes. Prevalence and Predictive Factors",
+            "interventions": [
+              "Kidney Biopsy"
+            ],
+            "sponsor": "Herlev Hospital",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT01277432",
+              "Prevalence Study of Depression in Chinese Patients With Type 2 Diabetes (HK13)"
+            ],
+            "anchor_id": "ct:NCT01277432",
+            "nct_id": "NCT01277432",
+            "brief_title": "Prevalence Study of Depression in Chinese Patients With Type 2 Diabetes (HK13)",
+            "official_title": "A Multicentre Study to Investigate the Prevalence and Factors Associated With Depression in Chinese Patients With Type 2 Diabetes",
+            "title": "Prevalence Study of Depression in Chinese Patients With Type 2 Diabetes (HK13)",
+            "interventions": [
+              "Psychiatrist Interview",
+              "Depression screening - control"
+            ],
+            "sponsor": "Chinese University of Hong Kong",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT05754944",
+              "Study of Peripheral Arterial Disease (PAD) in People With Cancer Who Will Be Having Surgery"
+            ],
+            "anchor_id": "ct:NCT05754944",
+            "nct_id": "NCT05754944",
+            "brief_title": "Study of Peripheral Arterial Disease (PAD) in People With Cancer Who Will Be Having Surgery",
+            "official_title": "Impact and Prevalence of PAD on Cancer Patients at High-risk for PAD Going to Surgery",
+            "title": "Study of Peripheral Arterial Disease (PAD) in People With Cancer Who Will Be Having Surgery",
+            "interventions": [
+              "ABI/TBI",
+              "Questionnaires"
+            ],
+            "sponsor": "Memorial Sloan Kettering Cancer Center",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT05303051",
+              "Validation of the Diabetes Deep Neural Network Score for Diabetes Mellitus Screening"
+            ],
+            "anchor_id": "ct:NCT05303051",
+            "nct_id": "NCT05303051",
+            "phases": [
+              "PHASE_NA"
+            ],
+            "brief_title": "Validation of the Diabetes Deep Neural Network Score for Diabetes Mellitus Screening",
+            "official_title": "Validation of the Diabetes Deep Neural Network Score for Diabetes Mellitus Screening",
+            "title": "Validation of the Diabetes Deep Neural Network Score for Diabetes Mellitus Screening",
+            "interventions": [
+              "Application Validation"
+            ],
+            "sponsor": "University of California, San Francisco",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT06814600",
+              "Prevalence of Non-Alcoholic Fatty Liver Disease in Inflammatory Bowel Disease Patients"
+            ],
+            "anchor_id": "ct:NCT06814600",
+            "nct_id": "NCT06814600",
+            "brief_title": "Prevalence of Non-Alcoholic Fatty Liver Disease in Inflammatory Bowel Disease Patients",
+            "official_title": "Prevalence of Non-Alcoholic Fatty Liver Disease in Inflammatory Bowel Disease Patients: A Prospective Monocentric Study",
+            "title": "Prevalence of Non-Alcoholic Fatty Liver Disease in Inflammatory Bowel Disease Patients",
+            "interventions": [
+              "Transient elastometry"
+            ],
+            "sponsor": "Centre Hospitalier Universitaire Saint Pierre",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT05597709",
+              "Prevalence of MAFLD in Patients With Type 2 Diabetes in Jiangsu Province of China"
+            ],
+            "anchor_id": "ct:NCT05597709",
+            "nct_id": "NCT05597709",
+            "brief_title": "Prevalence of MAFLD in Patients With Type 2 Diabetes in Jiangsu Province of China",
+            "official_title": "Prevalence of Metabolic Associated Fatty Liver Disease in Patients With Type 2 Diabetes in Jiangsu Province of China: a Prospective, Multicenter, Real-world Study",
+            "title": "Prevalence of MAFLD in Patients With Type 2 Diabetes in Jiangsu Province of China",
+            "interventions": [
+              "Ultrasound attenuation parameter measurement, fasting blood glucose and fasting insulin determination"
+            ],
+            "sponsor": "Wuxi Hisky Medical Technology Co Ltd",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT05038501",
+              "Prevalence of Comorbidities in Patients Undergoing Oncosurgeries at Tertiary Cancer Institute in North India."
+            ],
+            "anchor_id": "ct:NCT05038501",
+            "nct_id": "NCT05038501",
+            "brief_title": "Prevalence of Comorbidities in Patients Undergoing Oncosurgeries at Tertiary Cancer Institute in North India.",
+            "official_title": "Prevalence of Comorbidities in Patients Undergoing Oncosurgeries at Tertiary Cancer Institute in North India",
+            "title": "Prevalence of Comorbidities in Patients Undergoing Oncosurgeries at Tertiary Cancer Institute in North India.",
+            "interventions": [
+              "To study comorbidities in patients undergoing Oncosurgeries"
+            ],
+            "sponsor": "Rajiv Gandhi Cancer Institute & Research Center, India",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "Association Between Oral Lichen Planus and Thyroid Disease",
+              "NCT06550154"
+            ],
+            "anchor_id": "ct:NCT06550154",
+            "nct_id": "NCT06550154",
+            "brief_title": "Association Between Oral Lichen Planus and Thyroid Disease",
+            "official_title": "Association Between Oral Lichen Planus and Thyroid Disease: A Cross-sectional Study",
+            "title": "Association Between Oral Lichen Planus and Thyroid Disease",
+            "interventions": [
+              "Data collection"
+            ],
+            "sponsor": "University of Barcelona",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT04719026",
+              "PERIODONTAL HEALTH IN PATIENTS ACUTELY ADMITTED FOR MYOCARDIAL INFARCTION: A CASE CONTROL STUDY"
+            ],
+            "anchor_id": "ct:NCT04719026",
+            "nct_id": "NCT04719026",
+            "brief_title": "PERIODONTAL HEALTH IN PATIENTS ACUTELY ADMITTED FOR MYOCARDIAL INFARCTION: A CASE CONTROL STUDY",
+            "official_title": "PERIODONTAL HEALTH IN PATIENTS ACUTELY ADMITTED FOR MYOCARDIAL INFARCTION: A CASE CONTROL STUDY",
+            "title": "PERIODONTAL HEALTH IN PATIENTS ACUTELY ADMITTED FOR MYOCARDIAL INFARCTION: A CASE CONTROL STUDY",
+            "interventions": [
+              "Full-mouth periodontal examination using computerised Florida probe"
+            ],
+            "sponsor": "University of Aberdeen",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "CAPTIVATE India - A Study to Assess the Prevalence of Cardiovascular Disease (CVD) in Individuals With Type 2 Diabetes Mellitus (T2DM) in India",
+              "NCT07121114"
+            ],
+            "anchor_id": "ct:NCT07121114",
+            "nct_id": "NCT07121114",
+            "brief_title": "CAPTIVATE India - A Study to Assess the Prevalence of Cardiovascular Disease (CVD) in Individuals With Type 2 Diabetes Mellitus (T2DM) in India",
+            "official_title": "CAPTIVATE India - A Cross-Sectional Study to Assess the Prevalence of Cardiovascular Disease (CVD) in Individuals With Type 2 Diabetes Mellitus (T2DM) in India.",
+            "title": "CAPTIVATE India - A Study to Assess the Prevalence of Cardiovascular Disease (CVD) in Individuals With Type 2 Diabetes Mellitus (T2DM) in India",
+            "interventions": [
+              "No treatment given"
+            ],
+            "sponsor": "Novo Nordisk A/S",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT04595474",
+              "Prevalence of NAFLD and Advanced Fibrosis in Patients With Type 1 Diabetes"
+            ],
+            "anchor_id": "ct:NCT04595474",
+            "nct_id": "NCT04595474",
+            "brief_title": "Prevalence of NAFLD and Advanced Fibrosis in Patients With Type 1 Diabetes",
+            "official_title": "Assessing the Prevalence of Nonalcoholic Fatty Liver Disease and Advanced Fibrosis in Patients With Type 1 Diabetes Using Vibration-Controlled Transient Elastography and Noninvasive Scores",
+            "title": "Prevalence of NAFLD and Advanced Fibrosis in Patients With Type 1 Diabetes",
+            "interventions": [
+              "Transient Elastography"
+            ],
+            "sponsor": "Joslin Diabetes Center",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT03665090",
+              "Shanghai Cohort Study of Diabetic Eye Disease"
+            ],
+            "anchor_id": "ct:NCT03665090",
+            "nct_id": "NCT03665090",
+            "brief_title": "Shanghai Cohort Study of Diabetic Eye Disease",
+            "official_title": "A Three-year Community-based Study in Diabetes: The Shanghai Cohort Study of Diabetic Eye Disease",
+            "title": "Shanghai Cohort Study of Diabetic Eye Disease",
+            "interventions": [
+              "Diabetic eye disease screening"
+            ],
+            "sponsor": "Shanghai Eye Disease Prevention and Treatment Center",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "An Observational, Cross Sectional Study to Assess the Prevalence of Chronic Kidney Disease (CKD) in Type 2 Diabetes Patients",
+              "NCT02208921"
+            ],
+            "anchor_id": "ct:NCT02208921",
+            "nct_id": "NCT02208921",
+            "brief_title": "An Observational, Cross Sectional Study to Assess the Prevalence of Chronic Kidney Disease (CKD) in Type 2 Diabetes Patients",
+            "official_title": "An Observational, Cross Sectional Study to Assess the Prevalence of Chronic Kidney Disease in Type 2 Diabetes Patients in India",
+            "title": "An Observational, Cross Sectional Study to Assess the Prevalence of Chronic Kidney Disease (CKD) in Type 2 Diabetes Patients",
+            "sponsor": "AstraZeneca",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "Multinational Point Prevalence Study on the Management of Diabesity in Hospitals",
+              "NCT06680674"
+            ],
+            "anchor_id": "ct:NCT06680674",
+            "nct_id": "NCT06680674",
+            "brief_title": "Multinational Point Prevalence Study on the Management of Diabesity in Hospitals",
+            "official_title": "Multinational Cross-sectional Review of Diabetes and Obesity Management in Hospitals Across Europe: The DIABESITY Survey",
+            "title": "Multinational Point Prevalence Study on the Management of Diabesity in Hospitals",
+            "interventions": [
+              "Routine care for people with diabetes, with or without obesity, in the hospital setting"
+            ],
+            "sponsor": "Medical University of Vienna",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "Complications in Central American Diabetic Patients: Historic Cohort",
+              "NCT02486237"
+            ],
+            "anchor_id": "ct:NCT02486237",
+            "nct_id": "NCT02486237",
+            "brief_title": "Complications in Central American Diabetic Patients: Historic Cohort",
+            "official_title": "Complications in Central American Diabetic Patients: Historic Cohort",
+            "title": "Complications in Central American Diabetic Patients: Historic Cohort",
+            "interventions": [
+              "None, observational study"
+            ],
+            "sponsor": "Clínica Los Yoses",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT07003152",
+              "Relationship Between Hydrocephalus and Endolymphatic Hydrops"
+            ],
+            "anchor_id": "ct:NCT07003152",
+            "nct_id": "NCT07003152",
+            "brief_title": "Relationship Between Hydrocephalus and Endolymphatic Hydrops",
+            "official_title": "Prevalence of Endolymphatic Hydrops Among Patients With Hydrocephalus",
+            "title": "Relationship Between Hydrocephalus and Endolymphatic Hydrops",
+            "interventions": [
+              "diagnosis of endolymphatic hydrops in hydrocephalus patients"
+            ],
+            "sponsor": "Sohag University",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT03670797",
+              "Prevalence Of Oral Mucosal Alterations In Diabetes Mellitus Type2"
+            ],
+            "anchor_id": "ct:NCT03670797",
+            "nct_id": "NCT03670797",
+            "brief_title": "Prevalence Of Oral Mucosal Alterations In Diabetes Mellitus Type2",
+            "official_title": "Prevalence Of Oral Mucosal Alterations In a Sample of Egyptian Patients With Diabetes Mellitus Type2: A Hospital Based Cross Sectional Study",
+            "title": "Prevalence Of Oral Mucosal Alterations In Diabetes Mellitus Type2",
+            "sponsor": "Alaa Mahmoud abd El kader",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "A Pilot Study of Small Fiber Neuropathy Prevalence in Fibromyalgia Patients Compared to Healthy Subjects Using Sudoscan®",
+              "NCT03347669"
+            ],
+            "anchor_id": "ct:NCT03347669",
+            "nct_id": "NCT03347669",
+            "phases": [
+              "PHASE_NA"
+            ],
+            "brief_title": "A Pilot Study of Small Fiber Neuropathy Prevalence in Fibromyalgia Patients Compared to Healthy Subjects Using Sudoscan®",
+            "official_title": "A Pilot Study of Small Fiber Neuropathy Prevalence in Fibromyalgia Patients Compared to Healthy Subjects Using Sudoscan®",
+            "title": "A Pilot Study of Small Fiber Neuropathy Prevalence in Fibromyalgia Patients Compared to Healthy Subjects Using Sudoscan®",
+            "interventions": [
+              "Sudoscan®"
+            ],
+            "sponsor": "University Hospital, Clermont-Ferrand",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT04327622",
+              "Prevalence and Risk Evaluation of Diabetic Complications of the Foot in A Large Canadian Population"
+            ],
+            "anchor_id": "ct:NCT04327622",
+            "nct_id": "NCT04327622",
+            "brief_title": "Prevalence and Risk Evaluation of Diabetic Complications of the Foot in A Large Canadian Population",
+            "official_title": "Prevalence and Risk Evaluation of Diabetic Complications of the Foot in A Large Canadian Population",
+            "title": "Prevalence and Risk Evaluation of Diabetic Complications of the Foot in A Large Canadian Population",
+            "sponsor": "LMC Diabetes & Endocrinology Ltd.",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT03069196",
+              "Prevalence and Incidence of Complications of Type One Diabetes in PUne At a Tertiary Care CentRE"
+            ],
+            "anchor_id": "ct:NCT03069196",
+            "nct_id": "NCT03069196",
+            "brief_title": "Prevalence and Incidence of Complications of Type One Diabetes in PUne At a Tertiary Care CentRE",
+            "official_title": "A Study to Assess Prevalence and Incidence of Long-term Complications of Type 1 Diabetes in a Tertiary Clinic in Pune.",
+            "title": "Prevalence and Incidence of Complications of Type One Diabetes in PUne At a Tertiary Care CentRE",
+            "sponsor": "Kem Hospital, Pune, India",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "An International Chart Review and Survey for the Prevalence and Clinical Management of Atherosclerotic Cardiovascular Diseases in Patients With Type 2 Diabetes Across Countries in the Middle East and Africa",
+              "NCT05317845"
+            ],
+            "anchor_id": "ct:NCT05317845",
+            "nct_id": "NCT05317845",
+            "brief_title": "An International Chart Review and Survey for the Prevalence and Clinical Management of Atherosclerotic Cardiovascular Diseases in Patients With Type 2 Diabetes Across Countries in the Middle East and Africa",
+            "official_title": "A Multi-center, Cross-sectional Chart Review and Survey to Capture the Prevalence and Clinical Management of Atherosclerotic Cardiovascular Diseases in Patients With Type 2 Diabetes Across Countries in the Middle East and Africa",
+            "title": "An International Chart Review and Survey for the Prevalence and Clinical Management of Atherosclerotic Cardiovascular Diseases in Patients With Type 2 Diabetes Across Countries in the Middle East and Africa",
+            "interventions": [
+              "No treatment given"
+            ],
+            "sponsor": "Novo Nordisk A/S",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "An International Survey of the Occurrence of Diseases That Affects the Heart and Blood Vessels Among People With Type 2 Diabetes",
+              "NCT03786406"
+            ],
+            "anchor_id": "ct:NCT03786406",
+            "nct_id": "NCT03786406",
+            "brief_title": "An International Survey of the Occurrence of Diseases That Affects the Heart and Blood Vessels Among People With Type 2 Diabetes",
+            "official_title": "A Non-interventional Cross-sectional Study to Capture the Prevalence of Cardiovascular Disease in Patients With Type 2 Diabetes in Selected Countries in Europe",
+            "title": "An International Survey of the Occurrence of Diseases That Affects the Heart and Blood Vessels Among People With Type 2 Diabetes",
+            "interventions": [
+              "No treatment given"
+            ],
+            "sponsor": "Novo Nordisk A/S",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT03666117",
+              "Prevalence of Hepatomegaly in Children and Adolescents With Type 1 Diabetes Mellitus"
+            ],
+            "anchor_id": "ct:NCT03666117",
+            "nct_id": "NCT03666117",
+            "brief_title": "Prevalence of Hepatomegaly in Children and Adolescents With Type 1 Diabetes Mellitus",
+            "official_title": "Prevalence of Hepatomegaly in Children and Adolescents With Type 1 Diabetes Mellitus Attending Assiut University Children Hospital",
+            "title": "Prevalence of Hepatomegaly in Children and Adolescents With Type 1 Diabetes Mellitus",
+            "sponsor": "Assiut University",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT06876090",
+              "Sarcopenia in Gestational Diabetes"
+            ],
+            "anchor_id": "ct:NCT06876090",
+            "nct_id": "NCT06876090",
+            "brief_title": "Sarcopenia in Gestational Diabetes",
+            "official_title": "Sarcopenia in Gestational Diabetes: The SiGnal-D Study",
+            "title": "Sarcopenia in Gestational Diabetes",
+            "interventions": [
+              "Sarcopenia tests (for muscle mass, muscle function, physical performance)",
+              "Oral Glucose Tolerance Test",
+              "Montreal Cognitive Assessment"
+            ],
+            "sponsor": "Istituto di Neuroscienze Consiglio Nazionale delle Ricerche",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "Dietary Intervention, Gestational Weight Gain and Gestational Diabetes.",
+              "NCT03191331"
+            ],
+            "anchor_id": "ct:NCT03191331",
+            "nct_id": "NCT03191331",
+            "phases": [
+              "PHASE_NA"
+            ],
+            "brief_title": "Dietary Intervention, Gestational Weight Gain and Gestational Diabetes.",
+            "official_title": "Intervention Study on Dietary Changes in Relation to Weight Gain and Prevalence of Gestational Diabetes During Pregnancy",
+            "title": "Dietary Intervention, Gestational Weight Gain and Gestational Diabetes.",
+            "interventions": [
+              "Dietary intervention"
+            ],
+            "sponsor": "University of Eastern Finland",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NAFLD Among Patients With Chronic Kidney Disease and the Effect of Kidney Transplantation",
+              "NCT03866421"
+            ],
+            "anchor_id": "ct:NCT03866421",
+            "nct_id": "NCT03866421",
+            "brief_title": "NAFLD Among Patients With Chronic Kidney Disease and the Effect of Kidney Transplantation",
+            "official_title": "Prevalence and Metabolic Impact of Non-alcoholic Fatty Liver Disease in Patients With Chronic Kidney Disease and the Effect of Kidney Transplantation on These Parameters",
+            "title": "NAFLD Among Patients With Chronic Kidney Disease and the Effect of Kidney Transplantation",
+            "interventions": [
+              "MR spectroscopy of the liver",
+              "Fibroscan of the liver",
+              "Continuous glucose monitoring (CGM) for four days.",
+              "Oral glucose tolerance test (OGTT)",
+              "Intra venous glucose infusion (IIGI)",
+              "Dual Energy X-ray Absorptiometry (DEXA) scan",
+              "Blood samples",
+              "Clinical and demographic data"
+            ],
+            "sponsor": "Rigshospitalet, Denmark",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "Diabetic Retinopathy Prevalence And Risk Factors",
+              "NCT07468058"
+            ],
+            "anchor_id": "ct:NCT07468058",
+            "nct_id": "NCT07468058",
+            "brief_title": "Diabetic Retinopathy Prevalence And Risk Factors",
+            "official_title": "Diabetic Retinopathy Prevalence And Risk Factors From A Hospital - Based Cohort In Central Vietnam",
+            "title": "Diabetic Retinopathy Prevalence And Risk Factors",
+            "interventions": [
+              "fundus examination and optical coherence tomography (OCT)"
+            ],
+            "sponsor": "Da Nang Family General Hospital",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT00542334",
+              "Prevalence of Nocturnal Hypoglycemia in Children on a Type 1 Diabetes (TID) Insulin Regimen Using a Continuous Glucose Monitoring System (CGMS)"
+            ],
+            "anchor_id": "ct:NCT00542334",
+            "nct_id": "NCT00542334",
+            "brief_title": "Prevalence of Nocturnal Hypoglycemia in Children on a Type 1 Diabetes (TID) Insulin Regimen Using a Continuous Glucose Monitoring System (CGMS)",
+            "official_title": "Prevalence of Nocturnal Hypoglycemia in Children and Adolescents With Type 1 Diabetes on a Standard (TID) Insulin Regimen Using a Continuous Glucose Monitoring System (CGMS) - A Pilot Study",
+            "title": "Prevalence of Nocturnal Hypoglycemia in Children on a Type 1 Diabetes (TID) Insulin Regimen Using a Continuous Glucose Monitoring System (CGMS)",
+            "sponsor": "Children's Hospital of Eastern Ontario",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT01512030",
+              "Prevalence of Peripheral Neuropathy in Children and Adolescents With Type I Diabetes Mellitus: a Prospective Study"
+            ],
+            "anchor_id": "ct:NCT01512030",
+            "nct_id": "NCT01512030",
+            "brief_title": "Prevalence of Peripheral Neuropathy in Children and Adolescents With Type I Diabetes Mellitus: a Prospective Study",
+            "official_title": "Prospective Study of Peripherla Neuropathy in Diabetic Type I",
+            "title": "Prevalence of Peripheral Neuropathy in Children and Adolescents With Type I Diabetes Mellitus: a Prospective Study",
+            "sponsor": "Landeskrankenhaus Feldkirch",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "Central Sensitization and Neuropathic Pain in Cervicogenic Headache",
+              "NCT07292181"
+            ],
+            "anchor_id": "ct:NCT07292181",
+            "nct_id": "NCT07292181",
+            "brief_title": "Central Sensitization and Neuropathic Pain in Cervicogenic Headache",
+            "official_title": "Prevalence of Central Sensitization and Neuropathic Pain in Patients With Cervicogenic Headache: A Case-Control Study",
+            "title": "Central Sensitization and Neuropathic Pain in Cervicogenic Headache",
+            "interventions": [
+              "Clinical assessment with standardized questionnaires"
+            ],
+            "sponsor": "Gulseren Demir Karakilic",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT06065852",
+              "National Registry of Rare Kidney Diseases"
+            ],
+            "anchor_id": "ct:NCT06065852",
+            "nct_id": "NCT06065852",
+            "brief_title": "National Registry of Rare Kidney Diseases",
+            "official_title": "National Registry of Rare Kidney Diseases (RaDaR)",
+            "title": "National Registry of Rare Kidney Diseases",
+            "sponsor": "UK Kidney Association",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT06174129",
+              "Prevalence and Factors Associated With Atrial Fibrillation in Patients With Type 2 Diabetes"
+            ],
+            "anchor_id": "ct:NCT06174129",
+            "nct_id": "NCT06174129",
+            "brief_title": "Prevalence and Factors Associated With Atrial Fibrillation in Patients With Type 2 Diabetes",
+            "official_title": "Prevalence and Factors Associated With Atrial Fibrillation in Patients With Type 2 Diabetes: A Case-Control Study",
+            "title": "Prevalence and Factors Associated With Atrial Fibrillation in Patients With Type 2 Diabetes",
+            "interventions": [
+              "Routine examinations"
+            ],
+            "sponsor": "Burapha University",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "Detection of Ischemia in Asymptomatic Diabetics",
+              "NCT00769275"
+            ],
+            "anchor_id": "ct:NCT00769275",
+            "nct_id": "NCT00769275",
+            "brief_title": "Detection of Ischemia in Asymptomatic Diabetics",
+            "official_title": "Detection of Ischemia in Asymptomatic Diabetics",
+            "title": "Detection of Ischemia in Asymptomatic Diabetics",
+            "sponsor": "Yale University",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT04784650",
+              "The Prevalence of Foot Complaints/Problems and Ulcers in a Pre-dialysis Population"
+            ],
+            "anchor_id": "ct:NCT04784650",
+            "nct_id": "NCT04784650",
+            "phases": [
+              "PHASE_NA"
+            ],
+            "brief_title": "The Prevalence of Foot Complaints/Problems and Ulcers in a Pre-dialysis Population",
+            "official_title": "The Prevalence of Foot Complaints/Problems and Ulcers in a Pre-dialysis Population: a Cross-sectional Study",
+            "title": "The Prevalence of Foot Complaints/Problems and Ulcers in a Pre-dialysis Population",
+            "interventions": [
+              "Pre-dialysis population"
+            ],
+            "sponsor": "Universitaire Ziekenhuizen KU Leuven",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT07259187",
+              "Retrospective Analysis of Complications and Survival of Teeth Restored Following Crown Lengthening"
+            ],
+            "anchor_id": "ct:NCT07259187",
+            "nct_id": "NCT07259187",
+            "brief_title": "Retrospective Analysis of Complications and Survival of Teeth Restored Following Crown Lengthening",
+            "official_title": "A Retrospective Analysis of Complications and Survival of Teeth Restored With Single Crowns Following Crown Lengthening",
+            "title": "Retrospective Analysis of Complications and Survival of Teeth Restored Following Crown Lengthening",
+            "interventions": [
+              "Periapical radiograph"
+            ],
+            "sponsor": "Mohammed Bin Rashid University of Medicine and Health Sciences",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT06041360",
+              "Prevalence of Peripheral Neuropathy Among Patients With Auditory Neuropathy"
+            ],
+            "anchor_id": "ct:NCT06041360",
+            "nct_id": "NCT06041360",
+            "brief_title": "Prevalence of Peripheral Neuropathy Among Patients With Auditory Neuropathy",
+            "official_title": "Prevalence of Peripheral Neuropathy Among Patients With Auditory Neuropathy",
+            "title": "Prevalence of Peripheral Neuropathy Among Patients With Auditory Neuropathy",
+            "interventions": [
+              "Pure tone audiometry PTA ,Speech audiometry ,Otoacoustic emission,Auditory evoked potentials including (ABR)."
+            ],
+            "sponsor": "Sohag University",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT06067139",
+              "Sleep for Health Study on the Effects of Cognitive Behavioral Therapy for Insomnia on Diabetes Risk"
+            ],
+            "anchor_id": "ct:NCT06067139",
+            "nct_id": "NCT06067139",
+            "phases": [
+              "PHASE_NA"
+            ],
+            "brief_title": "Sleep for Health Study on the Effects of Cognitive Behavioral Therapy for Insomnia on Diabetes Risk",
+            "official_title": "Sleep for Health: A Randomized Clinical Trial Examining the Effects of Cognitive Behavioral Therapy for Insomnia on Diabetes Risk",
+            "title": "Sleep for Health Study on the Effects of Cognitive Behavioral Therapy for Insomnia on Diabetes Risk",
+            "interventions": [
+              "SHUTi",
+              "Patient Education"
+            ],
+            "sponsor": "Kaiser Permanente",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "Effect of Inhaled Steroids on Glucose Regulation in Asthma Patients",
+              "NCT00959348"
+            ],
+            "anchor_id": "ct:NCT00959348",
+            "nct_id": "NCT00959348",
+            "brief_title": "Effect of Inhaled Steroids on Glucose Regulation in Asthma Patients",
+            "official_title": "The Effect of Inhaled Corticosteroids on the Risk of Diabetes, Impaired Glucose Tolerance and Characteristics of Glucose Regulation in Adults With Asthma : a Population Based Matched Controlled Study",
+            "title": "Effect of Inhaled Steroids on Glucose Regulation in Asthma Patients",
+            "sponsor": "The University of Hong Kong",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT05392166",
+              "Prevalence and Factors Associated With Pancreatic Enzyme Elevations Among Diabetic Children"
+            ],
+            "anchor_id": "ct:NCT05392166",
+            "nct_id": "NCT05392166",
+            "phases": [
+              "PHASE_NA"
+            ],
+            "brief_title": "Prevalence and Factors Associated With Pancreatic Enzyme Elevations Among Diabetic Children",
+            "official_title": "Prevalence and Factors Associated With Pancreatic Enzyme Elevations Among Children With Type 1 Diabetes Hospitalized With Diabetic Ketoacidosis",
+            "title": "Prevalence and Factors Associated With Pancreatic Enzyme Elevations Among Diabetic Children",
+            "interventions": [
+              "blood glucose, blood gases, serum electrolytes, HbA1c, complete blood count and serum creatinine. Serum calcium, serum amylase, serum lipase and serum triglycerides , abdominal ultrasound"
+            ],
+            "sponsor": "Sohag University",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT03362580",
+              "Prevalence and Risk Factors of Epiretinal Membrane in Diabetic and Non-diabetic Patients"
+            ],
+            "anchor_id": "ct:NCT03362580",
+            "nct_id": "NCT03362580",
+            "brief_title": "Prevalence and Risk Factors of Epiretinal Membrane in Diabetic and Non-diabetic Patients",
+            "official_title": "Prevalence and Risk Factors of Epiretinal Membrane in Diabetic and Non-diabetic Patients: a Prospective, Cross-sectional and Comparative Study",
+            "title": "Prevalence and Risk Factors of Epiretinal Membrane in Diabetic and Non-diabetic Patients",
+            "interventions": [
+              "Slit lamp examination",
+              "Undilated 7-field color fundus photography",
+              "Color scan",
+              "Spectral domain optical coherence tomography"
+            ],
+            "sponsor": "Laurence Postelmans",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "MASLD in Type 2 Diabetes in Primary Care - a Follow-up Study",
+              "NCT07312136"
+            ],
+            "anchor_id": "ct:NCT07312136",
+            "nct_id": "NCT07312136",
+            "brief_title": "MASLD in Type 2 Diabetes in Primary Care - a Follow-up Study",
+            "official_title": "Evaluating the Prevalence and Severity of MASLD in Primary Care - a Follow-up Study",
+            "title": "MASLD in Type 2 Diabetes in Primary Care - a Follow-up Study",
+            "sponsor": "Linkoeping University",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT06473584",
+              "Study of the Prevalence of Diabetes and Pre-diabetes in Réunion Island"
+            ],
+            "anchor_id": "ct:NCT06473584",
+            "nct_id": "NCT06473584",
+            "phases": [
+              "PHASE_NA"
+            ],
+            "brief_title": "Study of the Prevalence of Diabetes and Pre-diabetes in Réunion Island",
+            "official_title": "Study of the Prevalence of Diabetes and Pre-diabetes in Réunion Island",
+            "title": "Study of the Prevalence of Diabetes and Pre-diabetes in Réunion Island",
+            "interventions": [
+              "Diabetes detection"
+            ],
+            "sponsor": "Centre Hospitalier Universitaire de la Réunion",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "A Study of People With Type 2 Diabetes Who Have Diseases That Affect the Heart and Blood Vessels. The Study Will Also Look at the Treatment of a Group of These People in Hospitals in Portugal",
+              "NCT03797885"
+            ],
+            "anchor_id": "ct:NCT03797885",
+            "nct_id": "NCT03797885",
+            "brief_title": "A Study of People With Type 2 Diabetes Who Have Diseases That Affect the Heart and Blood Vessels. The Study Will Also Look at the Treatment of a Group of These People in Hospitals in Portugal",
+            "official_title": "An Observational Cross-sectional Study to Estimate the Prevalence of Cardiovascular Disease and CV Risk Factors in T2DM Patients Including a Retrospective Phase to Evaluate the Clinical Management of a Subgroup of Patients in the Hospital Setting in Portugal",
+            "title": "A Study of People With Type 2 Diabetes Who Have Diseases That Affect the Heart and Blood Vessels. The Study Will Also Look at the Treatment of a Group of These People in Hospitals in Portugal",
+            "interventions": [
+              "No treatment given"
+            ],
+            "sponsor": "Novo Nordisk A/S",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "Coronal and Radicular Caries Prevalence and Related Risk Factor in Diabetic Patient",
+              "NCT06701565"
+            ],
+            "anchor_id": "ct:NCT06701565",
+            "nct_id": "NCT06701565",
+            "brief_title": "Coronal and Radicular Caries Prevalence and Related Risk Factor in Diabetic Patient",
+            "official_title": "Coronal and Radicular Caries Prevalence With Related Risk Factors Among Middle Age Type II Diabetic Patients Attending National Institute of Diabetes and Endocrinology: a Hospital Based Cross Sectional Study",
+            "title": "Coronal and Radicular Caries Prevalence and Related Risk Factor in Diabetic Patient",
+            "sponsor": "Cairo University",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "Characteristics of NAFLD Among Type 2 Diabetes Patients",
+              "NCT04999124"
+            ],
+            "anchor_id": "ct:NCT04999124",
+            "nct_id": "NCT04999124",
+            "phases": [
+              "PHASE_NA"
+            ],
+            "brief_title": "Characteristics of NAFLD Among Type 2 Diabetes Patients",
+            "official_title": "Study of the Characteristics of Non-Alcoholic Fatty Liver Disease (NAFLD) in Type 2 Diabetes Mellitus Patients Followed in a Hospital Environment in Flanders, Belgium",
+            "title": "Characteristics of NAFLD Among Type 2 Diabetes Patients",
+            "interventions": [
+              "Screening and studying characteristics"
+            ],
+            "sponsor": "Ziekenhuis Oost-Limburg",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "Eating Disorders in Type 1 Insulin-dependent Diabetes Patients",
+              "NCT04506216"
+            ],
+            "anchor_id": "ct:NCT04506216",
+            "nct_id": "NCT04506216",
+            "phases": [
+              "PHASE_NA"
+            ],
+            "brief_title": "Eating Disorders in Type 1 Insulin-dependent Diabetes Patients",
+            "official_title": "Prevalence of Eating Disorders in Adult Patients With Type I Diabetes and Insulin Pump Treatment",
+            "title": "Eating Disorders in Type 1 Insulin-dependent Diabetes Patients",
+            "interventions": [
+              "cohort"
+            ],
+            "sponsor": "Icadom",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT07359768",
+              "Non-invasive Microvascular Assessment in Individuals at High Risk of Cardiovascular Disease From the SCAPIS2 Study"
+            ],
+            "anchor_id": "ct:NCT07359768",
+            "nct_id": "NCT07359768",
+            "brief_title": "Non-invasive Microvascular Assessment in Individuals at High Risk of Cardiovascular Disease From the SCAPIS2 Study",
+            "official_title": "SCAPIS 2 - Spectrum Study -CVD Risk Based on Microvascular Dysfunction",
+            "title": "Non-invasive Microvascular Assessment in Individuals at High Risk of Cardiovascular Disease From the SCAPIS2 Study",
+            "sponsor": "HJN Sverige AB/Neko Health",
+            "relevance_status": "직접 관련 여부 미확인"
+          },
+          {
+            "identifiers": [
+              "NCT04239521",
+              "The Epidemiology, Management, and the Associated Burden of Related Conditions in Alopecia Areata"
+            ],
+            "anchor_id": "ct:NCT04239521",
+            "nct_id": "NCT04239521",
+            "brief_title": "The Epidemiology, Management, and the Associated Burden of Related Conditions in Alopecia Areata",
+            "official_title": "The Epidemiology, Management, and the Associated Burden of Mental Health, Atopic and Autoimmune Conditions, and Common Infections in Alopecia Areata",
+            "title": "The Epidemiology, Management, and the Associated Burden of Related Conditions in Alopecia Areata",
+            "interventions": [
+              "Exposure of interest (studies 2 & 3)."
+            ],
+            "sponsor": "Momentum Data",
+            "relevance_status": "직접 관련 여부 미확인"
+          }
+        ]
+      },
+      "anchor_binding": {
+        "eligible": 78,
+        "assigned": 78,
+        "duplicate": 0,
+        "unassigned": 0
+      },
+      "counts": {
+        "returned": 78,
+        "parsed": 78,
+        "envelope": 78,
+        "rendered": 39,
+        "narrated": 39
+      },
+      "record_accounting": {
+        "received": 78,
+        "rendered": 39,
+        "omitted": 39,
+        "omitted_identifiers": [
+          "CAPTIVATE India - A Study to Assess the Prevalence of Cardiovascular Disease (CVD) in Individuals With Type 2 Diabetes Mellitus (T2DM) in India",
+          "NCT04595474",
+          "NCT03665090",
+          "An Observational, Cross Sectional Study to Assess the Prevalence of Chronic Kidney Disease (CKD) in Type 2 Diabetes Patients",
+          "Multinational Point Prevalence Study on the Management of Diabesity in Hospitals",
+          "Complications in Central American Diabetic Patients: Historic Cohort",
+          "NCT07003152",
+          "NCT03670797",
+          "A Pilot Study of Small Fiber Neuropathy Prevalence in Fibromyalgia Patients Compared to Healthy Subjects Using Sudoscan®",
+          "NCT04327622",
+          "NCT03069196",
+          "An International Chart Review and Survey for the Prevalence and Clinical Management of Atherosclerotic Cardiovascular Diseases in Patients With Type 2 Diabetes Across Countries in the Middle East and Africa",
+          "An International Survey of the Occurrence of Diseases That Affects the Heart and Blood Vessels Among People With Type 2 Diabetes",
+          "NCT03666117",
+          "NCT06876090",
+          "Dietary Intervention, Gestational Weight Gain and Gestational Diabetes.",
+          "NAFLD Among Patients With Chronic Kidney Disease and the Effect of Kidney Transplantation",
+          "Diabetic Retinopathy Prevalence And Risk Factors",
+          "NCT00542334",
+          "NCT01512030",
+          "Central Sensitization and Neuropathic Pain in Cervicogenic Headache",
+          "NCT06065852",
+          "NCT06174129",
+          "Detection of Ischemia in Asymptomatic Diabetics",
+          "NCT04784650",
+          "NCT07259187",
+          "NCT06041360",
+          "NCT06067139",
+          "Effect of Inhaled Steroids on Glucose Regulation in Asthma Patients",
+          "NCT05392166",
+          "NCT03362580",
+          "MASLD in Type 2 Diabetes in Primary Care - a Follow-up Study",
+          "NCT06473584",
+          "A Study of People With Type 2 Diabetes Who Have Diseases That Affect the Heart and Blood Vessels. The Study Will Also Look at the Treatment of a Group of These People in Hospitals in Portugal",
+          "Coronal and Radicular Caries Prevalence and Related Risk Factor in Diabetic Patient",
+          "Characteristics of NAFLD Among Type 2 Diabetes Patients",
+          "Eating Disorders in Type 1 Insulin-dependent Diabetes Patients",
+          "NCT07359768",
+          "NCT04239521"
+        ],
+        "omitted_identifiers_truncated": false,
+        "omitted_without_identifier": 0,
+        "identifier_limit": 200
+      },
+      "unused_count": 39,
+      "dropped_count": 0,
+      "drop_reasons": [
+        {
+          "stage": "render",
+          "count": 39,
+          "reason": "현재 답변 표면에 배치되지 않음",
+          "record_ids": [
+            "NCT07048717",
+            "NCT06445361",
+            "NCT01172093",
+            "NCT04927858",
+            "NCT01029392",
+            "NCT06422598",
+            "NCT07736872",
+            "NCT03826381",
+            "NCT07156370",
+            "NCT03243253",
+            "NCT01402362",
+            "NCT03811288",
+            "NCT02232503",
+            "NCT04482283",
+            "NCT04979377",
+            "NCT05081115",
+            "NCT03228459",
+            "NCT02208869",
+            "NCT07157267",
+            "NCT02698618",
+            "NCT05772169",
+            "NCT06714786",
+            "NCT05851820",
+            "NCT04401085",
+            "NCT00854347",
+            "NCT04735315",
+            "NCT06336239",
+            "NCT04072523",
+            "NCT00589459",
+            "NCT02416440",
+            "NCT04916132",
+            "NCT01277432",
+            "NCT05754944",
+            "NCT05303051",
+            "NCT06814600",
+            "NCT05597709",
+            "NCT05038501",
+            "NCT06550154",
+            "NCT04719026"
+          ]
+        }
+      ]
+    },
+    {
+      "sequence": 12,
+      "trace_sequence": 12,
+      "source_label": "웹 뉴스",
+      "status": "완료",
+      "elapsed_seconds": 8.71,
+      "request_parameters": {
+        "query": "대한당뇨병학회 당뇨병 팩트시트 2024"
+      },
+      "output": {
+        "returned": 5,
+        "displayed_record_count": 5,
+        "duplicate_records_collapsed": 0,
+        "records": [
+          {
+            "identifiers": [
+              "2024 국내 당뇨병 관리전략 업데이트 < Round Table Meeting < 기사본문 - THE MOST(더모스트)"
+            ],
+            "anchor_id": "web:8273b310c3ff3cdc5da5",
+            "title": "2024 국내 당뇨병 관리전략 업데이트 < Round Table Meeting < 기사본문 - THE MOST(더모스트)",
+            "url": "https://www.mostonline.co.kr/news/articleView.html?idxno=100010"
+          },
+          {
+            "identifiers": [
+              "한국인 당뇨병 팩트시트 2024 - 후생신보"
+            ],
+            "anchor_id": "web:6d3059b4c7bb573aa59b",
+            "title": "한국인 당뇨병 팩트시트 2024 - 후생신보",
+            "url": "http://www.whosaeng.com/155587"
+          },
+          {
+            "identifiers": [
+              "당뇨병 전단계 상황 심각…30세 이상 40% 해당"
+            ],
+            "anchor_id": "web:70a1ddb2eddcbf3807b5",
+            "title": "당뇨병 전단계 상황 심각…30세 이상 40% 해당",
+            "url": "https://www.medicaltimes.com/Mobile/News/NewsView.html?ID=1160860"
+          },
+          {
+            "identifiers": [
+              "Diabetes Fact Sheets in Korea 2024"
+            ],
+            "anchor_id": "web:4c0d11239cb7ce4f103d",
+            "title": "Diabetes Fact Sheets in Korea 2024",
+            "url": "https://www.e-dmj.org/journal/view.php?number=2909"
+          },
+          {
+            "identifiers": [
+              "당뇨병 심혈관질환 Fact Sheet 2024 - 대한당뇨병학회"
+            ],
+            "anchor_id": "web:e8341b9f42e920dd1ba5",
+            "title": "당뇨병 심혈관질환 Fact Sheet 2024 - 대한당뇨병학회",
+            "url": "https://www.diabetes.or.kr/newsletter_enews/202406/sub/sub05.php"
+          }
+        ]
+      },
+      "anchor_binding": {
+        "eligible": 5,
+        "assigned": 5,
+        "duplicate": 0,
+        "unassigned": 0
+      },
+      "counts": {
+        "returned": 5,
+        "parsed": 5,
+        "envelope": 5,
+        "rendered": 5,
+        "narrated": 5
+      },
+      "record_accounting": {
+        "received": 5,
+        "rendered": 5,
+        "omitted": 0,
+        "omitted_identifiers": [],
+        "omitted_identifiers_truncated": false,
+        "omitted_without_identifier": 0,
+        "identifier_limit": 200
+      },
+      "unused_count": 0,
+      "dropped_count": 0,
+      "drop_reasons": []
+    },
+    {
+      "sequence": 13,
+      "trace_sequence": 13,
+      "source_label": "식품의약품안전처 의약품 특허목록",
+      "status": "완료",
+      "elapsed_seconds": 30.178,
+      "request_parameters": {
+        "query": "Diabetes treatment technology trends",
+        "calls": [
+          {
+            "ingr_name": "Diabetes treatment technology trends",
+            "limit": "500"
+          },
+          {
+            "ingr_name": "Diabetes Treatment Technology Trends"
+          }
+        ]
+      },
+      "output": {
+        "returned": 7,
+        "displayed_record_count": 6,
+        "duplicate_records_collapsed": 1,
+        "records": [
+          {
+            "identifiers": [
+              "식별자 없음"
+            ],
+            "duplicate_count": 2,
+            "duplicate_label": "동일 항목 2건"
+          },
+          {
+            "identifiers": [
+              "Top Companies Developing Cell Therapies For Diabetes in 2026"
+            ],
+            "anchor_id": "patent:NEWS:151a05792771e925d8c8"
+          },
+          {
+            "identifiers": [
+              "Johan Jendle - School of Medical Sciences - Örebro University"
+            ],
+            "anchor_id": "patent:NEWS:107e187d18ebd048f915"
+          },
+          {
+            "identifiers": [
+              "Travelling with type 1 diabetes"
+            ],
+            "anchor_id": "patent:NEWS:9ded6569bc67ff56511c"
+          },
+          {
+            "identifiers": [
+              "UCSD Diabetes Clinical Trials for 2026 — San Diego"
+            ],
+            "anchor_id": "patent:NEWS:246ea50bc32784ca9c4f"
+          },
+          {
+            "identifiers": [
+              "UCSF Diabetes Clinical Trials — San Francisco Bay Area"
+            ],
+            "anchor_id": "patent:NEWS:8f67e951c9c2e4492f7d"
+          }
+        ]
+      },
+      "anchor_binding": {
+        "eligible": 5,
+        "assigned": 5,
+        "duplicate": 0,
+        "unassigned": 2
+      },
+      "counts": {
+        "returned": 7,
+        "parsed": 7,
+        "envelope": 7,
+        "rendered": 5,
+        "narrated": 5
+      },
+      "record_accounting": {
+        "received": 5,
+        "rendered": 5,
+        "omitted": 0,
+        "omitted_identifiers": [],
+        "omitted_identifiers_truncated": false,
+        "omitted_without_identifier": 0,
+        "identifier_limit": 200
+      },
+      "unused_count": 2,
+      "dropped_count": 0,
+      "drop_reasons": [
+        {
+          "stage": "render",
+          "count": 2,
+          "reason": "현재 답변 표면에 배치되지 않음",
+          "record_ids": [
+            "식별자 없음",
+            "식별자 없음"
+          ]
+        }
+      ]
+    },
+    {
+      "sequence": 14,
+      "trace_sequence": 14,
+      "source_label": "건강보험심사평가원",
+      "status": "완료",
+      "elapsed_seconds": 7.716,
+      "request_parameters": {
+        "query": "E12 환자수",
+        "calls": [
+          {
+            "sickCd": "E12",
+            "searchText": "E12",
+            "diseaseType": "SICK_CD"
+          },
+          {
+            "sickCd": "E12",
+            "year": "2025"
+          }
+        ]
+      },
+      "output": {
+        "returned": 3,
+        "displayed_record_count": 3,
+        "duplicate_records_collapsed": 0,
+        "records": [
+          {
+            "identifiers": [
+              "E12",
+              "영양실조-관련 당뇨병"
+            ],
+            "sickCd": "E12",
+            "sickNm": "영양실조-관련 당뇨병"
+          },
+          {
+            "identifiers": [
+              "E12",
+              "영양실조-관련 당뇨병"
+            ],
+            "sickCd": "E12",
+            "sickNm": "영양실조-관련 당뇨병",
+            "inpatOpat": "입원",
+            "ptntCnt": "132",
+            "rvdInsupBrdnAmt": "442726000",
+            "rvdRpeTamtAmt": "581692000",
+            "specCnt": "240",
+            "vstDdcnt": "2962",
+            "units": {
+              "ptntCnt": "명",
+              "rvdInsupBrdnAmt": "원",
+              "rvdRpeTamtAmt": "원",
+              "specCnt": "건",
+              "vstDdcnt": "일"
+            },
+            "sexBreakdown": [
+              {
+                "ptntCnt": "61",
+                "rvdInsupBrdnAmt": "218021000",
+                "rvdRpeTamtAmt": "289811000",
+                "sex": "남",
+                "specCnt": "128",
+                "vstDdcnt": "1669"
+              },
+              {
+                "ptntCnt": "71",
+                "rvdInsupBrdnAmt": "224705000",
+                "rvdRpeTamtAmt": "291881000",
+                "sex": "여",
+                "specCnt": "112",
+                "vstDdcnt": "1293"
+              }
+            ],
+            "requested_year": "2025"
+          },
+          {
+            "identifiers": [
+              "E12",
+              "영양실조-관련 당뇨병"
+            ],
+            "sickCd": "E12",
+            "sickNm": "영양실조-관련 당뇨병",
+            "inpatOpat": "외래",
+            "ptntCnt": "1312",
+            "rvdInsupBrdnAmt": "115912000",
+            "rvdRpeTamtAmt": "198112000",
+            "specCnt": "4482",
+            "vstDdcnt": "4479",
+            "units": {
+              "ptntCnt": "명",
+              "rvdInsupBrdnAmt": "원",
+              "rvdRpeTamtAmt": "원",
+              "specCnt": "건",
+              "vstDdcnt": "일"
+            },
+            "sexBreakdown": [
+              {
+                "ptntCnt": "749",
+                "rvdInsupBrdnAmt": "65140000",
+                "rvdRpeTamtAmt": "114747000",
+                "sex": "남",
+                "specCnt": "2627",
+                "vstDdcnt": "2624"
+              },
+              {
+                "ptntCnt": "563",
+                "rvdInsupBrdnAmt": "50772000",
+                "rvdRpeTamtAmt": "83365000",
+                "sex": "여",
+                "specCnt": "1855",
+                "vstDdcnt": "1855"
+              }
+            ],
+            "requested_year": "2025"
+          }
+        ]
+      },
+      "anchor_binding": {
+        "eligible": 3,
+        "assigned": 0,
+        "duplicate": 3,
+        "unassigned": 3
+      },
+      "counts": {
+        "returned": 3,
+        "parsed": 3,
+        "envelope": 3,
+        "rendered": 5,
+        "narrated": 5
+      },
+      "record_accounting": {
+        "received": 5,
+        "rendered": 5,
+        "omitted": 0,
+        "omitted_identifiers": [],
+        "omitted_identifiers_truncated": false,
+        "omitted_without_identifier": 0,
+        "identifier_limit": 200
+      },
+      "unused_count": 0,
+      "dropped_count": 0,
+      "drop_reasons": []
+    },
+    {
+      "sequence": 15,
+      "trace_sequence": 15,
+      "source_label": "웹 뉴스",
+      "status": "완료",
+      "elapsed_seconds": 3.187,
+      "request_parameters": {
+        "query": "IDF Diabetes Atlas 2025 global prevalence"
+      },
+      "output": {
+        "returned": 5,
+        "displayed_record_count": 5,
+        "duplicate_records_collapsed": 0,
+        "records": [
+          {
+            "identifiers": [
+              "IDF Diabetes Atlas 2025 | Global Diabetes Data & Insights"
+            ],
+            "anchor_id": "web:eb4cb2cfd4c44ff89095",
+            "title": "IDF Diabetes Atlas 2025 | Global Diabetes Data & Insights",
+            "url": "https://diabetesatlas.org/resources/idf-diabetes-atlas-2025"
+          },
+          {
+            "identifiers": [
+              "IDF Diabetes Atlas 11th Edition 2025 | PDF"
+            ],
+            "anchor_id": "web:1b640a086c487562d34a",
+            "title": "IDF Diabetes Atlas 11th Edition 2025 | PDF",
+            "url": "https://www.scribd.com/document/851218115/IDF-Atlas-11th-Edition-2025"
+          },
+          {
+            "identifiers": [
+              "IDF Diabetes Atlas 11th edition 2025: global prevalence ..."
+            ],
+            "anchor_id": "web:5be9988ff4279f18cc63",
+            "title": "IDF Diabetes Atlas 11th edition 2025: global prevalence ...",
+            "url": "https://pubmed.ncbi.nlm.nih.gov/40874767"
+          },
+          {
+            "identifiers": [
+              "People with type 1 diabetes (all age groups)"
+            ],
+            "anchor_id": "web:e5bea4feaddcdf2e6f9a",
+            "title": "People with type 1 diabetes (all age groups)",
+            "url": "https://diabetesatlas.org/data-by-indicator/type-1-diabetes-estimates/people-with-type-1-diabetes-all-age-groups"
+          },
+          {
+            "identifiers": [
+              "Global picture - IDF DIABETES ATLAS - NCBI Bookshelf"
+            ],
+            "anchor_id": "web:52ea877898f3be21c529",
+            "title": "Global picture - IDF DIABETES ATLAS - NCBI Bookshelf",
+            "url": "https://www.ncbi.nlm.nih.gov/books/NBK581940"
+          }
+        ]
+      },
+      "anchor_binding": {
+        "eligible": 5,
+        "assigned": 5,
+        "duplicate": 0,
+        "unassigned": 0
+      },
+      "counts": {
+        "returned": 5,
+        "parsed": 5,
+        "envelope": 5,
+        "rendered": 5,
+        "narrated": 5
+      },
+      "record_accounting": {
+        "received": 5,
+        "rendered": 5,
+        "omitted": 0,
+        "omitted_identifiers": [],
+        "omitted_identifiers_truncated": false,
+        "omitted_without_identifier": 0,
+        "identifier_limit": 200
+      },
+      "unused_count": 0,
+      "dropped_count": 0,
+      "drop_reasons": []
+    },
+    {
+      "sequence": 16,
+      "trace_sequence": 16,
+      "source_label": "건강보험심사평가원",
+      "status": "완료",
+      "elapsed_seconds": 6.983,
+      "request_parameters": {
+        "query": "E13 환자수",
+        "calls": [
+          {
+            "sickCd": "E13",
+            "searchText": "E13",
+            "diseaseType": "SICK_CD"
+          },
+          {
+            "sickCd": "E13",
+            "year": "2025"
+          }
+        ]
+      },
+      "output": {
+        "returned": 3,
+        "displayed_record_count": 3,
+        "duplicate_records_collapsed": 0,
+        "records": [
+          {
+            "identifiers": [
+              "E13",
+              "기타 명시된 당뇨병"
+            ],
+            "sickCd": "E13",
+            "sickNm": "기타 명시된 당뇨병"
+          },
+          {
+            "identifiers": [
+              "E13",
+              "기타 명시된 당뇨병"
+            ],
+            "sickCd": "E13",
+            "sickNm": "기타 명시된 당뇨병",
+            "inpatOpat": "입원",
+            "ptntCnt": "1638",
+            "rvdInsupBrdnAmt": "4393623000",
+            "rvdRpeTamtAmt": "5741758000",
+            "specCnt": "2910",
+            "vstDdcnt": "32030",
+            "units": {
+              "ptntCnt": "명",
+              "rvdInsupBrdnAmt": "원",
+              "rvdRpeTamtAmt": "원",
+              "specCnt": "건",
+              "vstDdcnt": "일"
+            },
+            "sexBreakdown": [
+              {
+                "ptntCnt": "907",
+                "rvdInsupBrdnAmt": "2636835000",
+                "rvdRpeTamtAmt": "3436753000",
+                "sex": "남",
+                "specCnt": "1581",
+                "vstDdcnt": "17109"
+              },
+              {
+                "ptntCnt": "731",
+                "rvdInsupBrdnAmt": "1756788000",
+                "rvdRpeTamtAmt": "2305005000",
+                "sex": "여",
+                "specCnt": "1329",
+                "vstDdcnt": "14921"
+              }
+            ],
+            "requested_year": "2025"
+          },
+          {
+            "identifiers": [
+              "E13",
+              "기타 명시된 당뇨병"
+            ],
+            "sickCd": "E13",
+            "sickNm": "기타 명시된 당뇨병",
+            "inpatOpat": "외래",
+            "ptntCnt": "69108",
+            "rvdInsupBrdnAmt": "8468893000",
+            "rvdRpeTamtAmt": "12094670000",
+            "specCnt": "319567",
+            "vstDdcnt": "319263",
+            "units": {
+              "ptntCnt": "명",
+              "rvdInsupBrdnAmt": "원",
+              "rvdRpeTamtAmt": "원",
+              "specCnt": "건",
+              "vstDdcnt": "일"
+            },
+            "sexBreakdown": [
+              {
+                "ptntCnt": "38648",
+                "rvdInsupBrdnAmt": "4642065000",
+                "rvdRpeTamtAmt": "6721791000",
+                "sex": "남",
+                "specCnt": "176821",
+                "vstDdcnt": "176638"
+              },
+              {
+                "ptntCnt": "30460",
+                "rvdInsupBrdnAmt": "3826828000",
+                "rvdRpeTamtAmt": "5372879000",
+                "sex": "여",
+                "specCnt": "142746",
+                "vstDdcnt": "142625"
+              }
+            ],
+            "requested_year": "2025"
+          }
+        ]
+      },
+      "anchor_binding": {
+        "eligible": 3,
+        "assigned": 0,
+        "duplicate": 3,
+        "unassigned": 3
+      },
+      "counts": {
+        "returned": 3,
+        "parsed": 3,
+        "envelope": 3,
+        "rendered": 5,
+        "narrated": 5
+      },
+      "record_accounting": {
+        "received": 5,
+        "rendered": 5,
+        "omitted": 0,
+        "omitted_identifiers": [],
+        "omitted_identifiers_truncated": false,
+        "omitted_without_identifier": 0,
+        "identifier_limit": 200
+      },
+      "unused_count": 0,
+      "dropped_count": 0,
+      "drop_reasons": []
+    },
+    {
+      "sequence": 17,
+      "trace_sequence": 17,
+      "source_label": "웹 뉴스",
+      "status": "완료",
+      "elapsed_seconds": 4.54,
+      "request_parameters": {
+        "query": "전세계 당뇨병 환자수 전망"
+      },
+      "output": {
+        "returned": 5,
+        "displayed_record_count": 5,
+        "duplicate_records_collapsed": 0,
+        "records": [
+          {
+            "identifiers": [
+              "[동향]“전세계 당뇨 환자 2050년까지 13억명으로 갑절 된다”"
+            ],
+            "anchor_id": "web:4f37b75c4274476090e6",
+            "title": "[동향]“전세계 당뇨 환자 2050년까지 13억명으로 갑절 된다”",
+            "url": "https://scienceon.kisti.re.kr/srch/selectPORSrchTrend.do?cn=SCTM00252105"
+          },
+          {
+            "identifiers": [
+              "[[기사]]전세계 성인 9명 중 1명이 당뇨병…6초당 1명씩 사망"
+            ],
+            "anchor_id": "web:1eacb3adefb2d3fadc2b",
+            "title": "[[기사]]전세계 성인 9명 중 1명이 당뇨병…6초당 1명씩 사망",
+            "url": "https://koreadiabetes.com/news?bmode=view&idx=162880216"
+          },
+          {
+            "identifiers": [
+              "2045년 세계 당뇨병 환자 7억 명 돌파 전망 [Stat-Insight] < Stat-Insight < 기사본문 - 포춘코리아"
+            ],
+            "anchor_id": "web:6df74556fbddb1ca03b3",
+            "title": "2045년 세계 당뇨병 환자 7억 명 돌파 전망 [Stat-Insight] < Stat-Insight < 기사본문 - 포춘코리아",
+            "url": "https://www.fortunekorea.co.kr/news/articleView.html?idxno=44449"
+          },
+          {
+            "identifiers": [
+              "미국 성인 6명 중 1명은 당뇨병 환자... 2045년 전세계 8억명 육박 전망 < 건강 < 라이프 < 기사본문 - 시애틀코리안데일리"
+            ],
+            "anchor_id": "web:cd082bea17c74fe3a309",
+            "title": "미국 성인 6명 중 1명은 당뇨병 환자... 2045년 전세계 8억명 육박 전망 < 건강 < 라이프 < 기사본문 - 시애틀코리안데일리",
+            "url": "http://www.seattlekdaily.com/news/articleView.html?idxno=12206"
+          },
+          {
+            "identifiers": [
+              "[약업신문][창간 69주년 특집] 새 패러다임 ‘글로벌 당뇨병 치료 시장’"
+            ],
+            "anchor_id": "web:3fb2d54d2e84c3186e18",
+            "title": "[약업신문][창간 69주년 특집] 새 패러다임 ‘글로벌 당뇨병 치료 시장’",
+            "url": "http://m.yakup.com/news/index.html?mode=view&cat=hot&cat2=&nid=280022&num_start=6"
+          }
+        ]
+      },
+      "anchor_binding": {
+        "eligible": 5,
+        "assigned": 5,
+        "duplicate": 0,
+        "unassigned": 0
+      },
+      "counts": {
+        "returned": 5,
+        "parsed": 5,
+        "envelope": 5,
+        "rendered": 5,
+        "narrated": 5
+      },
+      "record_accounting": {
+        "received": 5,
+        "rendered": 5,
+        "omitted": 0,
+        "omitted_identifiers": [],
+        "omitted_identifiers_truncated": false,
+        "omitted_without_identifier": 0,
+        "identifier_limit": 200
+      },
+      "unused_count": 0,
+      "dropped_count": 0,
+      "drop_reasons": []
+    },
+    {
+      "sequence": 18,
+      "trace_sequence": 18,
+      "source_label": "건강보험심사평가원",
+      "status": "완료",
+      "elapsed_seconds": 6.95,
+      "request_parameters": {
+        "query": "E14 환자수",
+        "calls": [
+          {
+            "sickCd": "E14",
+            "searchText": "E14",
+            "diseaseType": "SICK_CD"
+          },
+          {
+            "sickCd": "E14",
+            "year": "2025"
+          }
+        ]
+      },
+      "output": {
+        "returned": 3,
+        "displayed_record_count": 3,
+        "duplicate_records_collapsed": 0,
+        "records": [
+          {
+            "identifiers": [
+              "E14",
+              "상세불명의 당뇨병"
+            ],
+            "sickCd": "E14",
+            "sickNm": "상세불명의 당뇨병"
+          },
+          {
+            "identifiers": [
+              "E14",
+              "상세불명의 당뇨병"
+            ],
+            "sickCd": "E14",
+            "sickNm": "상세불명의 당뇨병",
+            "inpatOpat": "입원",
+            "ptntCnt": "18070",
+            "rvdInsupBrdnAmt": "58951191000",
+            "rvdRpeTamtAmt": "75470476000",
+            "specCnt": "29891",
+            "vstDdcnt": "274280",
+            "units": {
+              "ptntCnt": "명",
+              "rvdInsupBrdnAmt": "원",
+              "rvdRpeTamtAmt": "원",
+              "specCnt": "건",
+              "vstDdcnt": "일"
+            },
+            "sexBreakdown": [
+              {
+                "ptntCnt": "10940",
+                "rvdInsupBrdnAmt": "37426406000",
+                "rvdRpeTamtAmt": "47914368000",
+                "sex": "남",
+                "specCnt": "18243",
+                "vstDdcnt": "156960"
+              },
+              {
+                "ptntCnt": "7130",
+                "rvdInsupBrdnAmt": "21524785000",
+                "rvdRpeTamtAmt": "27556108000",
+                "sex": "여",
+                "specCnt": "11648",
+                "vstDdcnt": "117320"
+              }
+            ],
+            "requested_year": "2025"
+          },
+          {
+            "identifiers": [
+              "E14",
+              "상세불명의 당뇨병"
+            ],
+            "sickCd": "E14",
+            "sickNm": "상세불명의 당뇨병",
+            "inpatOpat": "외래",
+            "ptntCnt": "451109",
+            "rvdInsupBrdnAmt": "55607575000",
+            "rvdRpeTamtAmt": "90631783000",
+            "specCnt": "2005965",
+            "vstDdcnt": "2003953",
+            "units": {
+              "ptntCnt": "명",
+              "rvdInsupBrdnAmt": "원",
+              "rvdRpeTamtAmt": "원",
+              "specCnt": "건",
+              "vstDdcnt": "일"
+            },
+            "sexBreakdown": [
+              {
+                "ptntCnt": "254464",
+                "rvdInsupBrdnAmt": "31308138000",
+                "rvdRpeTamtAmt": "51529582000",
+                "sex": "남",
+                "specCnt": "1139713",
+                "vstDdcnt": "1138508"
+              },
+              {
+                "ptntCnt": "196645",
+                "rvdInsupBrdnAmt": "24299437000",
+                "rvdRpeTamtAmt": "39102201000",
+                "sex": "여",
+                "specCnt": "866252",
+                "vstDdcnt": "865445"
+              }
+            ],
+            "requested_year": "2025"
+          }
+        ]
+      },
+      "anchor_binding": {
+        "eligible": 3,
+        "assigned": 0,
+        "duplicate": 3,
+        "unassigned": 3
+      },
+      "counts": {
+        "returned": 3,
+        "parsed": 3,
+        "envelope": 3,
+        "rendered": 5,
+        "narrated": 5
+      },
+      "record_accounting": {
+        "received": 5,
+        "rendered": 5,
+        "omitted": 0,
+        "omitted_identifiers": [],
+        "omitted_identifiers_truncated": false,
+        "omitted_without_identifier": 0,
+        "identifier_limit": 200
+      },
+      "unused_count": 0,
+      "dropped_count": 0,
+      "drop_reasons": []
+    }
+  ],
+  "lane_groups": [
+    {
+      "source_label": "식품의약품안전처",
+      "call_count": 2,
+      "sequences": [
+        2,
+        8
+      ],
+      "returned": 0,
+      "elapsed_seconds": 31.646
+    },
+    {
+      "source_label": "건강보험심사평가원",
+      "call_count": 5,
+      "sequences": [
+        3,
+        9,
+        14,
+        16,
+        18
+      ],
+      "returned": 15,
+      "elapsed_seconds": 39.984
+    },
+    {
+      "source_label": "FDA",
+      "call_count": 2,
+      "sequences": [
+        4,
+        10
+      ],
+      "returned": 0,
+      "elapsed_seconds": 10.694
+    },
+    {
+      "source_label": "ClinicalTrials.gov",
+      "call_count": 2,
+      "sequences": [
+        5,
+        11
+      ],
+      "returned": 79,
+      "elapsed_seconds": 5.542
+    },
+    {
+      "source_label": "웹 뉴스",
+      "call_count": 4,
+      "sequences": [
+        6,
+        12,
+        15,
+        17
+      ],
+      "returned": 20,
+      "elapsed_seconds": 19.761
+    },
+    {
+      "source_label": "식품의약품안전처 의약품 특허목록",
+      "call_count": 2,
+      "sequences": [
+        7,
+        13
+      ],
+      "returned": 14,
+      "elapsed_seconds": 60.235
+    }
+  ],
+  "trace_correlation": {
+    "key": "sequence",
+    "matched": 18,
+    "total": 18,
+    "rate": 1.0
+  },
+  "entity_completion": {
+    "rows": [
+      {
+        "entity": "당뇨병",
+        "status": "COMPLETE"
+      },
+      {
+        "entity": "Diabetes Mellitus",
+        "status": "COMPLETE"
+      },
+      {
+        "entity": "E10",
+        "status": "COMPLETE"
+      },
+      {
+        "entity": "E11",
+        "status": "COMPLETE"
+      },
+      {
+        "entity": "E12",
+        "status": "COMPLETE"
+      },
+      {
+        "entity": "E13",
+        "status": "COMPLETE"
+      },
+      {
+        "entity": "E14",
+        "status": "COMPLETE"
+      },
+      {
+        "entity": "제1형 당뇨병",
+        "status": "FAILED"
+      },
+      {
+        "entity": "제2형 당뇨병",
+        "status": "FAILED"
+      }
+    ],
+    "entity_types": [
+      {
+        "entity": "당뇨병",
+        "entity_type": "질환"
+      },
+      {
+        "entity": "Diabetes Mellitus",
+        "entity_type": "브랜드"
+      },
+      {
+        "entity": "E10",
+        "entity_type": "상병코드"
+      },
+      {
+        "entity": "E11",
+        "entity_type": "상병코드"
+      },
+      {
+        "entity": "E12",
+        "entity_type": "상병코드"
+      },
+      {
+        "entity": "E13",
+        "entity_type": "상병코드"
+      },
+      {
+        "entity": "E14",
+        "entity_type": "상병코드"
+      },
+      {
+        "entity": "제1형 당뇨병",
+        "entity_type": "질환"
+      },
+      {
+        "entity": "제2형 당뇨병",
+        "entity_type": "질환"
+      }
+    ],
+    "scope_notice": "확인된 7개 상병코드·질환 항목(당뇨병·Diabetes Mellitus·E10·E11·E12·E13·E14) 기준으로 비교했으며, 제1형 당뇨병·제2형 당뇨병은 조회 결과와 연결하지 못했습니다.",
+    "table_location": "inspection"
+  }
+}

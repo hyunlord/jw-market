@@ -1,0 +1,268 @@
+{
+  "source_fixture": "R100 Q9E live trace, file-lane projection",
+  "inspection_detail": {
+    "schema": "r12.5.inspect.v1",
+    "question": "사용자가 업로드한 파일에서 2026년 1월의 sellout 총액을 계산하고, 이전 대화 맥락을 고려하여 리바로(Livalo)의 최근 매출 현황과 비교 분석해줘.",
+    "expansion": null,
+    "query_scope": {
+      "requested_calls": {
+        "mart": 1,
+        "nedrug": 2,
+        "hira": 2,
+        "openfda": 2,
+        "clinicaltrials": 4,
+        "web": 2,
+        "patent": 2
+      },
+      "executed_calls": {
+        "mart": 1,
+        "nedrug": 2,
+        "hira": 2,
+        "openfda": 2,
+        "clinicaltrials": 2,
+        "web": 2,
+        "patent": 2
+      },
+      "omitted_queries": {
+        "nedrug": [],
+        "hira": [],
+        "openfda": [],
+        "clinicaltrials": [
+          "Pitavastatin cardiovascular outcomes trials",
+          "Livalo clinical trial status and results"
+        ],
+        "web": [],
+        "patent": []
+      }
+    },
+    "calls": [
+      {
+        "sequence": 15,
+        "trace_sequence": 15,
+        "tool": "document_sql",
+        "lane_id": "file_sql",
+        "source_label": "업로드 문서(표 집계)",
+        "state": "success",
+        "status": "성공",
+        "elapsed_seconds": 0.0,
+        "request_parameters": {
+          "query": "업로드한 파일에서 2026년 1월 sellout 총액 알려줘",
+          "executed_sql": "SELECT SUM(c72) AS total_value, COUNT(*) AS applied_rows FROM data WHERE (COALESCE(TRIM(c2), '') <> '' OR COALESCE(TRIM(c3), '') <> '' OR COALESCE(TRIM(c5), '') <> '' OR COALESCE(TRIM(c6), '') <> '' OR COALESCE(TRIM(c7), '') <> '' OR COALESCE(TRIM(c8), '') <> '' OR COALESCE(TRIM(c9), '') <> '' OR COALESCE(TRIM(c10), '') <> '' OR COALESCE(TRIM(c11), '') <> '' OR COALESCE(TRIM(c12), '') <> '')",
+          "table_mapping": [
+            {
+              "file_name": "CHSO_KOR_SellOut_Basic_Feb-19-2026(2026년 1월까지).xlsx",
+              "sheet_name": "Sell Out  Standard",
+              "logical_name": "doc_6724_sell_out_standard"
+            }
+          ]
+        },
+        "output": {
+          "returned": 1,
+          "displayed_record_count": 1,
+          "duplicate_records_collapsed": 0,
+          "records": [
+            {
+              "identifiers": [
+                "CHSO_KOR_SellOut_Basic_Feb-19-2026(2026년 1월까지).xlsx",
+                "DOC-b9d310fc116ff026"
+              ],
+              "file_name": "CHSO_KOR_SellOut_Basic_Feb-19-2026(2026년 1월까지).xlsx",
+              "document_name": "CHSO_KOR_SellOut_Basic_Feb-19-2026(2026년 1월까지).xlsx",
+              "file_type": "XLSX",
+              "document_id": 118729,
+              "sheet_name": "Sell Out  Standard",
+              "columns": [
+                "total_value",
+                "applied_rows"
+              ],
+              "result_excerpt": "## 업로드 파일 SQL 결과 파일: CHSO_KOR_SellOut_Basic_Feb-19-2026(2026년 1월까지).xlsx 시트: Sell Out Standard 기간: 2026-01 · 1개월 (2026-01) 지표: sell-in 기준 금액 상태: 확인됨 | total_value | applied_rows | | --- | --- | | 193466912759 | 12267 |",
+              "retrieval_route": "파일 SQL",
+              "record_status": "사용됨",
+              "record_journey": [
+                "검색됨",
+                "후보",
+                "사용됨"
+              ]
+            }
+          ],
+          "columns": [
+            "total_value",
+            "applied_rows"
+          ],
+          "rows": [
+            [
+              193466912759,
+              12267
+            ]
+          ],
+          "total_row_count": 1,
+          "aggregate_values": {
+            "total_value": 193466912759,
+            "applied_rows": 12267
+          }
+        },
+        "anchor_binding": {
+          "eligible": 1,
+          "assigned": 0,
+          "duplicate": 1,
+          "unassigned": 1
+        },
+        "counts": {
+          "returned": 1,
+          "parsed": 1,
+          "envelope": 1,
+          "rendered": 1,
+          "narrated": 1,
+          "used": 1
+        },
+        "document_names": [
+          "CHSO_KOR_SellOut_Basic_Feb-19-2026(2026년 1월까지).xlsx"
+        ],
+        "record_accounting": {
+          "received": 1,
+          "rendered": 1,
+          "omitted": 0,
+          "omitted_identifiers": [],
+          "omitted_identifiers_truncated": false,
+          "omitted_without_identifier": 0,
+          "identifier_limit": 200
+        },
+        "unused_count": 0,
+        "dropped_count": 0,
+        "drop_reasons": []
+      }
+    ],
+    "lane_groups": [
+      {
+        "source_label": "식품의약품안전처",
+        "call_count": 2,
+        "sequences": [
+          2,
+          8
+        ],
+        "returned": 0,
+        "elapsed_seconds": 15.395
+      },
+      {
+        "source_label": "건강보험심사평가원",
+        "call_count": 2,
+        "sequences": [
+          3,
+          9
+        ],
+        "returned": 0,
+        "elapsed_seconds": 21.64
+      },
+      {
+        "source_label": "FDA",
+        "call_count": 2,
+        "sequences": [
+          4,
+          10
+        ],
+        "returned": 0,
+        "elapsed_seconds": 6.768
+      },
+      {
+        "source_label": "ClinicalTrials.gov",
+        "call_count": 2,
+        "sequences": [
+          5,
+          11
+        ],
+        "returned": 242,
+        "elapsed_seconds": 5.264
+      },
+      {
+        "source_label": "웹 뉴스",
+        "call_count": 2,
+        "sequences": [
+          6,
+          12
+        ],
+        "returned": 0,
+        "elapsed_seconds": 9.313
+      },
+      {
+        "source_label": "식품의약품안전처 의약품 특허목록",
+        "call_count": 2,
+        "sequences": [
+          7,
+          13
+        ],
+        "returned": 513,
+        "elapsed_seconds": 30.781
+      }
+    ],
+    "trace_correlation": {
+      "key": "sequence",
+      "matched": 15,
+      "total": 15,
+      "rate": 1.0
+    },
+    "entity_completion": {
+      "rows": [
+        {
+          "entity": "리바로",
+          "status": "FAILED"
+        },
+        {
+          "entity": "JW중외제약",
+          "status": "FAILED"
+        },
+        {
+          "entity": "피타바스타틴",
+          "status": "FAILED"
+        },
+        {
+          "entity": "2026년 1월 sellout",
+          "status": "FAILED"
+        }
+      ],
+      "entity_types": [
+        {
+          "entity": "리바로",
+          "entity_type": "브랜드"
+        },
+        {
+          "entity": "JW중외제약",
+          "entity_type": "회사"
+        },
+        {
+          "entity": "피타바스타틴",
+          "entity_type": "브랜드"
+        },
+        {
+          "entity": "2026년 1월 sellout",
+          "entity_type": "브랜드"
+        }
+      ],
+      "scope_notice": "",
+      "table_location": "inspection"
+    }
+  },
+  "lane_execution": {
+    "document_sql": {
+      "source": "document_sql",
+      "planned": true,
+      "requested_calls": 0,
+      "call_count": 1,
+      "returned_count": 1,
+      "elapsed_ms": 0.0,
+      "state": "executed_success",
+      "reason_code": null,
+      "omitted_count": 0,
+      "omitted_reason": null,
+      "queries": [
+        {
+          "query": "업로드한 파일에서 2026년 1월 sellout 총액 알려줘",
+          "status": "ok",
+          "returned_count": 1,
+          "elapsed_ms": 0.0,
+          "failure_class": "none",
+          "reason_code": null
+        }
+      ]
+    }
+  }
+}

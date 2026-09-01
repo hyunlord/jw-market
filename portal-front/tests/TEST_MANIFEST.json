@@ -1,0 +1,335 @@
+{
+  "schema_version": 1,
+  "baseline": "public-c9e44861",
+  "minimums": {
+    "files": 47,
+    "blocks": 303,
+    "assertions": 959
+  },
+  "totals": {
+    "files": 50,
+    "blocks": 331,
+    "assertions": 1086
+  },
+  "focused": {
+    "golden": {
+      "pass": 52,
+      "total": 52
+    },
+    "upload": {
+      "pass": 57,
+      "total": 57
+    },
+    "full_node_22_11": {
+      "minimum_pass": 296,
+      "minimum_total": 299,
+      "known_loader_failures": [
+        "tests/kpiNoData.test.ts",
+        "tests/marketFilterMultiSearchSelection.test.ts",
+        "tests/moleculeStrengthDrilldown.test.ts"
+      ]
+    }
+  },
+  "tests": [
+    {
+      "path": "tests/agentChatInspectionTransfer.test.ts",
+      "sha256": "7d5e9180439244023f600ccbccc1a3bf344da6af530ac34bbe6f232d4e66b7c5",
+      "blocks": 2,
+      "assertions": 6
+    },
+    {
+      "path": "tests/analysisLevelTooltip.test.ts",
+      "sha256": "53c0e78587ccfe7d5f37787b526829282a3352e3527639535be542502b110e26",
+      "blocks": 5,
+      "assertions": 5
+    },
+    {
+      "path": "tests/analyzeFilterSelection.test.ts",
+      "sha256": "7e18d64c3c55995d3fefed863cb8ad187949c6594fdb91b7b0f00450d4f0b09f",
+      "blocks": 7,
+      "assertions": 12
+    },
+    {
+      "path": "tests/answerInspectionContract.test.ts",
+      "sha256": "c78c0885fbe295e4a9a461ea9de6da129b0eaf698d9bebdc30f577bd49fd69cb",
+      "blocks": 8,
+      "assertions": 19
+    },
+    {
+      "path": "tests/answerInspectionPanel.test.ts",
+      "sha256": "fdf1dbdb9c4dd8fff22cfd5c6ebb797ff4a57f06d9da25b19f2b543a137340b1",
+      "blocks": 27,
+      "assertions": 161
+    },
+    {
+      "path": "tests/answerSectionRender.test.ts",
+      "sha256": "e2f3e09d66c717d4e39066dea226f1eb033124eeff4b10e07862fcc55d670b59",
+      "blocks": 8,
+      "assertions": 32
+    },
+    {
+      "path": "tests/answerSectionSlots.test.ts",
+      "sha256": "884794a5112d750f7d7583b7fb954a1cee9c9e4a57e1ef0f99fe0dfd651fb7b9",
+      "blocks": 3,
+      "assertions": 12
+    },
+    {
+      "path": "tests/apiXhrUpload.test.ts",
+      "sha256": "6679e0c90b04a3fe975724b5cce83fc49dda2d467b0adad81d51eef54ce0e46d",
+      "blocks": 1,
+      "assertions": 11
+    },
+    {
+      "path": "tests/atc4BootstrapImmediateSync.test.ts",
+      "sha256": "af17369ed54959a8a0685ef222766e511e436c6ae99c89e5043803aab59c6c7d",
+      "blocks": 4,
+      "assertions": 13
+    },
+    {
+      "path": "tests/atcHierarchySelectionUx.test.ts",
+      "sha256": "c939d9f93ee5faa8b2b44e6de14d6f634be7db11bcf2de3e40116f44d2ed04e6",
+      "blocks": 8,
+      "assertions": 12
+    },
+    {
+      "path": "tests/atcNavigationTreeState.test.ts",
+      "sha256": "3c667a057b5ff62d14f457478f998a324ae65b1e8ee802cd593676739b93b01c",
+      "blocks": 2,
+      "assertions": 2
+    },
+    {
+      "path": "tests/attachmentListState.test.ts",
+      "sha256": "0e072aeb9aa510685e15b9a34f77973bc8e46973e0ea49af02bb4eaec2fa80e9",
+      "blocks": 1,
+      "assertions": 2
+    },
+    {
+      "path": "tests/authSafety.test.ts",
+      "sha256": "39ce8efe9afac8edaf76f054f2e18dd94a806840a4f9e87a1d571797d627e850",
+      "blocks": 3,
+      "assertions": 9
+    },
+    {
+      "path": "tests/brandActivityCsdMarket.test.ts",
+      "sha256": "6c4972bf4801f134beedfc473f94c05255fd67dcc4134343fe8010bec48d3fb9",
+      "blocks": 4,
+      "assertions": 6
+    },
+    {
+      "path": "tests/brandActivityDisplayContract.test.ts",
+      "sha256": "26d5db57b81033d4bc855004bfeee10abd5e91abdfa52932cb8f9008fbb31db0",
+      "blocks": 2,
+      "assertions": 13
+    },
+    {
+      "path": "tests/brandActivityInterestStrategic.test.ts",
+      "sha256": "49d7f148db396e4b68a12b0c132569bd2009e63f3c249ef9c83baf3979140319",
+      "blocks": 9,
+      "assertions": 37
+    },
+    {
+      "path": "tests/brandActivityTopicFilters.test.ts",
+      "sha256": "95137a7fd91a629f8afee4d44a802deb0c25c566fb1d4ab5612c6bdfe98c3ac9",
+      "blocks": 5,
+      "assertions": 26
+    },
+    {
+      "path": "tests/brandActivityTopicPeriod.test.ts",
+      "sha256": "39b456b0811f9b1abbc14e7de351853b5e9dad42f8ca8da37ffd8d4328cb6fe5",
+      "blocks": 4,
+      "assertions": 11
+    },
+    {
+      "path": "tests/brandCagrDisplay.test.ts",
+      "sha256": "0b4c753b1e7990ae9d048f6bbd1211bf6ee80a2eb5044033adc2c73d61170e98",
+      "blocks": 5,
+      "assertions": 10
+    },
+    {
+      "path": "tests/brandProfileSource.test.ts",
+      "sha256": "3f63761f3f52a37fa1ad39a40b3864b4a02f19ec2cc095293d24eedacdd61ffb",
+      "blocks": 4,
+      "assertions": 11
+    },
+    {
+      "path": "tests/chatAnswerCollapseRender.test.ts",
+      "sha256": "c57177f20065879e4a1d0ec4eece48a81b701a5cd08de9f5f416362597d3ad80",
+      "blocks": 5,
+      "assertions": 23
+    },
+    {
+      "path": "tests/chatAnswerSections.test.ts",
+      "sha256": "5fc704238657ddaac1f6dd8da69c606be619446a584a011e37c59a307c7d4fc4",
+      "blocks": 13,
+      "assertions": 57
+    },
+    {
+      "path": "tests/chatMarkdownSanitize.test.ts",
+      "sha256": "d04aefa08791af95ae9c6cd11007c5a8592658cac0bd675009a8af20590aa72b",
+      "blocks": 7,
+      "assertions": 26
+    },
+    {
+      "path": "tests/chatMessageAIWholeRender.test.ts",
+      "sha256": "e8160001c1e8d9d6f0cc94d82e15aa9121aa1ebc104bbc5af54b6d8e89707817",
+      "blocks": 11,
+      "assertions": 39
+    },
+    {
+      "path": "tests/deepAnalysisRequest.test.ts",
+      "sha256": "4348c404703606845f8a8392a694fb68a80a08e1bbb451650a52b03c5e2fdb46",
+      "blocks": 9,
+      "assertions": 14
+    },
+    {
+      "path": "tests/dependentFilterOptions.test.ts",
+      "sha256": "a46a5e347def8f5a8bf900121e52ecea17c74dc4ff42196fd5a9ef65c7b156f7",
+      "blocks": 15,
+      "assertions": 25
+    },
+    {
+      "path": "tests/inspectionPanelPreferences.test.ts",
+      "sha256": "4272b0d1954c0d954679a3476f3f7f714351b8b539253701bec79c8a4de711f0",
+      "blocks": 2,
+      "assertions": 4
+    },
+    {
+      "path": "tests/kpiNoData.test.ts",
+      "sha256": "e6aec1a077462de2d0b7510692240a7322497e18d8044a31ceb3c950a4233c9d",
+      "blocks": 4,
+      "assertions": 7
+    },
+    {
+      "path": "tests/levelTop5.test.ts",
+      "sha256": "8bf13317d07dd5c995d8059119e23ae8e3bb2c9ceb6f05eda88f4d0998b4217d",
+      "blocks": 8,
+      "assertions": 13
+    },
+    {
+      "path": "tests/marketCharts.test.ts",
+      "sha256": "056df551384f44f4033ff1a36945782fa066c0dafb0e0d65939506bc1ba2d725",
+      "blocks": 17,
+      "assertions": 49
+    },
+    {
+      "path": "tests/marketDocumentBlockedUpload.test.ts",
+      "sha256": "ade6cdef2f540e7d927c6baf196f9b3ec03971c739e251cb5cbba4d0a4bea680",
+      "blocks": 6,
+      "assertions": 18
+    },
+    {
+      "path": "tests/marketDocumentUploadFlow.test.ts",
+      "sha256": "1b061fa47d6688102a412828c4efb549efcf7657941164cec2fdedddc617dcd5",
+      "blocks": 11,
+      "assertions": 28
+    },
+    {
+      "path": "tests/marketFilterMultiSearchSelection.test.ts",
+      "sha256": "85eae5d6d3cba6ac04aac2d9b794c5321839bda9d1284cf3043ba9059a0dd37d",
+      "blocks": 2,
+      "assertions": 5
+    },
+    {
+      "path": "tests/marketSessionLoad.test.ts",
+      "sha256": "8da7ef436026a74247384ce5df1d1bb3e358b6370da9cdd99ee8a16b891f282d",
+      "blocks": 8,
+      "assertions": 23
+    },
+    {
+      "path": "tests/marketSources.test.ts",
+      "sha256": "580a1889ac136ad2cabbdcf4e25d718172bcfddad89f1c61a10f5c9729ffc2ac",
+      "blocks": 15,
+      "assertions": 64
+    },
+    {
+      "path": "tests/marketStandardAtcLeafFallback.test.ts",
+      "sha256": "a7402a0c32ad62e5d28f3a42588175a12a983949447201d88f488af355435ca1",
+      "blocks": 5,
+      "assertions": 10
+    },
+    {
+      "path": "tests/marketStandardAtcOptionUniverse.test.ts",
+      "sha256": "87c91f082c539252a475351a991e8cd59abf52be5fa5524bf207b3b1b5e8752f",
+      "blocks": 8,
+      "assertions": 26
+    },
+    {
+      "path": "tests/marketTables.test.ts",
+      "sha256": "e340742bab4599d6afde555bb7034423c6f04b3ffe73ee0ba482caf0bd8eec1e",
+      "blocks": 10,
+      "assertions": 35
+    },
+    {
+      "path": "tests/marketTtft.test.ts",
+      "sha256": "fdf0d87877fa806b3ea60edb26495cc19a180d0518b58389ff059f5160339f98",
+      "blocks": 3,
+      "assertions": 4
+    },
+    {
+      "path": "tests/moleculeStrengthDrilldown.test.ts",
+      "sha256": "4ab6a7b310a8e2c85ec91ebf394e252fbfa6876d5a3e92a44fb1b689d91bf8dc",
+      "blocks": 1,
+      "assertions": 2
+    },
+    {
+      "path": "tests/rankTrackerParity.test.ts",
+      "sha256": "50f9e44b761e56f4d8cc9547b39352776d8d5b96ac1e7e4867e49982e3afd80a",
+      "blocks": 2,
+      "assertions": 4
+    },
+    {
+      "path": "tests/runtimeConfig.test.ts",
+      "sha256": "12291ef8d1c78258c24547c5d73487595e89ea596ead65b8c7d5682daf744bf3",
+      "blocks": 9,
+      "assertions": 28
+    },
+    {
+      "path": "tests/sourceAvailabilityGuard.test.ts",
+      "sha256": "2042c5035ddb5ff8154e7b33fa911f3d388452527df38c7cea006bc8056ea8c9",
+      "blocks": 7,
+      "assertions": 11
+    },
+    {
+      "path": "tests/staticDelivery.test.ts",
+      "sha256": "b515a0b6c0e1f68866222825d9ac9c4b06b086be491ac255d93d2ddce6d71d19",
+      "blocks": 1,
+      "assertions": 2
+    },
+    {
+      "path": "tests/tooltipCopy.test.ts",
+      "sha256": "204b07f374c34b1bd4df2418bc575be727fc3a676dd60f0af8861291e29499cf",
+      "blocks": 10,
+      "assertions": 80
+    },
+    {
+      "path": "tests/traceToolResults.test.ts",
+      "sha256": "ecbf5edc3372d29204c567824a078a53f6064c7fed6ae3836401420619a51079",
+      "blocks": 13,
+      "assertions": 38
+    },
+    {
+      "path": "tests/uploadPreviewNoticeRender.test.ts",
+      "sha256": "1005d778f63219ec31cdc5eaba4dbeee4cf06614ac06c8176fb2d20f37d27cc8",
+      "blocks": 3,
+      "assertions": 4
+    },
+    {
+      "path": "tests/uploadProgress.test.ts",
+      "sha256": "d03e27d2b8e0f3d9c097d43c50defd3f140c238e5f20ce34b244039ad9796c4d",
+      "blocks": 9,
+      "assertions": 21
+    },
+    {
+      "path": "tests/uploadProgressRender.test.ts",
+      "sha256": "c6012b4e2f03c96b9edc8d6a8c696772ac0b446f66dcc90f8a647f679ca67135",
+      "blocks": 4,
+      "assertions": 13
+    },
+    {
+      "path": "tests/uploadUnknownStateRender.test.ts",
+      "sha256": "34b7aa367123e9b6a8524520ac4135ccb74e3198afe82f895203fd5300aa1122",
+      "blocks": 1,
+      "assertions": 3
+    }
+  ]
+}

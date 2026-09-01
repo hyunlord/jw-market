@@ -1,0 +1,118 @@
+from __future__ import annotations
+
+import json
+import os
+import threading
+from collections.abc import Mapping
+from typing import Literal, TypeAlias
+
+from jw_chat_agent_poc.tools.external.client import (
+    WEB_SEARCH_PROVIDER_ENV,
+    ExternalApiClient,
+    ExternalCall,
+    _bounded_web_results,
+    _mcp_tool_spec,
+)
+from jw_chat_agent_poc.tools.external.result_cache import ExternalResultCache
+from jw_chat_agent_poc.tools.external.telemetry import (
+    emit_external_call_telemetry,
+    emit_external_source_telemetry,
+)
+
+EXTERNAL_RESULT_CACHE_TTL_ENV = "CHAT_EXTERNAL_RESULT_CACHE_TTL_SECONDS"
+EXTERNAL_RESULT_CACHE_MAX_ENTRIES_ENV = "CHAT_EXTERNAL_RESULT_CACHE_MAX_ENTRIES"
+
+CacheScalar: TypeAlias = str | int | float | bool | None
+
+
+class CachedExternalApiClient(ExternalApiClient):
+    def __init__(self, *, result_cache: ExternalResultCache, timeout_s: int = 12) -> None:
+        super().__init__(mode="live", timeout_s=timeout_s)
+        self._result_cache = result_cache
+        self._cache_probe = threading.local()
+
+    def _live_mcp_call(self, tool: str, params: dict[str, str]) -> ExternalCall:
+        spec = _mcp_tool_spec(tool, params)
+        url = self._mcp_url(spec["resource_id"], spec["source"])
+        key = (
+            "mcp",
+            self.redact_url(url),
+            spec["mcp_tool"],
+            _canonical_arguments(spec["arguments"]),
+        )
+        cached = self._result_cache.get(key)
+        if cached is not None:
+            self._cache_probe.status = "hit"
+            emit_external_call_telemetry(
+                primary_provider=spec["source"],
+                question=key[-1],
+                domain_source="cache",
+                cache_status="hit",
+                call=cached,
+            )
+            return cached
+        self._cache_probe.status = "miss"
+        emit_external_source_telemetry(
+            primary_provider=spec["source"],
+            question=key[-1],
+            failure_class="none",
+            domain_source="cache",
+            cache_status="miss",
+        )
+        call = super()._live_mcp_call(tool, params)
+        self._result_cache.put(key, call)
+        return call
+
+    def hira_disease_name_code_with_cache_status(
+        self,
+        sick_cd: str,
+        *,
+        sick_type: str | None = None,
+    ) -> tuple[ExternalCall, Literal["hit", "miss", "unknown"]]:
+        self._cache_probe.status = "unknown"
+        call = super().hira_disease_name_code(sick_cd, sick_type=sick_type)
+        return call, self._cache_probe.status
+
+    def _live_web_search(
+        self,
+        query: str,
+        max_results: int = 5,
+        *,
+        topic: Literal["general", "news"] = "general",
+    ) -> ExternalCall:
+        provider = os.environ.get(WEB_SEARCH_PROVIDER_ENV, "tavily").strip().lower()
+        key = (
+            "web",
+            provider,
+            " ".join(query.split()),
+            _bounded_web_results(max_results),
+            topic,
+        )
+        cached = self._result_cache.get(key)
+        if cached is not None:
+            emit_external_call_telemetry(
+                primary_provider=provider,
+                question=query,
+                domain_source="cache",
+                cache_status="hit",
+                call=cached,
+            )
+            return cached
+        emit_external_source_telemetry(
+            primary_provider=provider,
+            question=query,
+            failure_class="none",
+            domain_source="cache",
+            cache_status="miss",
+        )
+        call = super()._live_web_search(query, max_results=max_results, topic=topic)
+        self._result_cache.put(key, call)
+        return call
+
+
+def _canonical_arguments(arguments: Mapping[str, CacheScalar]) -> str:
+    normalized = {
+        key: " ".join(value.split()) if isinstance(value, str) else value
+        for key, value in arguments.items()
+    }
+    return json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
