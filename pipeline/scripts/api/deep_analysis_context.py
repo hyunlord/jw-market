@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+import json
 import re
 from typing import Any, Final, Literal, TypeAlias, cast
 
@@ -47,15 +48,19 @@ class DeepAnalysisContext:
     has_market_data: bool
     market_allowed_sources: tuple[DeepAnalysisSource, ...]
     brand_available_sources: tuple[str, ...]
+    is_primary: bool | None = None
 
     def public(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "view_kind": self.view_kind,
             "market_id": self.market_id,
             "market_name": self.market_name,
             "source": self.source,
             "has_market_data": self.has_market_data,
         }
+        if self.is_primary is not None:
+            payload["is_primary"] = self.is_primary
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -299,6 +304,19 @@ def _strategic_contexts(
     *,
     candidate_cache: dict[tuple[str, str, str], object] | None = None,
 ) -> tuple[DeepAnalysisContext, ...]:
+    direct_mart_key = ("mart", view_kind, f"{brand}\x00{brand}\x00{brand}")
+    if candidate_cache is not None and direct_mart_key in candidate_cache:
+        mart_rows = cast(list[dict[str, Any]], candidate_cache[direct_mart_key])
+    else:
+        mart_rows = _strategic_mart_rows(
+            requested_brand=brand,
+            brand_key=brand,
+            brand_name=brand,
+            view_kind=view_kind,
+        )
+        if candidate_cache is not None:
+            candidate_cache[direct_mart_key] = mart_rows
+
     catalog_key = ("catalog", view_kind, brand)
     if candidate_cache is not None and catalog_key in candidate_cache:
         catalog_rows = cast(list[dict[str, Any]], candidate_cache[catalog_key])
@@ -306,38 +324,46 @@ def _strategic_contexts(
         catalog_rows = _strategic_catalog_rows(brand, view_kind)
         if candidate_cache is not None:
             candidate_cache[catalog_key] = catalog_rows
-    if not catalog_rows:
+    if not mart_rows and catalog_rows:
+        catalog_identities = {
+            (str(row.get("brand_key") or ""), str(row.get("brand_name") or ""))
+            for row in catalog_rows
+        }
+        if len(catalog_identities) > 1:
+            raise DeepAnalysisContextError(
+                status_code=409,
+                error="ambiguous_brand",
+                message="compact brand lookup matched multiple catalog brands",
+            )
+        catalog_base = catalog_rows[0]
+        alias_key = str(catalog_base.get("brand_key") or brand)
+        alias_name = str(catalog_base.get("brand_name") or brand)
+        alias_mart_key = ("mart", view_kind, f"{brand}\x00{alias_key}\x00{alias_name}")
+        if candidate_cache is not None and alias_mart_key in candidate_cache:
+            mart_rows = cast(list[dict[str, Any]], candidate_cache[alias_mart_key])
+        else:
+            mart_rows = _strategic_mart_rows(
+                requested_brand=brand,
+                brand_key=alias_key,
+                brand_name=alias_name,
+                view_kind=view_kind,
+            )
+            if candidate_cache is not None:
+                candidate_cache[alias_mart_key] = mart_rows
+    if not mart_rows:
         return ()
+
     identities = {
-        (str(row.get("brand_key") or ""), str(row.get("brand_name") or ""))
-        for row in catalog_rows
+        (str(row.get("brand_key") or brand), str(row.get("brand_name") or brand))
+        for row in mart_rows
     }
     if len(identities) > 1:
         raise DeepAnalysisContextError(
             status_code=409,
             error="ambiguous_brand",
-            message="compact brand lookup matched multiple catalog brands",
+            message="brand lookup matched multiple strategic mart brands",
         )
-
-    base = catalog_rows[0]
-    matched_brand_key = str(base.get("brand_key") or brand)
-    matched_brand_name = str(base.get("brand_name") or brand)
-    mart_key = ("mart", view_kind, f"{brand}\x00{matched_brand_key}\x00{matched_brand_name}")
-    if candidate_cache is not None and mart_key in candidate_cache:
-        mart_rows = cast(list[dict[str, Any]], candidate_cache[mart_key])
-    else:
-        mart_rows = _strategic_mart_rows(
-            requested_brand=brand,
-            brand_key=matched_brand_key,
-            brand_name=matched_brand_name,
-            view_kind=view_kind,
-        )
-        if candidate_cache is not None:
-            candidate_cache[mart_key] = mart_rows
-    data_pairs = {
-        (str(row.get("market_id") or ""), str(row.get("source") or ""))
-        for row in mart_rows
-    }
+    matched_brand_key, matched_brand_name = next(iter(identities))
     sources_key = ("sources", view_kind, f"{brand}\x00{matched_brand_key}\x00{matched_brand_name}")
     if candidate_cache is not None and sources_key in candidate_cache:
         brand_available_sources = cast(tuple[str, ...], candidate_cache[sources_key])
@@ -345,27 +371,55 @@ def _strategic_contexts(
         brand_available_sources = _brand_available_sources(brand, matched_brand_key, matched_brand_name)
         if candidate_cache is not None:
             candidate_cache[sources_key] = brand_available_sources
-    contexts: list[DeepAnalysisContext] = []
-    for row in catalog_rows:
-        market = str(row.get("market_id") or "")
-        allowed = _catalog_sources(row.get("data_source"))
-        for api_source in allowed:
-            db_source = SOURCE_TO_DB[api_source]
-            contexts.append(
-                DeepAnalysisContext(
-                    brand_key=matched_brand_key,
-                    brand_name=matched_brand_name,
-                    view_kind=view_kind,
-                    market_id=market,
-                    market_name=_optional_text(row.get("market_name")),
-                    source=api_source,
-                    db_source=db_source,
-                    in_catalog=True,
-                    has_market_data=(market, db_source) in data_pairs,
-                    market_allowed_sources=allowed,
-                    brand_available_sources=brand_available_sources,
-                )
+    catalog_by_market = {str(row.get("market_id") or ""): row for row in catalog_rows}
+    allowed_by_market: dict[str, tuple[DeepAnalysisSource, ...]] = {}
+    for market in {str(row.get("market_id") or "") for row in mart_rows}:
+        allowed_by_market[market] = tuple(
+            source
+            for source in SOURCES
+            if any(
+                str(row.get("market_id") or "") == market
+                and DB_TO_SOURCE.get(str(row.get("source") or "")) == source
+                for row in mart_rows
             )
+        )
+    primary_by_source: dict[DeepAnalysisSource, str] = {}
+    for api_source in SOURCES:
+        source_rows = [
+            row for row in mart_rows
+            if DB_TO_SOURCE.get(str(row.get("source") or "")) == api_source
+        ]
+        if source_rows:
+            primary_by_source[api_source] = min(
+                source_rows,
+                key=lambda row: (-_latest_series_value(row.get("market_size_series")), str(row.get("market_id") or "")),
+            )["market_id"]
+
+    contexts: list[DeepAnalysisContext] = []
+    for row in mart_rows:
+        db_source = str(row.get("source") or "")
+        api_source = DB_TO_SOURCE.get(db_source)
+        market = str(row.get("market_id") or "")
+        if api_source is None or not market:
+            continue
+        catalog_row = catalog_by_market.get(market)
+        contexts.append(
+            DeepAnalysisContext(
+                brand_key=matched_brand_key,
+                brand_name=matched_brand_name,
+                view_kind=view_kind,
+                market_id=market,
+                market_name=_optional_text(row.get("market_name"))
+                or _optional_text(catalog_row.get("market_name") if catalog_row else None),
+                source=api_source,
+                db_source=db_source,
+                in_catalog=catalog_row is not None,
+                has_market_data=True,
+                market_allowed_sources=allowed_by_market[market],
+                brand_available_sources=brand_available_sources,
+                is_primary=primary_by_source.get(api_source) == market,
+            )
+        )
     return _deduplicate_contexts(contexts)
 
 
@@ -426,15 +480,38 @@ def _strategic_mart_rows(
 ) -> list[dict[str, Any]]:
     table = "mart_strategic_ml_brand_metric" if view_kind == "strategic_ml" else "mart_strategic_cd_brand_metric"
     id_column = "ml_id" if view_kind == "strategic_ml" else "cd_market_id"
-    return db.fetch_all(
-        f"""
-        SELECT DISTINCT {id_column} AS market_id, source
-        FROM {table}
-        WHERE brand_key IN (%s, %s, %s) OR brand_name IN (%s, %s, %s)
-        ORDER BY {id_column}, source
-        """,
-        (requested_brand, brand_key, brand_name, requested_brand, brand_key, brand_name),
-    )
+    market_table = "catalog_ml_market" if view_kind == "strategic_ml" else "catalog_cd_market"
+    market_catalog_id = "ml_id" if view_kind == "strategic_ml" else "cd_id"
+    market_metric_table = "mart_strategic_ml_market_metric" if view_kind == "strategic_ml" else "mart_strategic_cd_market_metric"
+    identities = (requested_brand, brand_key, brand_name)
+    for column in ("brand_key", "brand_name"):
+        rows = db.fetch_all(
+            f"""
+            SELECT DISTINCT b.brand_key, b.brand_name, b.{id_column} AS market_id,
+                   b.source, c.name AS market_name, m.market_size_series
+            FROM {table} b
+            LEFT JOIN {market_table} c ON c.{market_catalog_id} = b.{id_column}
+            LEFT JOIN {market_metric_table} m
+              ON m.{id_column} = b.{id_column} AND m.source = b.source AND m.measure = 'sales'
+            WHERE b.{column} IN (%s, %s, %s)
+            ORDER BY b.{id_column}, b.source
+            """,
+            identities,
+        )
+        if rows:
+            return rows
+    return []
+
+
+def _latest_series_value(value: object) -> float:
+    try:
+        payload = json.loads(value) if isinstance(value, str) else value
+        if not isinstance(payload, dict) or not payload:
+            return 0.0
+        period = max(str(key) for key in payload)
+        return float(payload.get(period) or 0.0)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return 0.0
 
 
 def _brand_available_sources(brand: str, brand_key: str, brand_name: str) -> tuple[str, ...]:
