@@ -152,19 +152,120 @@ def test_catalog_member_without_sales_rows_resolves_as_no_market_data(monkeypatc
 
     monkeypatch.setattr(deep_analysis_context.db, "fetch_all", fake_fetch_all)
 
+    with pytest.raises(DeepAnalysisContextError) as exc_info:
+        resolve_deep_analysis_context(
+            brand="글리펜",
+            view_kind="strategic_ml",
+            market_id="ml_003",
+            source="ubist",
+        )
+
+    assert exc_info.value.error == "brand_not_found"
+
+
+def test_mart_member_without_brand_catalog_row_has_strategic_context(monkeypatch) -> None:
+    def fake_fetch_all(sql: str, _params: tuple[Any, ...]) -> list[dict[str, Any]]:
+        if "mart_strategic_ml_brand_metric" in sql:
+            return [{
+                "brand_key": "타사브랜드",
+                "brand_name": "타사브랜드",
+                "market_id": "ml_003",
+                "market_name": "당뇨 OAD",
+                "source": "ubist",
+                "market_size_series": '{"2026-07": 1200}',
+            }]
+        if "catalog_strategic_brand" in sql:
+            return []
+        if "mart_general_brand_metric" in sql:
+            return [{"source": "ubist"}]
+        return []
+
+    monkeypatch.setattr(deep_analysis_context.db, "fetch_all", fake_fetch_all)
+
     context = resolve_deep_analysis_context(
-        brand="글리펜",
+        brand="타사브랜드",
         view_kind="strategic_ml",
         market_id="ml_003",
         source="ubist",
     )
 
-    assert context.in_catalog is True
-    assert context.has_market_data is False
-    assert context.brand_available_sources == ("iqvia_nsa",)
+    assert context.in_catalog is False
+    assert context.has_market_data is True
+    assert context.is_primary is True
 
 
-def test_catalog_both_source_exposes_ubist_and_iqvia_contexts(monkeypatch) -> None:
+def test_strategic_mart_lookup_uses_indexed_columns_without_or(monkeypatch) -> None:
+    calls: list[tuple[str, tuple[Any, ...]]] = []
+
+    def fake_fetch_all(sql: str, params: tuple[Any, ...]) -> list[dict[str, Any]]:
+        calls.append((sql, params))
+        if "b.brand_name IN" in sql:
+            return [{
+                "brand_key": "타사브랜드키",
+                "brand_name": "타사브랜드",
+                "market_id": "ml_003",
+                "market_name": "당뇨 OAD",
+                "source": "ubist",
+                "market_size_series": '{"2026-07": 1200}',
+            }]
+        return []
+
+    monkeypatch.setattr(deep_analysis_context.db, "fetch_all", fake_fetch_all)
+
+    rows = deep_analysis_context._strategic_mart_rows(
+        requested_brand="타사브랜드",
+        brand_key="타사브랜드키",
+        brand_name="타사브랜드",
+        view_kind="strategic_ml",
+    )
+
+    assert rows[0]["market_id"] == "ml_003"
+    mart_calls = [(sql, params) for sql, params in calls if "mart_strategic_ml_brand_metric" in sql]
+    assert len(mart_calls) == 2
+    assert "b.brand_key IN" in mart_calls[0][0]
+    assert "b.brand_name IN" in mart_calls[1][0]
+    assert all(" OR " not in sql for sql, _params in mart_calls)
+
+
+def test_strategic_primary_market_uses_latest_market_total(monkeypatch) -> None:
+    def fake_fetch_all(sql: str, _params: tuple[Any, ...]) -> list[dict[str, Any]]:
+        if "mart_strategic_ml_brand_metric" in sql:
+            return [
+                {
+                    "brand_key": "중복브랜드",
+                    "brand_name": "중복브랜드",
+                    "market_id": "ml_003",
+                    "market_name": "작은 시장",
+                    "source": "ubist",
+                    "market_size_series": '{"2026-07": 100}',
+                },
+                {
+                    "brand_key": "중복브랜드",
+                    "brand_name": "중복브랜드",
+                    "market_id": "ml_009",
+                    "market_name": "큰 시장",
+                    "source": "ubist",
+                    "market_size_series": '{"2026-07": 900}',
+                },
+            ]
+        if "catalog_strategic_brand" in sql:
+            return []
+        if "mart_general_brand_metric" in sql:
+            return [{"source": "ubist"}]
+        return []
+
+    monkeypatch.setattr(deep_analysis_context.db, "fetch_all", fake_fetch_all)
+
+    contexts = deep_analysis_context._strategic_contexts("중복브랜드", "strategic_ml")
+
+    assert [(item.market_id, item.is_primary) for item in contexts] == [
+        ("ml_003", False),
+        ("ml_009", True),
+    ]
+    assert contexts[1].public()["is_primary"] is True
+
+
+def test_catalog_source_flags_do_not_open_strategy_without_mart_membership(monkeypatch) -> None:
     def fake_fetch_all(sql: str, _params: tuple[Any, ...]) -> list[dict[str, Any]]:
         if "catalog_strategic_brand" in sql:
             return [_catalog_row(market_id="ml_003", data_source="both")]
@@ -174,10 +275,7 @@ def test_catalog_both_source_exposes_ubist_and_iqvia_contexts(monkeypatch) -> No
 
     contexts = deep_analysis_context._strategic_contexts("선택브랜드", "strategic_ml")
 
-    assert [(item.source, item.db_source) for item in contexts] == [
-        ("iqvia", "iqvia_nsa"),
-        ("ubist", "ubist"),
-    ]
+    assert contexts == ()
 
 
 def test_general_context_uses_explicit_atc4_and_source(monkeypatch) -> None:

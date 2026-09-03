@@ -46,6 +46,8 @@ def brand_source_options(
                 "market_name": context.get("market_name"),
                 "has_market_data": bool(context.get("has_market_data")),
             }
+            if "is_primary" in context:
+                public["is_primary"] = bool(context.get("is_primary"))
             if public["market_id"] and public not in contexts:
                 contexts.append(public)
     return contexts, public_source_labels(general), public_source_labels(strategic)
